@@ -1,43 +1,26 @@
 import argparse
 import os
-import numpy as np
-import yaml
-import random
-import json 
-
-import trimesh 
-
-from tqdm import tqdm
 from pathlib import Path
 
-import wandb
-
+import numpy as np
+import pytorch3d.transforms as transforms
 import torch
-import torch.nn as nn
-from torch.optim import Adam
-from torch.utils.data import DataLoader, TensorDataset
-from torch.cuda.amp import autocast, GradScaler
-from torch.utils import data
-
-import torch.nn.functional as F
-
-import pytorch3d.transforms as transforms 
-
+import wandb
+import yaml
 from ema_pytorch import EMA
-from multiprocessing import cpu_count
+from evaluation_metrics import compute_collision, compute_metrics
+from manip.data.hand_foot_dataset import (HandFootManipDataset, 
+                                          quat_ik_torch)
+from manip.model.transformer_fullbody_cond_diffusion_model import (
+    CondGaussianDiffusion, cosine_beta_schedule)
+from manip.vis.blender_vis_mesh_motion import (
+    run_blender_rendering_and_save2video,
+    save_verts_faces_to_mesh_file_w_object)
+from torch.cuda.amp import GradScaler, autocast
+from torch.optim import Adam
+from torch.utils import data
+from tqdm import tqdm
 
-from human_body_prior.body_model.body_model import BodyModel
-
-from manip.data.hand_foot_dataset import HandFootManipDataset, quat_ik_torch, quat_fk_torch
-
-from manip.model.transformer_fullbody_cond_diffusion_model import CondGaussianDiffusion, cosine_beta_schedule 
-
-from manip.vis.blender_vis_mesh_motion import run_blender_rendering_and_save2video, save_verts_faces_to_mesh_file_w_object
-
-from evaluation_metrics import compute_metrics 
-from evaluation_metrics import compute_collision
-
-from matplotlib import pyplot as plt
 
 def run_smplx_model(root_trans, aa_rot_rep, betas, gender, bm_dict, return_joints24=False):
     # root_trans: BS X T X 3

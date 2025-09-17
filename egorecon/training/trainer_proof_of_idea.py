@@ -1,51 +1,26 @@
 import argparse
-import json
 import os
 import random
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import trimesh
 import wandb
 import yaml
 from ema_pytorch import EMA
-# from evaluation_metrics import compute_metrics
-# from evaluation_metrics import compute_collision
+
 from jutils import model_utils
-from matplotlib import pyplot as plt
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
 from torch.utils import data
-from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from ..manip.data.hand_to_object_dataset import HandToObjectDataset
-from ..manip.model.transformer_hand_to_object_diffusion_model import \
-    CondGaussianDiffusion
+from ..manip.model.transformer_hand_to_object_diffusion_model import (
+    CondGaussianDiffusion,
+)
 from ..utils.rotation_utils import transforms
 from ..visualization.rerun_visualizer import RerunVisualizer
-
-# from multiprocessing import cpu_count
-
-# from human_body_prior.body_model.body_model import BodyModel
-
-# from .manip.data.hand_foot_dataset import (
-#     HandFootManipDataset,
-#     quat_ik_torch,
-#     quat_fk_torch,
-# )
-
-
-
-# from .manip.vis.blender_vis_mesh_motion import (
-#     run_blender_rendering_and_save2video,
-#     save_verts_faces_to_mesh_file_w_object,
-# )
-
-
 
 
 def run_smplx_model(
@@ -272,15 +247,13 @@ class Trainer(object):
             sampling_strategy="random",
             split="mini",
             split_seed=42,  # Ensure reproducible splits
-            noise_scheme='syn',
+            noise_scheme="syn",
             noise_std_obj_rot=opt.noise_std_obj_rot,
             noise_std_obj_trans=opt.noise_std_obj_trans,
-
             noise_std_mano_global_rot=opt.noise_std_mano_global_rot,
             noise_std_mano_body_rot=opt.noise_std_mano_body_rot,
             noise_std_mano_trans=opt.noise_std_mano_trans,
             noise_std_mano_betas=opt.noise_std_mano_betas,
-
             opt=opt,
         )
 
@@ -294,9 +267,9 @@ class Trainer(object):
             sampling_strategy="random",
             split="mini",
             split_seed=42,  # Use same seed for consistent splits
-            noise_scheme='real',
+            noise_scheme="real",
             opt=opt,
-        )        
+        )
 
         self.ds = train_dataset
         self.val_ds = val_dataset
@@ -319,12 +292,12 @@ class Trainer(object):
         #     )
         # )
         self.val_dl = data.DataLoader(
-                self.val_ds,
-                batch_size=1,
-                shuffle=False,
-                pin_memory=True,
-                num_workers=4,
-            )
+            self.val_ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=4,
+        )
 
     def save(self, milestone):
         data = {
@@ -405,7 +378,9 @@ class Trainer(object):
                 batch_size, clip_len, _ = cond.shape
                 if prob > 1 - mask_prob:
                     traj_feat_dim = sample["traj_noisy_raw"].shape[-1]
-                    start = torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
+                    start = (
+                        torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
+                    )
                     mask_len = (
                         clip_len
                         * torch.FloatTensor(batch_size).uniform_(0, 1)
@@ -452,10 +427,7 @@ class Trainer(object):
                     ]
                     total_norm = torch.norm(
                         torch.stack(
-                            [
-                                torch.norm(p.grad.detach(), 2.0)
-                                for p in parameters
-                            ]
+                            [torch.norm(p.grad.detach(), 2.0) for p in parameters]
                         ),
                         2.0,
                     )
@@ -490,49 +462,11 @@ class Trainer(object):
 
                 with torch.no_grad():
                     for b, val_data_dict in enumerate(self.val_dl):
-                        print(b, val_data_dict['object_id'])
+                        print(b, val_data_dict["object_id"])
                         val_data_dict = model_utils.to_cuda(val_data_dict)
 
-                        self.validation_step(sample, pref=f'{b}/train/')
-                        self.validation_step(val_data_dict, pref=f'{b}/val/')
-                    # val_data = val_data_dict['motion'].cuda()
-
-                    # if cond_mask is not None:
-                    #     cond_mask = cond_mask * left_joint_mask * right_joint_mask
-                    # else:
-                    #     cond_mask = left_joint_mask * right_joint_mask
-
-                    # # Generate padding mask
-                    # actual_seq_len = val_data_dict['seq_len'] + 1 # BS, + 1 since we need additional timestep for noise level
-                    # tmp_mask = torch.arange(self.window+1).expand(val_data.shape[0], \
-                    # self.window+1) < actual_seq_len[:, None].repeat(1, self.window+1)
-                    # # BS X max_timesteps
-                    # padding_mask = tmp_mask[:, None, :].to(val_data.device)
-
-                    # # Get validation loss
-                    # val_loss_diffusion = self.model(val_data, cond_mask, padding_mask)
-                    # val_loss = val_loss_diffusion
-                    # if self.use_wandb:
-                    #     val_log_dict = {
-                    #         "Validation/Loss/Total Loss": val_loss.item(),
-                    #         "Validation/Loss/Diffusion Loss": val_loss_diffusion.item(),
-                    #     }
-                    #     wandb.log(val_log_dict)
-
-                    # milestone = self.step // self.save_and_sample_every
-                    # bs_for_vis = 1
-
-                    # if self.step % self.save_and_sample_every == 0:
-                    #     self.save(milestone)
-
-                    #     all_res_list = self.ema.ema_model.sample(val_data, cond_mask, padding_mask)
-                    #     all_res_list = all_res_list[:bs_for_vis]
-
-                    #     # Visualization
-                    #     for_vis_gt_data = val_data[:bs_for_vis]
-                    #     self.gen_vis_res(for_vis_gt_data, val_data_dict, self.step, vis_gt=True)
-                    #     self.gen_vis_res(all_res_list, val_data_dict, self.step)
-
+                        self.validation_step(sample, pref=f"{b}/train/")
+                        self.validation_step(val_data_dict, pref=f"{b}/val/")
             self.step += 1
 
         print("training complete")
@@ -543,9 +477,7 @@ class Trainer(object):
     def validation_step(self, val_data_dict, pref="val/"):
         cond = val_data_dict["condition"]
         device = cond.device
-        seq_len = torch.tensor([cond.shape[1]]).to(
-            device
-        )
+        seq_len = torch.tensor([cond.shape[1]]).to(device)
 
         actual_seq_len = seq_len + 1
         tmp_mask = torch.arange(opt.window + 1, device=device).expand(
@@ -556,7 +488,9 @@ class Trainer(object):
         cond = val_data_dict["condition"]
 
         with autocast(enabled=True):
-            val_loss_diffusion = self.model(object_motion, cond, padding_mask=padding_mask)
+            val_loss_diffusion = self.model(
+                object_motion, cond, padding_mask=padding_mask
+            )
 
         val_loss = val_loss_diffusion
         if self.use_wandb:
@@ -574,13 +508,15 @@ class Trainer(object):
             sample = val_data_dict
             diffusion_model = self.ema.ema_model
 
-            hand_poses_raw = sample["hand_raw"][:bs_for_vis]  # [1, T, 2*D] - left + right hand
+            hand_poses_raw = sample["hand_raw"][
+                :bs_for_vis
+            ]  # [1, T, 2*D] - left + right hand
             object_motion_raw = sample["target_raw"][:bs_for_vis]
             left_hand_raw, right_hand_raw = torch.split(hand_poses_raw, 21 * 3, dim=-1)
             cond = sample["condition"][:bs_for_vis]
             seq_len = torch.tensor([cond.shape[1]])
             object_motion = sample["target"][:bs_for_vis]
-            
+
             object_pred_raw, _ = diffusion_model.sample_raw(
                 torch.randn_like(object_motion), cond, padding_mask=padding_mask
             )
@@ -1100,229 +1036,6 @@ class Trainer(object):
     def gen_vis_res(self, *args, **kwargs):
         self.visualizer.log_training_step(*args, **kwargs)
 
-    def gen_vis_res_legacy(
-        self,
-        all_res_list,
-        data_dict,
-        step,
-        vis_gt=False,
-        vis_tag=None,
-        for_quant_eval=False,
-        selected_seq_idx=None,
-    ):
-        # all_res_list: N X T X D
-        num_seq = all_res_list.shape[0]
-
-        num_joints = 24
-
-        normalized_global_jpos = all_res_list[:, :, : num_joints * 3].reshape(
-            num_seq, -1, num_joints, 3
-        )
-
-        global_jpos = self.ds.de_normalize_jpos_min_max(
-            normalized_global_jpos.reshape(-1, num_joints, 3)
-        )
-        global_jpos = global_jpos.reshape(num_seq, -1, num_joints, 3)  # N X T X 22 X 3
-        global_root_jpos = global_jpos[:, :, 0, :].clone()  # N X T X 3
-
-        global_rot_6d = all_res_list[:, :, -22 * 6 :].reshape(num_seq, -1, 22, 6)
-        global_rot_mat = transforms.rotation_6d_to_matrix(
-            global_rot_6d
-        )  # N X T X 22 X 3 X 3
-
-        trans2joint = data_dict["trans2joint"].to(all_res_list.device)  # N X 3
-
-        seq_len = data_dict["seq_len"].detach().cpu().numpy()  # BS
-
-        # Used for quantitative evaluation.
-        human_trans_list = []
-        human_rot_list = []
-        human_jnts_list = []
-        human_verts_list = []
-        human_faces_list = []
-
-        obj_verts_list = []
-        obj_faces_list = []
-
-        actual_len_list = []
-
-        for idx in range(num_seq):
-            curr_global_rot_mat = global_rot_mat[idx]  # T X 22 X 3 X 3
-            curr_local_rot_mat = quat_ik_torch(curr_global_rot_mat)  # T X 22 X 3 X 3
-            curr_local_rot_aa_rep = transforms.matrix_to_axis_angle(
-                curr_local_rot_mat
-            )  # T X 22 X 3
-
-            curr_global_root_jpos = global_root_jpos[idx]  # T X 3
-
-            if selected_seq_idx is None:
-                curr_trans2joint = trans2joint[idx : idx + 1].clone()
-            else:
-                curr_trans2joint = trans2joint[
-                    selected_seq_idx : selected_seq_idx + 1
-                ].clone()
-
-            root_trans = curr_global_root_jpos + curr_trans2joint  # T X 3
-
-            # Generate global joint position
-            bs = 1
-            if selected_seq_idx is None:
-                betas = data_dict["betas"][idx]
-                gender = data_dict["gender"][idx]
-                curr_obj_rot_mat = data_dict["obj_rot_mat"][idx]
-                curr_obj_trans = data_dict["obj_trans"][idx]
-                curr_obj_scale = data_dict["obj_scale"][idx]
-                curr_seq_name = data_dict["seq_name"][idx]
-                object_name = curr_seq_name.split("_")[1]
-            else:
-                betas = data_dict["betas"][selected_seq_idx]
-                gender = data_dict["gender"][selected_seq_idx]
-                curr_obj_rot_mat = data_dict["obj_rot_mat"][selected_seq_idx]
-                curr_obj_trans = data_dict["obj_trans"][selected_seq_idx]
-                curr_obj_scale = data_dict["obj_scale"][selected_seq_idx]
-                curr_seq_name = data_dict["seq_name"][selected_seq_idx]
-                object_name = curr_seq_name.split("_")[1]
-
-            # Get human verts
-            mesh_jnts, mesh_verts, mesh_faces = run_smplx_model(
-                root_trans[None].cuda(),
-                curr_local_rot_aa_rep[None].cuda(),
-                betas.cuda(),
-                [gender],
-                self.ds.bm_dict,
-                return_joints24=True,
-            )
-
-            # Get object verts
-            if object_name in ["mop", "vacuum"]:
-                if selected_seq_idx is None:
-                    curr_obj_bottom_rot_mat = data_dict["obj_bottom_rot_mat"][idx]
-                    curr_obj_bottom_trans = data_dict["obj_bottom_trans"][idx]
-                    curr_obj_bottom_scale = data_dict["obj_bottom_scale"][idx]
-                else:
-                    curr_obj_bottom_rot_mat = data_dict["obj_bottom_rot_mat"][
-                        selected_seq_idx
-                    ]
-                    curr_obj_bottom_trans = data_dict["obj_bottom_trans"][
-                        selected_seq_idx
-                    ]
-                    curr_obj_bottom_scale = data_dict["obj_bottom_scale"][
-                        selected_seq_idx
-                    ]
-
-                obj_mesh_verts, obj_mesh_faces = self.ds.load_object_geometry(
-                    object_name,
-                    curr_obj_scale.detach().cpu().numpy(),
-                    curr_obj_trans.detach().cpu().numpy(),
-                    curr_obj_rot_mat.detach().cpu().numpy(),
-                    curr_obj_bottom_scale.detach().cpu().numpy(),
-                    curr_obj_bottom_trans.detach().cpu().numpy(),
-                    curr_obj_bottom_rot_mat.detach().cpu().numpy(),
-                )
-            else:
-                obj_mesh_verts, obj_mesh_faces = self.ds.load_object_geometry(
-                    object_name,
-                    curr_obj_scale.detach().cpu().numpy(),
-                    curr_obj_trans.detach().cpu().numpy(),
-                    curr_obj_rot_mat.detach().cpu().numpy(),
-                )
-
-            human_trans_list.append(root_trans)
-            human_jnts_list.append(mesh_jnts)
-            human_verts_list.append(mesh_verts)
-            human_faces_list.append(mesh_faces)
-
-            human_rot_list.append(curr_global_rot_mat)
-
-            obj_verts_list.append(obj_mesh_verts)
-            obj_faces_list.append(obj_mesh_faces)
-
-            if selected_seq_idx is None:
-                actual_len_list.append(seq_len[idx])
-            else:
-                actual_len_list.append(seq_len[selected_seq_idx])
-
-            if vis_tag is None:
-                dest_mesh_vis_folder = os.path.join(
-                    self.vis_folder, "blender_mesh_vis", str(step)
-                )
-            else:
-                dest_mesh_vis_folder = os.path.join(self.vis_folder, vis_tag, str(step))
-
-            if not self.for_quant_eval:
-                if not os.path.exists(dest_mesh_vis_folder):
-                    os.makedirs(dest_mesh_vis_folder)
-
-                if vis_gt:
-                    mesh_save_folder = os.path.join(
-                        dest_mesh_vis_folder,
-                        "objs_step_" + str(step) + "_bs_idx_" + str(idx) + "_gt",
-                    )
-                    out_rendered_img_folder = os.path.join(
-                        dest_mesh_vis_folder,
-                        "imgs_step_" + str(step) + "_bs_idx_" + str(idx) + "_gt",
-                    )
-                    out_vid_file_path = os.path.join(
-                        dest_mesh_vis_folder,
-                        "vid_step_" + str(step) + "_bs_idx_" + str(idx) + "_gt.mp4",
-                    )
-                else:
-                    mesh_save_folder = os.path.join(
-                        dest_mesh_vis_folder,
-                        "objs_step_" + str(step) + "_bs_idx_" + str(idx),
-                    )
-                    out_rendered_img_folder = os.path.join(
-                        dest_mesh_vis_folder,
-                        "imgs_step_" + str(step) + "_bs_idx_" + str(idx),
-                    )
-                    out_vid_file_path = os.path.join(
-                        dest_mesh_vis_folder,
-                        "vid_step_" + str(step) + "_bs_idx_" + str(idx) + ".mp4",
-                    )
-
-                if selected_seq_idx is None:
-                    actual_len = seq_len[idx]
-                else:
-                    actual_len = seq_len[selected_seq_idx]
-
-                if not vis_gt:
-                    save_verts_faces_to_mesh_file_w_object(
-                        mesh_verts.detach().cpu().numpy()[0][:actual_len],
-                        mesh_faces.detach().cpu().numpy(),
-                        obj_mesh_verts.detach().cpu().numpy()[:actual_len],
-                        obj_mesh_faces,
-                        mesh_save_folder,
-                    )
-                    run_blender_rendering_and_save2video(
-                        mesh_save_folder,
-                        out_rendered_img_folder,
-                        out_vid_file_path,
-                        vis_object=True,
-                    )
-
-        human_trans_list = torch.stack(human_trans_list)[0]  # T X 3
-        human_rot_list = torch.stack(human_rot_list)[0]  # T X 22 X 3 X 3
-        human_jnts_list = torch.stack(human_jnts_list)[0, 0]  # T X 22 X 3
-        human_verts_list = torch.stack(human_verts_list)[0, 0]  # T X Nv X 3
-        human_faces_list = (
-            torch.stack(human_faces_list)[0].detach().cpu().numpy()
-        )  # Nf X 3
-
-        obj_verts_list = torch.stack(obj_verts_list)[0]  # T X Nv' X 3
-        obj_faces_list = np.asarray(obj_faces_list)[0]  # Nf X 3
-
-        actual_len_list = np.asarray(actual_len_list)[0]  # scalar value
-
-        return (
-            human_trans_list,
-            human_rot_list,
-            human_jnts_list,
-            human_verts_list,
-            human_faces_list,
-            obj_verts_list,
-            obj_faces_list,
-            actual_len_list,
-        )
 
 def run_train(opt, device):
     # Prepare Directories
@@ -1506,7 +1219,7 @@ def parse_opt():
         default="random",
         choices=["random", "sequential"],
         help="Window sampling mode: random (better performance) or sequential",
-    )    
+    )
     parser.add_argument(
         "--use_velocity",
         action="store_true",
@@ -1517,14 +1230,16 @@ def parse_opt():
         "--use_rerun", action="store_true", help="Use Rerun for real-time visualization"
     )
     parser.add_argument(
-            "--use_wandb", action="store_true", help="Use wandb for logging"
+        "--use_wandb", action="store_true", help="Use wandb for logging"
     )
 
     parser.add_argument("--train_num_steps", type=int, default=1_000_000)
     parser.add_argument("--vis_every", type=int, default=1000)
     parser.add_argument("--eval_every", type=int, default=1000)
 
-    parser.add_argument("--use_constant_noise", action="store_true", help="Use constant noise")
+    parser.add_argument(
+        "--use_constant_noise", action="store_true", help="Use constant noise"
+    )
 
     opt = parser.parse_args()
     return opt
