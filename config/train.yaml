@@ -1,0 +1,31 @@
+# @package _global_
+
+# specify here default configuration
+# order of defaults determines the order in which configs override each other
+defaults:
+  - _self_
+  - data: hot3d_mini.yaml
+  - paths: move.yaml
+  - hydra: default.yaml
+  - experiment: multi_overfit
+
+
+# task name, determines output directory path
+task_name: ${expname}
+expname: ft
+exp_dir: ${paths.output_dir}/${expname}
+log: wandb
+
+
+# set False to skip model training
+train: True
+
+# evaluate on test set, using best model weights achieved during training
+# lightning chooses best weights based on the metric specified in checkpoint callback
+test: False
+
+# simply provide checkpoint path to resume training
+ckpt_path: null
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: null

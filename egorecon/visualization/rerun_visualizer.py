@@ -21,7 +21,6 @@ class RerunVisualizer:
         mano_models_dir="data/mano_models",
         object_mesh_dir="data/object_meshes",
         use_hand_articulations=False,
-        hand_articulations_path="data/hand_articulations.pkl",
     ):
         """Initialize visualizer"""
         self.exp_name = exp_name
@@ -30,7 +29,6 @@ class RerunVisualizer:
         self.mano_models_dir = Path(mano_models_dir)
         self.object_mesh_dir = Path(object_mesh_dir)
         self.use_hand_articulations = use_hand_articulations
-        self.hand_articulations_path = Path(hand_articulations_path)
 
         self.rerun_dir = None
         self.left_mano = None

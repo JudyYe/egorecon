@@ -83,7 +83,6 @@ class HandToObjectDataset(Dataset):
         data_path,
         is_train=False,
         window_size=120,
-        use_velocity=False,  # Use 12D format (pos + vel + rot) vs 9D (pos + rot) - default is 9D
         single_demo=None,  # For overfitting: specify demo_id
         single_object=None,  # For overfitting: specify object_id
         motion_threshold=0.005,  # Threshold for considering motion vs stationary
@@ -99,13 +98,15 @@ class HandToObjectDataset(Dataset):
         noise_std_mano_body_rot=0.0,
         noise_std_mano_trans=0.0,
         noise_std_mano_betas=0.0,
+        traj_std_obj_rot=0.0,
+        traj_std_obj_trans=0.0,
+        use_constant_noise=False,
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
     ):
         self.is_train = is_train
         self.data_path = data_path
         self.window_size = window_size
-        self.use_velocity = use_velocity
         self.motion_threshold = motion_threshold
         self.sampling_strategy = sampling_strategy
         self.min_motion_frames = min_motion_frames
@@ -115,7 +116,7 @@ class HandToObjectDataset(Dataset):
         self.split_seed = split_seed
         self.opt = opt
 
-        self.mano_model_path = "/move/u/yufeiy2/pretrain/body_models/mano_v1_2/models"
+        self.mano_model_path =  opt.paths.mano_dir
         self.sided_mano_models = {
             "left": smplx.create(
                 os.path.join(self.mano_model_path, "MANO_LEFT.pkl"),
@@ -141,7 +142,7 @@ class HandToObjectDataset(Dataset):
         # Filter for single demo/object if specified (for overfitting)
         if single_demo or single_object:
             self.processed_data = self._filter_data(
-                single_demo, single_object.split(",")
+                single_demo, single_object.split("+")
             )
             print(
                 f"Filtered to demo: {single_demo} object: {single_object}, total: {len(self.processed_data)} demonstrations for overfitting"
@@ -168,7 +169,10 @@ class HandToObjectDataset(Dataset):
             "betas": noise_std_mano_betas,
             "object_rot": noise_std_obj_rot,
             "object_trans": noise_std_obj_trans,
+            'traj_rot': traj_std_obj_rot,
+            'traj_trans': traj_std_obj_trans,
         }
+        self.use_constant_noise = use_constant_noise
         self.noise_scheme = noise_scheme
 
     def _filter_data(self, single_demo=None, single_object=None):
@@ -185,8 +189,8 @@ class HandToObjectDataset(Dataset):
             else:
                 obj_list = list(self.processed_data[seq]["objects"].keys())
 
-            if self.opt.one_window:
-                t0 = self.opt.t0
+            if self.opt.datasets.one_window:
+                t0 = self.opt.datasets.t0
                 t1 = t0 + 120
             else:
                 t0 = 0
@@ -831,17 +835,17 @@ class HandToObjectDataset(Dataset):
             )
 
             # add a constatn random translation noise to object traj
-            if self.opt.use_constant_noise:
+            if self.use_constant_noise:
                 transl_noise = np.random.normal(
                     loc=0.0,
-                    scale=self.noise_std_params_dict["object_trans"],
+                    scale=self.noise_std_params_dict["traj_trans"],
                     size=(1, transl_noisy.shape[-1]),
                 )
                 transl_noisy = transl_noisy + transl_noise
 
                 rot_noise = np.random.normal(
                     loc=0.0,
-                    scale=self.noise_std_params_dict["object_rot"],
+                    scale=self.noise_std_params_dict["traj_rot"],
                     size=(1, rot_euler_noisy.shape[-1]),
                 )
                 rot_euler_noisy = rot_euler_noisy + rot_noise
@@ -907,7 +911,6 @@ class HandToObjectDataset(Dataset):
 def create_hand_to_object_dataset(
     data_path,
     window_size=120,
-    use_velocity=False,
     single_demo=None,
     single_object=None,
     motion_threshold=0.01,
@@ -934,7 +937,6 @@ def create_hand_to_object_dataset(
     return HandToObjectDataset(
         data_path=data_path,
         window_size=window_size,
-        use_velocity=use_velocity,
         single_demo=single_demo,
         single_object=single_object,
         motion_threshold=motion_threshold,

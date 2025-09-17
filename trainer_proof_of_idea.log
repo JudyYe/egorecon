@@ -1,0 +1,9 @@
+[2025-09-17 15:21:24,703][numexpr.utils][INFO] - Note: detected 128 virtual cores but NumExpr set to maximum of 64, check "NUMEXPR_MAX_THREADS" environment variable.
+[2025-09-17 15:21:24,703][numexpr.utils][INFO] - Note: NumExpr detected 128 cores but "NUMEXPR_MAX_THREADS" not set, so enforcing safe limit of 16.
+[2025-09-17 15:21:24,703][numexpr.utils][INFO] - NumExpr defaulting to 16 threads.
+[2025-09-17 15:29:02,116][numexpr.utils][INFO] - Note: detected 128 virtual cores but NumExpr set to maximum of 64, check "NUMEXPR_MAX_THREADS" environment variable.
+[2025-09-17 15:29:02,116][numexpr.utils][INFO] - Note: NumExpr detected 128 cores but "NUMEXPR_MAX_THREADS" not set, so enforcing safe limit of 16.
+[2025-09-17 15:29:02,116][numexpr.utils][INFO] - NumExpr defaulting to 16 threads.
+[2025-09-17 15:30:04,863][numexpr.utils][INFO] - Note: detected 128 virtual cores but NumExpr set to maximum of 64, check "NUMEXPR_MAX_THREADS" environment variable.
+[2025-09-17 15:30:04,863][numexpr.utils][INFO] - Note: NumExpr detected 128 cores but "NUMEXPR_MAX_THREADS" not set, so enforcing safe limit of 16.
+[2025-09-17 15:30:04,864][numexpr.utils][INFO] - NumExpr defaulting to 16 threads.

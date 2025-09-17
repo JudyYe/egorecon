@@ -1,5 +1,15 @@
 python -m  scripts.view_foundation_pose --num 540
 
+
+
+python -m egorecon.training.trainer_proof_of_idea    \
+ expname=dev/tmp \
+ general.rerun=True        \
+ data.demo_id=P0001_624f2ba9   data.target_object_id=96945373046044+253405647833885+225397651484143  \
+ datasets.one_window=True  \
+ datasets.augument.use_constant_noise=True 
+
+
 # overfit spoon
 python src/training/trainer_hand_to_object_diffusion_overfit.py   \
   --demo_id P0001_624f2ba9     \

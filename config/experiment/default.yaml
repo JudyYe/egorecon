@@ -1,0 +1,46 @@
+# @package _global_
+
+general: 
+  rerun: false
+  wandb: false
+  train_num_steps: 1_000_000
+  vis_every: 1000
+  eval_every: 1000
+  save_and_sample_every: 40000
+
+train:
+  lr: 1e-4
+  batch_size: 32
+  ema_decay: 0.995
+  step_start_ema: 2000
+  ema_update_every: 10
+
+
+model: 
+  window: 120
+  n_dec_layers: 4
+  n_head: 4
+  d_k: 256
+  d_v: 256
+  d_model: 512
+  objective: pred_x0
+
+datasets:
+  t0: 0
+  one_window: false
+  noise_scheme: syn
+  split: mini
+  test_split: mini
+
+  augument:
+    noise_std_obj_rot: 2
+    noise_std_obj_trans: 0.1
+    noise_std_mano_global_rot: 2
+    noise_std_mano_body_rot: 2
+    noise_std_mano_trans: 0.1
+    noise_std_mano_betas: 0.2
+
+    use_constant_noise: true
+    traj_std_obj_rot: 2
+    traj_std_obj_trans: 0.3
+
