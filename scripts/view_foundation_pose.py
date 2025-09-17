@@ -1,4 +1,5 @@
 
+
 # hand: {side}_theta: (3aa+3tsl+pcax15)
 # hand: {side}_shape: (10,)
 
@@ -6,6 +7,7 @@
 # [] save only center point in camera frame, with camera 
 # [] FP: check and reinitialize. 
 # [] handle missing frame 
+import plotly.graph_objects as go
 import subprocess
 import json
 import logging
@@ -188,6 +190,7 @@ class PoseWrapper:
 
         self.alpha = alpha
         mesh = as_mesh(trimesh.load(mesh_file))
+        self.uid = mesh_file.split('/')[-1].split('.')[0]
 
         scorer = ScorePredictor()
         refiner = PoseRefinePredictor()
@@ -293,7 +296,8 @@ class PoseWrapper:
         )
         return pose
 
-    def process_check_mask(self, mask):
+    @staticmethod
+    def process_check_mask(mask):
         # if mask is at the edge of the image (suggest truncation), return False
         # otherwise, erode it and return the eroded mask
         mask = mask.astype(np.uint8) * 255
@@ -352,6 +356,9 @@ class PoseWrapper:
             img = self.read_image(img)
             if self.need_init:
                 pose = self.register_one(img, intrinsic, self.mask_list[i][0].copy())
+                fname = f'outputs/register_{i}_{self.uid}'
+                imageio.imwrite(fname + '_mask.png', cv2.resize(self.mask_list[i][0].copy() * 255, (256, 256)))
+                imageio.imwrite(fname + '_image.png', cv2.resize(img, (256, 256)))
                 self.need_init = False
             else:
                 pose = self.track_one(img, intrinsic)
@@ -580,7 +587,7 @@ class HOT3DLoader:
 
 @torch.no_grad()
 def get_all_masks(seq="P0001_624f2ba9", max_T=240, num=-1, **kwargs):
-    set_device()
+    # set_device()
     video_dir = osp.join(root_dir, "pred_pose", seq, "images")
     frame_names = sorted(glob(osp.join(video_dir, "*.jpg")))
     bbox_list = pickle.load(
@@ -589,50 +596,51 @@ def get_all_masks(seq="P0001_624f2ba9", max_T=240, num=-1, **kwargs):
     if num > 0:
         frame_names = frame_names[:num]
         
-    total_frames = len(frame_names)
-    print(f"Total frames: {total_frames}, max_T: {max_T}")
+    # total_frames = len(frame_names)
+    # print(f"Total frames: {total_frames}, max_T: {max_T}")
     
-    # Initialize SAM2 predictor once (this takes time)
-    print("Initializing SAM2 predictor...")
-    predictor = build_sam2_video_predictor_hf('facebook/sam2-hiera-large', device=device)
-    inference_state = predictor.init_state(
-        video_path=video_dir, 
-        async_loading_frames=True, 
-        offload_video_to_cpu=True, 
-        offload_state_to_cpu=True
-    )
-    print("SAM2 predictor initialized successfully!")
+    # # Initialize SAM2 predictor once (this takes time)
+    # print("Initializing SAM2 predictor...")
+    # predictor = build_sam2_video_predictor_hf('facebook/sam2-hiera-large', device=device)
+    # inference_state = predictor.init_state(
+    #     video_path=video_dir, 
+    #     async_loading_frames=True, 
+    #     offload_video_to_cpu=True, 
+    #     offload_state_to_cpu=True
+    # )
+    # print("SAM2 predictor initialized successfully!")
     
-    # If video is shorter than max_T, process normally
-    if total_frames <= max_T:
-        video_segments = process_video_chunk(
-            predictor, inference_state, video_dir, bbox_list, frame_names, start_frame=0, end_frame=total_frames
-        )
-    else:
-        # Split video into chunks and process each separately
-        video_segments = {}
-        chunk_idx = 0
+    # # If video is shorter than max_T, process normally
+    # if total_frames <= max_T:
+    #     video_segments = process_video_chunk(
+    #         predictor, inference_state, video_dir, bbox_list, frame_names, start_frame=0, end_frame=total_frames
+    #     )
+    # else:
+    #     # Split video into chunks and process each separately
+    #     video_segments = {}
+    #     chunk_idx = 0
         
-        for start_frame in range(0, total_frames, max_T):
-            end_frame = min(start_frame + max_T, total_frames)
-            print(f"Processing chunk {chunk_idx}: frames {start_frame} to {end_frame-1}")
+    #     for start_frame in range(0, total_frames, max_T):
+    #         end_frame = min(start_frame + max_T, total_frames)
+    #         print(f"Processing chunk {chunk_idx}: frames {start_frame} to {end_frame-1}")
             
-            chunk_segments = process_video_chunk(
-                predictor, inference_state, video_dir, bbox_list, frame_names, start_frame, end_frame
-            )
+    #         chunk_segments = process_video_chunk(
+    #             predictor, inference_state, video_dir, bbox_list, frame_names, start_frame, end_frame
+    #         )
             
-            # Merge chunk results into main video_segments
-            for frame_idx, frame_data in chunk_segments.items():
-                video_segments[frame_idx] = frame_data
+    #         # Merge chunk results into main video_segments
+    #         for frame_idx, frame_data in chunk_segments.items():
+    #             video_segments[frame_idx] = frame_data
             
-            chunk_idx += 1
+    #         chunk_idx += 1
     
-    print(f"Final video_segments keys: {sorted(video_segments.keys())}")
+    # print(f"Final video_segments keys: {sorted(video_segments.keys())}")
     
-    to_save = segments2save(video_segments, bbox_list)
+    # to_save = segments2save(video_segments, bbox_list)
     fname = osp.join(root_dir, "pred_pose", seq, "video_segments.pkl")
-    with open(fname, "wb") as f:
-        pickle.dump(to_save, f)
+
+    # with open(fname, "wb") as f:
+    #     pickle.dump(to_save, f)
 
     with open(fname, "rb") as f:
         video_segments = pickle.load(f)
@@ -710,8 +718,10 @@ def segments2save(video_segments, bbox_list):
 
 
 def vis_sam2(frame_names, save, bbox_list, save_dir):
-    vis_frame_stride = 3
+    vis_frame_stride = 1
     os.makedirs(save_dir, exist_ok=True)
+    cmd = 'rm -rf ' + save_dir + '/*.png'
+    os.system(cmd)
     for i, out_frame_idx in enumerate(range(0, len(frame_names), vis_frame_stride)):
         plt.close("all")
         plt.figure(figsize=(6, 4))
@@ -722,7 +732,7 @@ def vis_sam2(frame_names, save, bbox_list, save_dir):
         W, H = image.size
         plt.imshow(image)
         for out_obj_id, preds in save.items():
-            show_mask(preds['mask'][out_frame_idx], plt.gca(), obj_id=out_obj_id, random_color=True)
+            show_mask(preds['mask'][out_frame_idx], plt.gca(), obj_id=out_obj_id, random_color=False)
         # if video_segments is not None and out_frame_idx in video_segments:
         #     for out_obj_id, out_mask in video_segments[out_frame_idx].items():
         #         show_mask(out_mask, plt.gca(), obj_id=out_obj_id, random_color=True)
@@ -760,7 +770,7 @@ def show_mask(mask, ax, obj_id=None, random_color=False):
     else:
         cmap = plt.get_cmap("tab10")
         cmap_idx = 0 if obj_id is None else obj_id
-        color = np.array([*cmap(cmap_idx)[:3], 0.6])
+        color = np.array([*cmap(cmap_idx % 10)[:3], 0.6])
     h, w = mask.shape[-2:]
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
     ax.imshow(mask_image)
@@ -887,18 +897,33 @@ def esitimate_alpha(seq="P0001_624f2ba9", pose_wrapper=None):
 
     return np.median(alpha_list), pose_wrapper
 
-def vis_meta(seq="P0001_624f2ba9", num=-1, **kwargs):
+def vis_meta(seq="P0001_624f2ba9", num=-1, pred='fp', **kwargs):
+    image_list = sorted(glob(osp.join(root_dir, "pred_pose", seq, "images", "*.jpg")))
+    image_list = image_list[:num]
+    # image_list = [imageio.imread(image) for image in image_list]
+    # mp4_file = 'outputs/vis_meta_image.mp4'
+    # imageio.mimsave(mp4_file, image_list)
+
+    
     meta_file = osp.join(root_dir, "pred_pose", seq, "meta.pkl")
     intrinsic_file = osp.join(root_dir, "pred_pose", seq, "intrinsic.pkl")
     meta = pickle.load(open(meta_file, "rb"))
     intrinsic = pickle.load(open(intrinsic_file, "rb"))
 
-    pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
-    uid2pred = {}
-    for pred_file in pred_list:
+    if pred == 'fp':
+        pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
+        name2pred = {}
+        for pred_file in pred_list:
+            with open(pred_file, 'rb') as f:
+                data = pickle.load(f)
+            name2pred[pred_file.split('/')[-2]] = data
+    elif pred == '3d':
+        pred_file = osp.join(root_dir, "pred_pose", seq, "pose_3d.pkl")
         with open(pred_file, 'rb') as f:
-            data = pickle.load(f)
-        uid2pred[pred_file.split('/')[-2]] = data
+            save_dict = pickle.load(f)  # {uid: {"cTo": [...], "valid": [...]}}
+        name2pred = {uid2name[int(uid)]: save_dict[uid] for uid in save_dict.keys()}
+    else:
+        raise ValueError(f"Unknown pred: {pred}")
     
     T_w_o = meta['T_w_o']
     T_w_c = meta['T_w_c']
@@ -906,39 +931,87 @@ def vis_meta(seq="P0001_624f2ba9", num=-1, **kwargs):
     fx, fy, cx, cy = intrinsic
     W, H = cx * 2, cy * 2
     rr.init("vis_meta")
-    rr.save("outputs/vis_meta.rrd")
-    log_list_of_camera_poses(T_w_c, W, H, fx, name='world/camera')
+    rr.save(f"outputs/vis_meta_{pred}.rrd")
+    # log_list_of_camera_poses(T_w_c[:num], W, H, fx, name='world/camera')
 
     sided_wrapper = {}
     for side in ['left', 'right']:
         sided_wrapper[side] = hand_utils.ManopthWrapper(mano_model_folder, side=side, )
-
+    
     if num < 0:
         num = len(T_w_o)
+    # fig = go.Figure()
+    # # draw position for each object
+    # for name in name2pred:
+    #     cTo = name2pred[name]['cTo']
+    #     valid = np.array(name2pred[name]['valid'])[:num]
+    #     wTc = np.array(T_w_c)[:num]
+    #     wTo = wTc @ np.array(cTo)[:num]
+    #     wTo_pos = wTo[..., :3, 3]
+    #     wTo_pos = wTo_pos * valid[..., None]
+    #     fig.add_trace(go.Scatter3d(
+    #         x=wTo_pos[:, 0],
+    #         y=wTo_pos[:, 1],
+    #         z=wTo_pos[:, 2],
+    #         mode='markers',
+    #         name=f'{name}_pred',
+    #     ))
+    #     # find gt
+    #     wTo_gt = []
+    #     name2uid = {v: k for k, v in uid2name.items()}
+    #     for t in range(num):
+    #         wTo_gt.append(T_w_o[t][str(name2uid[name])])
+    #     wTo_gt = np.array(wTo_gt)
+    #     wTo_gt_pos = wTo_gt[..., :3, 3]
+    #     print(wTo_gt_pos.shape)
+    #     fig.add_trace(go.Scatter3d(
+    #         x=wTo_gt_pos[:, 0],
+    #         y=wTo_gt_pos[:, 1],
+    #         z=wTo_gt_pos[:, 2],
+    #         mode='markers',
+    #         name=f'{name}_gt',
+    #     ))
+    # fig.write_html('outputs/vis_meta.html')
+    
     for t in range(num):
         rr.set_time_sequence("frame", t)
+        pose = T_w_c[t]
+        focal_length = intrinsic[0]
+        if t == 0:
+            rr.log("world/camera", rr.Pinhole(
+                width=W,
+                height=H,
+                focal_length=float(focal_length),
+            ))
+        rr.log("world/camera", rr.Transform3D(
+            translation=pose[:3, 3],
+            rotation=rr.Quaternion(xyzw=Rotation.from_matrix(pose[:3, :3]).as_quat())
+        ))        
         for uid in T_w_o[t].keys():
             mesh_file = osp.join(root_dir, "assets", f"{uid}.glb")
 
-            rr.log(f"world/object_pose/{uid}", rr.Asset3D(
-                path=mesh_file,
-            ))
+            if t == 0:
+                rr.log(f"world/object_pose/{uid}", rr.Asset3D(
+                    path=mesh_file,
+                ))
             rr.log(f"world/object_pose/{uid}", rr.Transform3D(
                 translation=T_w_o[t][uid][:3, 3],
                 rotation=rr.Quaternion(xyzw=Rotation.from_matrix(T_w_o[t][uid][:3, :3]).as_quat())
             ))
-            if uid in uid2pred:
-                if uid2pred[uid]['valid'][t] is False:
+            if uid2name[int(uid)] in name2pred:
+                if not name2pred[uid2name[int(uid)]]['valid'][t]:
                     pass
-                cTo = uid2pred[uid]['cTo'][t]
-                wTc = np.linalg.inv(T_w_c[t])
+                cTo = name2pred[uid2name[int(uid)]]['cTo'][t]
+                # wTc = np.linalg.inv(T_w_c[t])
+                wTc = T_w_c[t]
                 wTo = wTc @ cTo
+                if t == 0:
+                    rr.log(f"world/object_pose_pred/{uid}", rr.Asset3D(
+                        path=mesh_file,
+                    ))
                 rr.log(f"world/object_pose_pred/{uid}", rr.Transform3D(
                     translation=wTo[:3, 3],
                     rotation=rr.Quaternion(xyzw=Rotation.from_matrix(wTo[:3, :3]).as_quat())
-                ))
-                rr.log(f"world/object_pose_pred/{uid}", rr.Asset3D(
-                    path=mesh_file,
                 ))
         
         # hand pose
@@ -966,8 +1039,99 @@ def vis_meta(seq="P0001_624f2ba9", num=-1, **kwargs):
                 vertex_positions=vertices,
                 triangle_indices=faces,
             ))
-
     return 
+
+
+@torch.no_grad()
+def run_mono_depth(
+    seq="P0001_624f2ba9",
+    save_index=None,
+    num=-1,
+    vis_rr=False,
+    vis_plt=False,
+    strategy='median',
+    **kwargs,
+):
+    video_segments = pickle.load(
+        open(osp.join(root_dir, "pred_pose", seq, "video_segments.pkl"), "rb")
+    )
+    uid_list = list(video_segments.keys())
+    for uid in uid_list:
+        print(uid, len(video_segments[uid]['mask']))
+
+    depth_model = UniDepthWrapper()
+
+    intrinsic = pickle.load(
+        open(osp.join(root_dir, "pred_pose", seq, "intrinsic.pkl"), "rb")
+    )
+    image_list = sorted(glob(osp.join(root_dir, "pred_pose", seq, "images", "*.jpg")))
+    if num > 0:
+        image_list = image_list[:num]
+
+    # Initialize dicts for each uid
+    cTo_dict = {uid: [] for uid in uid_list}
+    valid_dict = {uid: [] for uid in uid_list}
+
+    # Re-run the above loop, but append to dicts instead of flat lists
+    for t, image in enumerate(tqdm(image_list)):
+        image = imageio.imread(image)
+        depth, prediction = depth_model(image, intrinsic)
+        cPoints = prediction['points']
+            
+        for uid in uid_list:
+            mask = video_segments[uid]['mask'][t][0]
+            # print(mask.shape, mask.sum())
+            mask = PoseWrapper.process_check_mask(mask)
+            if mask is False:
+                # print(f"Object {uid} is not detected / truncated in this frame.")
+                cTo = np.eye(4)
+                cTo_dict[uid].append(cTo)
+                valid_dict[uid].append(False)
+                continue
+
+            mask = torch.from_numpy(mask).to(cPoints.device)[None, None]  # (1, 1, H, W)
+            mask_exp = mask.repeat(1, 3, 1, 1)
+            obj_points = cPoints[mask_exp]  # (P, 3)
+            if obj_points.numel() == 0:
+                print(f"No valid points for object {uid} in this frame.")
+                cTo = np.eye(4)
+                cTo_dict[uid].append(cTo)
+                valid_dict[uid].append(False)
+                continue
+            obj_points = obj_points.detach().cpu().numpy().reshape(3, -1).T  # (P, 3)
+            if strategy == 'median':
+                median_xyz = np.median(obj_points, axis=0)
+                print(f"Object {uid} median 3D position: {median_xyz}")
+                cObj = median_xyz
+            elif strategy == 'mean':
+                mean_xyz = np.mean(obj_points, axis=0)
+                print(f"Object {uid} mean 3D position: {mean_xyz}")
+                cObj = mean_xyz
+            else:
+                print(f"Unknown strategy: {strategy}")
+                raise ValueError(f"Unknown strategy: {strategy}")
+            cTo = np.eye(4)
+            cTo[:3, 3] = cObj
+            cTo_dict[uid].append(cTo)
+            valid_dict[uid].append(True)
+            if t == 99 and int(uid) == 194930206998778:
+                # save mask, save 
+                imageio.imwrite(f'outputs/image_{t}_{uid}.png', image)
+                imageio.imwrite(f'outputs/mask_{t}_{uid}.png', mask.cpu().numpy()[0, 0].astype(np.uint8) * 255)
+
+    # Save the results in the same format as run_foundation_pose, but to pose_3d.pkl
+    save_dict = {}
+    for uid in uid_list:
+        save_dict[uid] = {
+            "cTo": cTo_dict[uid],
+            "valid": valid_dict[uid]
+        }
+
+    save_path = os.path.join(root_dir, "pred_pose", seq, "pose_3d.pkl")
+    with open(save_path, "wb") as f:
+        pickle.dump(save_dict, f)
+    print(f"Saved 3D pose results to {save_path}")
+    
 
 @torch.no_grad()
 def run_foundation_pose(
@@ -1060,10 +1224,10 @@ def run_foundation_pose(
                     translation=translation,
                     rotation=rr.Quaternion(xyzw=quaternion)
                 ))
-                
-                rr.log("world/object_pose", rr.Asset3D(
-                    path=mesh_file,
-                ))
+                if i == 0:                
+                    rr.log("world/object_pose", rr.Asset3D(
+                        path=mesh_file,
+                    ))
 
                 rotation = Rotation.from_matrix(pose_gt_list[i][:3, :3])
                 quaternion = rotation.as_quat()
@@ -1455,51 +1619,96 @@ def debug_pose():
         ))
         
 
-    
 
-def debug_space():
-    
-    # # TODO
-    # inp_file = '/move/u/yufeiy2/data/HOT3D/pred_pose/P100/video_segments.pkl'
 
-    # with open(inp_file, 'rb') as f:
-    #     data = pickle.load(f)
-    
+def load_pickle(path):
+    """Load and return the object stored in a pickle file."""
+    # with open(path, "rb") as f:
+    #     return pickle.load(f)
+    data = np.load(path, allow_pickle=True)
+    data = dict(data)
+    uid_list = data["objects"]
+    data.pop("objects")
+    processed_data = {}
+    objects = {}
+    for uid in uid_list:
+        uid = str(uid)
+        objects[uid] = {}
+        for k in data.keys():
+            if k.startswith(f"obj_{uid}"):
+                new_key = k.replace(f"obj_{uid}_", "")
+                objects[uid][new_key] = data[k]
+        # get wTo_shelf
+        cTo_shelf = objects[uid]['cTo_shelf']
+        wTc = data['wTc']
+        # cTw = np.linalg.inv(wTc)  
+        wTo_shelf = wTc @ cTo_shelf
+        objects[uid]['wTo_shelf'] = wTo_shelf
 
-    # # use savez_compressed to save the data, which is a nested dict
-    # # data: {
-    # #   'uid': {
-    # #     'bbox': (T, 4)
-    # #     'mask': (T, H, W)
-    # #     'frame_idx': (T,)
-    # #     'valid_box': (T,)
-    # #     'valid_mask': (T,)
-    # #   }, 
-    # #   ...
-    # # }
-    # # Flatten the nested dict and save as a compressed npz file for easy loading in other scripts
-    # out_file = '/move/u/yufeiy2/data/HOT3D/pred_pose/video_segments_flattened.npz'
-    # flat_data = {}
-    # for uid, entry in data.items():
-    #     for key, value in entry.items():
-    #         flat_data[f"{uid}_{key}"] = value
-    # np.savez_compressed(out_file, **flat_data)
-    # print(f"Saved flattened data to {out_file}")
+    processed_data["left_hand"] = {}
+    processed_data["right_hand"] = {}
+    for k in data:
+        if not k.startswith("obj_"):
+            if k.startswith("left_hand"):
+                processed_data["left_hand"][k.replace("left_hand_", "")] = data[k]
+            elif k.startswith("right_hand"):
+                processed_data["right_hand"][k.replace("right_hand_", "")] = data[k]
+            else:
+                processed_data[k] = data[k]
 
-    # # print staorgae on disk
-    # print(f'Storage on disk: npz {os.path.getsize(out_file)/1024/1024} MB')
-    # print(f'Storage on disk: pkl {os.path.getsize(inp_file)/1024/1024} MB')
+    processed_data["objects"] = objects
+    seq_index = osp.basename(path).split(".")[0]
 
-    # # load and output those field
-    # with open(inp_file, 'rb') as f:
-    #     data_copy = pickle.load(f)
-    # for k, v in data_copy.items():
-    #     k = str(k)
-    #     print(f"\nObject {k}:")
-    #     print(f"  {k}: {data_copy[k].shape if hasattr(data_copy[k], 'shape') else type(data_copy[k])}")
-    return 
+    return {seq_index: processed_data}
 
-def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1):
+
+def vis_mini_dataset(data_file):
+    data = load_pickle(data_file)
+    seq = osp.basename(data_file).split(".")[0]
+    key = list(data.keys())[0]
+    data = data[key]
+
+    rr.init(f"vis_mini_dataset_{seq}")
+    rr.save(f"outputs/vis_mini_dataset_{seq}.rrd")
+
+    # draw camera, draw objects, draw hands
+    for t in range(len(data['wTc'])):
+        rr.set_time_sequence("frame", t)
+        if t == 0:
+            rr.log("world/camera", rr.Pinhole(
+                width=data['intrinsic'][0],
+                height=data['intrinsic'][1],
+                focal_length=data['intrinsic'][0],
+            ))
+
+        rr.log("world/camera", rr.Transform3D(
+            translation=data['wTc'][t][:3, 3],
+            rotation=rr.Quaternion(xyzw=Rotation.from_matrix(data['wTc'][t][:3, :3]).as_quat())
+        ))
+        for uid in data['objects']:
+            if t == 0:
+
+                rr.log(f"world/objects/{uid}", rr.Asset3D(
+                    path=osp.join(root_dir, "assets", f"{uid}.glb")
+                ))
+                rr.log(f"world/objects_pred/{uid}", rr.Asset3D(
+                    path=osp.join(root_dir, "assets", f"{uid}.glb")
+                ))
+                
+            rr.log(f"world/objects/{uid}", rr.Transform3D(
+                translation=data['objects'][uid]['wTo'][t][:3, 3],
+                rotation=rr.Quaternion(xyzw=Rotation.from_matrix(data['objects'][uid]['wTo'][t][:3, :3]).as_quat())
+            ))
+            if data['objects'][uid]['shelf_valid'][t]:
+                # use wTo_shelf
+                wTo_pred = data['objects'][uid]['wTo_shelf'][t]
+                rr.log(f"world/objects_pred/{uid}", rr.Transform3D(
+                    translation=wTo_pred[:3, 3],
+                    rotation=rr.Quaternion(xyzw=Rotation.from_matrix(wTo_pred[:3, :3]).as_quat())
+                ))
+        
+
+def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
     # format: 
     # "objects": ['uid1', 'uid2', ...], 
     # "left_hand_theta": [T, 3+3+15], 3aa+3tsl+pcax15
@@ -1513,9 +1722,20 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1):
     # "uid{i}_wTo": [T, 4, 4],
     # "uid{i}_gt_valid": [T, ],
 
-
     meta_file = osp.join(root_dir, "pred_pose", seq, "meta.pkl")
-    pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
+    if pred == 'fp':
+        pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
+        uid2pred = {}
+        
+        for pred_file in pred_list:
+            name = pred_file.split('/')[-2]
+            with open(pred_file, 'rb') as f:
+                data = pickle.load(f)
+            uid2pred[name2uid[name]] = data
+    elif pred == '3d':
+        pred_file = osp.join(root_dir, "pred_pose", seq, "pose_3d.pkl")
+        with open(pred_file, 'rb') as f:
+            uid2pred = pickle.load(f)
     intrinsic_file = osp.join(root_dir, "pred_pose", seq, "intrinsic.pkl")
     
     with open(meta_file, 'rb') as f:
@@ -1523,9 +1743,8 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1):
     with open(intrinsic_file, 'rb') as f:
         intrinsic = pickle.load(f)
 
-    name2uid = {v: k for k, v in uid2name.items()}
     data = {}
-    data['objects'] = [name2uid[e.split('/')[-2]] for e in pred_list]
+    data['objects'] = list(uid2pred.keys())
     for key in ['left_hand_theta', 'left_hand_shape', 'right_hand_theta', 'right_hand_shape']:
         data[key] = meta[key]
     
@@ -1535,9 +1754,7 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1):
 
     data['wTc'] = meta['T_w_c']
     for uid in data['objects']:
-        pred_file = osp.join("outputs", seq, f"{uid2name[uid]}/pose.pkl")
-        with open(pred_file, 'rb') as f:
-            shelf = pickle.load(f)
+        shelf = uid2pred[uid]
         for t in range(len(shelf['cTo'])):
             if shelf['cTo'][t] is None:
                 print('cTo is None at frame', t)
@@ -1554,10 +1771,13 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1):
             data[k] = data[k][:num]
         print(k, data[k].shape)
     
-    save_file = osp.join(root_dir, "pred_pose", f"mini_{seq}")
+    save_file = osp.join(root_dir, "pred_pose", f"mini_{seq}_{pred}")
     np.savez_compressed(save_file, **data)
     print(f"Saved mini dataset to {save_file}")
-    return 
+    
+
+
+
     
 depth_zero = True
 zero_depth = 0
@@ -1575,16 +1795,20 @@ if __name__ == "__main__":
 
     library = json.load(open(osp.join(root_dir, "assets", "instance.json"), "r"))
     uid2name = {int(k): v['instance_name'] for k, v in library.items()}
+    name2uid = {v: k for k, v in uid2name.items()}
     # Fire(save_one)
-    # Fire(vis_meta)
-
-    Fire(make_a_mini_dataset)
+    
     # Fire(get_all_masks)
     # save_one_gt()
     # alpha = 1 # 0.6  # this works for cube
     # Fire(run_foundation_pose)
-    
+    # Fire(run_mono_depth)
     # Fire(esitimate_alpha)
+
+    # Fire(vis_meta)
+    
+    # Fire(make_a_mini_dataset)
+    Fire(vis_mini_dataset)
 
 
     # run_foundation_pose(save_index='demo_alpha1')

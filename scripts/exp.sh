@@ -1,3 +1,4 @@
+python -m  scripts.view_foundation_pose --num 540
 
 # overfit spoon
 python src/training/trainer_hand_to_object_diffusion_overfit.py   \
