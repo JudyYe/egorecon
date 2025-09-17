@@ -1,0 +1,6 @@
+[submodule "hot3d"]
+	path = hot3d
+	url = git@github.com:JudyYe/hot3d.git
+[submodule "FoundationPose"]
+	path = FoundationPose
+	url = git@github.com:JudyYe/FoundationPose.git
