@@ -727,7 +727,6 @@ def vis_sam2(frame_names, save, bbox_list, save_dir):
         plt.figure(figsize=(6, 4))
         plt.title(f"frame {out_frame_idx}")
         image = Image.open(osp.join(f"{frame_names[out_frame_idx]}"))
-        print(f'vis frame {out_frame_idx}', 'image', frame_names[out_frame_idx])
         # import pdb; pdb.set_trace()
         W, H = image.size
         plt.imshow(image)
@@ -777,8 +776,29 @@ def show_mask(mask, ax, obj_id=None, random_color=False):
 
 
 def batch_save_one(decode_image=False):
+    splits = json.load(open(osp.join(root_dir, 'sets', 'split.json'), 'r'))
+    seq_list = []
+    for split in splits.values():
+        seq_list.extend(split)
+    
+    for seq in tqdm(seq_list):
+        lock_file = osp.join(root_dir, 'locks.gt', seq,)
+        done_file = osp.join(root_dir, 'done.gt', seq, )
 
-    return 
+        if osp.exists(done_file):
+            continue
+        try:
+            os.makedirs(lock_file)
+        except FileExistsError:
+            continue
+
+        save_one(seq, num=-1, decode_image=decode_image)
+
+        os.makedirs(done_file)
+        os.rmdir(lock_file)
+
+
+
 def save_one(seq="P0001_624f2ba9", num=-1, decode_image=True):
     root_data = root_dir
     seq_dir = osp.join(root_data, seq)
@@ -789,6 +809,7 @@ def save_one(seq="P0001_624f2ba9", num=-1, decode_image=True):
     )
     to_save = loader.extract_all(num=num, decode_image=decode_image)
     save_dir = osp.join(root_data, "pred_pose", seq)
+    os.makedirs(save_dir, exist_ok=True)
 
     if 'image' in to_save:
         os.makedirs(osp.join(save_dir, "images"), exist_ok=True)
@@ -903,9 +924,9 @@ def esitimate_alpha(seq="P0001_624f2ba9", pose_wrapper=None):
 def vis_meta(seq="P0001_624f2ba9", num=-1, pred='fp', **kwargs):
     image_list = sorted(glob(osp.join(root_dir, "pred_pose", seq, "images", "*.jpg")))
     image_list = image_list[:num]
-    # image_list = [imageio.imread(image) for image in image_list]
-    # mp4_file = 'outputs/vis_meta_image.mp4'
-    # imageio.mimsave(mp4_file, image_list)
+    image_list = [imageio.imread(image) for image in image_list]
+    mp4_file = osp.join(root_dir, "pred_pose", seq, "vis_meta_image.mp4")
+    imageio.mimsave(mp4_file, image_list)
 
     
     meta_file = osp.join(root_dir, "pred_pose", seq, "meta.pkl")
@@ -934,7 +955,8 @@ def vis_meta(seq="P0001_624f2ba9", num=-1, pred='fp', **kwargs):
     fx, fy, cx, cy = intrinsic
     W, H = cx * 2, cy * 2
     rr.init("vis_meta")
-    rr.save(f"outputs/vis_meta_{pred}.rrd")
+    rr.save(osp.join(root_dir, "pred_pose", seq, f"vis_meta_{pred}.rrd"))
+    print("Saved rrd to", osp.join(root_dir, "pred_pose", seq, f"vis_meta_{pred}.rrd"))
     # log_list_of_camera_poses(T_w_c[:num], W, H, fx, name='world/camera')
 
     sided_wrapper = {}
@@ -943,41 +965,11 @@ def vis_meta(seq="P0001_624f2ba9", num=-1, pred='fp', **kwargs):
     
     if num < 0:
         num = len(T_w_o)
-    # fig = go.Figure()
-    # # draw position for each object
-    # for name in name2pred:
-    #     cTo = name2pred[name]['cTo']
-    #     valid = np.array(name2pred[name]['valid'])[:num]
-    #     wTc = np.array(T_w_c)[:num]
-    #     wTo = wTc @ np.array(cTo)[:num]
-    #     wTo_pos = wTo[..., :3, 3]
-    #     wTo_pos = wTo_pos * valid[..., None]
-    #     fig.add_trace(go.Scatter3d(
-    #         x=wTo_pos[:, 0],
-    #         y=wTo_pos[:, 1],
-    #         z=wTo_pos[:, 2],
-    #         mode='markers',
-    #         name=f'{name}_pred',
-    #     ))
-    #     # find gt
-    #     wTo_gt = []
-    #     name2uid = {v: k for k, v in uid2name.items()}
-    #     for t in range(num):
-    #         wTo_gt.append(T_w_o[t][str(name2uid[name])])
-    #     wTo_gt = np.array(wTo_gt)
-    #     wTo_gt_pos = wTo_gt[..., :3, 3]
-    #     print(wTo_gt_pos.shape)
-    #     fig.add_trace(go.Scatter3d(
-    #         x=wTo_gt_pos[:, 0],
-    #         y=wTo_gt_pos[:, 1],
-    #         z=wTo_gt_pos[:, 2],
-    #         mode='markers',
-    #         name=f'{name}_gt',
-    #     ))
-    # fig.write_html('outputs/vis_meta.html')
-    
+ 
     for t in range(num):
         rr.set_time_sequence("frame", t)
+        # log image
+        rr.log("world/image", rr.Image(image_list[t]))
         pose = T_w_c[t]
         focal_length = intrinsic[0]
         if t == 0:
@@ -1799,7 +1791,9 @@ if __name__ == "__main__":
     library = json.load(open(osp.join(root_dir, "assets", "instance.json"), "r"))
     uid2name = {int(k): v['instance_name'] for k, v in library.items()}
     name2uid = {v: k for k, v in uid2name.items()}
-    Fire(save_one)
+
+    # Fire(batch_save_one)
+    # Fire(save_one)
     # Fire(get_all_masks)
     
     # alpha = 1 # 0.6  # this works for cube
@@ -1807,10 +1801,10 @@ if __name__ == "__main__":
     # Fire(run_mono_depth)
     # Fire(esitimate_alpha)
 
-    # Fire(vis_meta)
+    Fire(vis_meta)
     
     # Fire(make_a_mini_dataset)
-    Fire(vis_mini_dataset)
+    # Fire(vis_mini_dataset)
 
 
     # run_foundation_pose(save_index='demo_alpha1')

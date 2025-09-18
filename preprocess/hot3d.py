@@ -1,3 +1,4 @@
+import os
 import os.path as osp
 import json
 from glob import glob
@@ -41,6 +42,14 @@ def make_split():
             train_list.append(seq)
         
     print('Total train seqs:', len(train_list))
+
+    split = {
+        'train': train_list,
+        'test': test_list,
+    }
+    os.makedirs(osp.join(root_dir, 'sets'), exist_ok=True)
+    with open(osp.join(root_dir, 'sets', 'split.json'), 'w') as f:
+        json.dump(split, f)
 
 
 if __name__ == "__main__":

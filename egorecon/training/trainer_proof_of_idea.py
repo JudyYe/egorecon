@@ -24,6 +24,7 @@ from ..manip.model.transformer_hand_to_object_diffusion_model import (
 )
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
+from ..utils.motion_repr import HandWrapper
 
 
 def run_smplx_model(
@@ -164,6 +165,8 @@ class Trainer(object):
         super().__init__()
         self.opt = opt
         self.use_wandb = use_wandb
+
+        self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
         if self.use_wandb:
             save_dir = results_folder
             expname = opt.expname

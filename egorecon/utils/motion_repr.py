@@ -33,11 +33,11 @@ class HandWrapper(nn.Module):
         :param joints: (..., 21, 3)
         """
         
-        J, D = joints.shape[-2:]
-        pref_dim = joints.shape[:-2]
-        joints = joints.reshape(-1, J, D)
+        D = joints.shape[-1:]
+        pref_dim = joints.shape[:-1]
+        joints = joints.reshape(-1, 21, 3)
 
-        meshes = plot_utils.pc_to_cubic_meshes(joints.reshape(B*T, -1, 3), )
+        meshes = plot_utils.pc_to_cubic_meshes(joints)
         verts = meshes.verts_padded()
         faces = meshes.faces_padded()
 

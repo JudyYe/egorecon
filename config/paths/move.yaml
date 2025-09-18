@@ -17,3 +17,5 @@ data_dir: data/
 # work_dir: ${hydra:runtime.cwd}
 
 mano_dir: "assets/mano/"
+
+object_mesh_dir: "data/HOT3D/assets/"
