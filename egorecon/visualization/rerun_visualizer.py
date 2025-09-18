@@ -20,7 +20,6 @@ class RerunVisualizer:
         enable_visualization=True,
         mano_models_dir="data/mano_models",
         object_mesh_dir="data/object_meshes",
-        use_hand_articulations=False,
     ):
         """Initialize visualizer"""
         self.exp_name = exp_name
@@ -28,12 +27,10 @@ class RerunVisualizer:
         self.enable_visualization = enable_visualization
         self.mano_models_dir = Path(mano_models_dir)
         self.object_mesh_dir = Path(object_mesh_dir)
-        self.use_hand_articulations = use_hand_articulations
 
         self.rerun_dir = None
         self.left_mano = None
         self.right_mano = None
-        self.hand_articulations = None
         self.object_meshes = {}  # Cache loaded meshes
 
         if self.enable_visualization:
@@ -53,15 +50,6 @@ class RerunVisualizer:
 
             # Load MANO models
             self._load_mano_models()
-
-            # Load hand articulations if requested
-            if self.use_hand_articulations:
-                self._load_hand_articulations()
-
-            print(
-                f"✓ RerunVisualizer ready: MANO={'✓' if self.left_mano else '✗'}, "
-                f"Articulations={'✓' if self.hand_articulations else '✗'}"
-            )
 
         except Exception as e:
             print(f"⚠️ Visualization setup failed: {e}")
@@ -107,20 +95,6 @@ class RerunVisualizer:
         except Exception as e:
             print(f"⚠️ MANO loading failed: {e}")
 
-    def _load_hand_articulations(self):
-        """Load hand articulations data"""
-        if not self.hand_articulations_path.exists():
-            print(f"⚠️ Hand articulations not found: {self.hand_articulations_path}")
-            return
-
-        try:
-            with open(self.hand_articulations_path, "rb") as f:
-                self.hand_articulations = pickle.load(f)
-            print(
-                f"✓ Loaded hand articulations from {len(self.hand_articulations)} sequences"
-            )
-        except Exception as e:
-            print(f"⚠️ Hand articulations loading failed: {e}")
 
     def load_object_mesh(self, object_id):
         """Load object mesh using proven working method"""
@@ -275,10 +249,6 @@ class RerunVisualizer:
                     [object_pos_noisy], colors=[[255, 0, 255]], radii=[0.015]
                 ),
             )
-
-        # Log MANO hands at current position
-        if valid_len > 0 and self.left_mano is not None:
-            self._log_mano_hands(left_pos[-1], right_pos[-1], pref)
 
         # Log metadata
         metadata = f"Step: {step}"
@@ -446,8 +416,6 @@ class RerunVisualizer:
         features.append("Object trajectories")
         if self.left_mano:
             features.append("MANO hand meshes")
-        if self.hand_articulations:
-            features.append("Hand articulations")
         if self.object_meshes:
             features.append(f"Object meshes ({len(self.object_meshes)})")
 

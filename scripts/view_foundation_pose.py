@@ -776,8 +776,11 @@ def show_mask(mask, ax, obj_id=None, random_color=False):
     ax.imshow(mask_image)
 
 
+def batch_save_one(decode_image=False):
+
+    return 
 def save_one(seq="P0001_624f2ba9", num=-1, decode_image=True):
-    root_data = "hot3d/hot3d/dataset"
+    root_data = root_dir
     seq_dir = osp.join(root_data, seq)
     object_library_folder = osp.join(root_data, "assets/")
     loader = HOT3DLoader(
@@ -1796,10 +1799,9 @@ if __name__ == "__main__":
     library = json.load(open(osp.join(root_dir, "assets", "instance.json"), "r"))
     uid2name = {int(k): v['instance_name'] for k, v in library.items()}
     name2uid = {v: k for k, v in uid2name.items()}
-    # Fire(save_one)
-    
+    Fire(save_one)
     # Fire(get_all_masks)
-    # save_one_gt()
+    
     # alpha = 1 # 0.6  # this works for cube
     # Fire(run_foundation_pose)
     # Fire(run_mono_depth)

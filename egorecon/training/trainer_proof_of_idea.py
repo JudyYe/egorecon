@@ -1,3 +1,5 @@
+from jutils import mesh_utils
+from pytorch3d.structures import Meshes
 import os
 import os.path as osp
 import random
@@ -11,15 +13,17 @@ import yaml
 from ema_pytorch import EMA
 from jutils import model_utils
 from omegaconf import OmegaConf
-from torch.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
 from torch.utils import data
 from tqdm import tqdm
 
 from ..manip.data.hand_to_object_dataset import HandToObjectDataset
-from ..manip.model.transformer_hand_to_object_diffusion_model import \
-    CondGaussianDiffusion
+from ..manip.model.transformer_hand_to_object_diffusion_model import (
+    CondGaussianDiffusion,
+)
 from ..visualization.rerun_visualizer import RerunVisualizer
+from ..visualization.pt3d_visualizer import Pt3dVisualizer
 
 
 def run_smplx_model(
@@ -164,27 +168,28 @@ class Trainer(object):
             save_dir = results_folder
             expname = opt.expname
             # Loggers
-            os.makedirs(save_dir + '/log/wandb', exist_ok=True)
+            os.makedirs(save_dir + "/log/wandb", exist_ok=True)
 
             runid = None
             if os.path.exists(f"{save_dir}/runid.txt"):
                 runid = open(f"{save_dir}/runid.txt").read().strip()
 
             log = wandb.init(
-                project='er_' + osp.dirname(expname),
+                project="er_" + osp.dirname(expname),
                 name=osp.basename(expname),
-                dir=osp.join(save_dir, 'log'),
+                dir=osp.join(save_dir, "log"),
                 id=runid,
                 save_code=True,
-                settings=wandb.Settings(start_method='fork'),
+                settings=wandb.Settings(start_method="fork"),
                 # config=opt,
                 # project=opt.wandb_pj_name,
                 # name=opt.exp_name,
                 # dir=opt.save_dir,
             )
             runid = log.id
+
             def save_runid():
-                with  open(f"{save_dir}/runid.txt", 'w') as fp:
+                with open(f"{save_dir}/runid.txt", "w") as fp:
                     fp.write(runid)
 
             save_runid()
@@ -207,7 +212,7 @@ class Trainer(object):
 
         self.step = 0
 
-        self.amp = amp
+        self.amp = amp  # BUG: amp on gives nan loss??
         self.scaler = GradScaler(enabled=amp)
 
         self.results_folder = results_folder
@@ -216,26 +221,31 @@ class Trainer(object):
 
         self.opt = opt
 
-        self.data_root_folder = getattr(self.opt, 'data_root_folder', 'data')
+        self.data_root_folder = getattr(self.opt, "data_root_folder", "data")
 
         self.window = opt.model.window
 
-        self.use_object_split = getattr(self.opt, 'use_object_split', False)
+        self.use_object_split = getattr(self.opt, "use_object_split", False)
 
         # self.bm_dict = self.ds.bm_dict
 
-        self.test_on_train = getattr(self.opt, 'test_sample_res_on_train', False)
+        self.test_on_train = getattr(self.opt, "test_sample_res_on_train", False)
 
-        self.add_hand_processing = getattr(self.opt, 'add_hand_processing', False)
+        self.add_hand_processing = getattr(self.opt, "add_hand_processing", False)
 
-        self.for_quant_eval = getattr(self.opt, 'for_quant_eval', False)
+        self.for_quant_eval = getattr(self.opt, "for_quant_eval", False)
 
         self.visualizer = RerunVisualizer(
             exp_name=opt.expname,
             save_dir=opt.exp_dir,
             enable_visualization=True,
             mano_models_dir=opt.paths.mano_dir,
-            
+        )
+        self.viz_off = Pt3dVisualizer(
+            exp_name=opt.expname,
+            save_dir=opt.exp_dir,
+            mano_models_dir=opt.paths.mano_dir,
+            object_mesh_dir=opt.paths.object_mesh_dir,
         )
 
     def prep_dataloader(self, window_size):
@@ -404,8 +414,8 @@ class Trainer(object):
                 ) < actual_seq_len[:, None].repeat(1, self.window + 1)
                 padding_mask = tmp_mask[:, None, :]
 
-                with autocast(device_type='cuda', enabled=self.amp):
-
+                # with autocast(device_type='cuda', enabled=self.amp):
+                with autocast(enabled=self.amp):
                     loss_diffusion = self.model(object_motion, cond, padding_mask)
 
                     loss = loss_diffusion
@@ -484,7 +494,8 @@ class Trainer(object):
         object_motion = val_data_dict["target"]
         cond = val_data_dict["condition"]
 
-        with autocast(device_type='cuda', enabled=self.amp):
+        # with autocast(device_type='cuda', enabled=self.amp):
+        with autocast(enabled=self.amp):
             val_loss_diffusion = self.model(
                 object_motion, cond, padding_mask=padding_mask
             )
@@ -497,10 +508,10 @@ class Trainer(object):
             }
             wandb.log(val_log_dict)
 
-        milestone = self.step // self.opt.general.save_and_sample_every
+        milestone = self.step // self.save_and_sample_every
         bs_for_vis = 1
 
-        if self.step % self.opt.general.save_and_sample_every == 0:
+        if self.step % self.save_and_sample_every == 0:
             self.save(milestone)
             sample = val_data_dict
             diffusion_model = self.ema.ema_model
@@ -524,12 +535,55 @@ class Trainer(object):
                 object_motion_raw,
                 object_noisy=sample["traj_noisy_raw"],
                 object_pred=object_pred_raw,
+                object_id=val_data_dict["object_id"],
                 seq_len=seq_len,
                 pref=pref,
             )
 
-    def gen_vis_res(self, *args, **kwargs):
-        self.visualizer.log_training_step(*args, **kwargs)
+    def gen_vis_res(
+        self,
+        step,
+        left_hand,
+        right_hand,
+        object_gt,
+        object_pred=None,
+        object_noisy=None,
+        seq_len=None,
+        pref="training/",
+        object_id=None,
+    ):
+        self.visualizer.log_training_step(
+            step,
+            left_hand,
+            right_hand,
+            object_gt,
+            object_pred=object_pred,
+            object_noisy=object_noisy,
+            seq_len=seq_len,
+            pref=pref,
+        )
+        left_hand_verts, left_hand_faces = self.hand_wrapper.joint2verts_faces(left_hand[0])
+        right_hand_verts, right_hand_faces = self.hand_wrapper.joint2verts_faces(right_hand[0])
+
+        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
+        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'blue')
+        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
+        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
+
+        wTo_list = [object_gt[0], object_pred[0], object_noisy[0]]
+        color_list = ['red', 'yellow', 'purple']
+
+        self.viz_off.log_training_step(
+            left_hand_meshes,
+            right_hand_meshes,
+            wTo_list,
+            color_list,
+            object_id[0],
+            step=step,
+            pref=pref,
+        )
+
+
 
 
 def run_train(opt, device):
@@ -564,12 +618,12 @@ def run_train(opt, device):
         diffusion_model,
         train_batch_size=opt.train.batch_size,  # 32
         train_lr=opt.train.lr,  # 1e-4
-        gradient_accumulate_every=opt.train.ema_update_every,  # gradient accumulation steps
+        gradient_accumulate_every=2,  # gradient accumulation steps
         ema_decay=opt.train.ema_decay,  # exponential moving average decay
         amp=False,  # turn on mixed precision
         results_folder=str(wdir),
         use_wandb=opt.general.wandb,
-        save_and_sample_every=opt.general.vis_every,
+        save_and_sample_every=opt.general.save_and_sample_every,
         train_num_steps=opt.general.train_num_steps,
     )
 
@@ -578,17 +632,15 @@ def run_train(opt, device):
     torch.cuda.empty_cache()
 
 
-
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 def main(opt):
     if opt.test:
         run_sample(opt, device)
     else:
         run_train(opt, device)
-    return 
+    return
 
 
 if __name__ == "__main__":
-
     device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
     main()

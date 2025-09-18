@@ -226,6 +226,9 @@ class Trainer(object):
 
         return mask 
 
+    def hand_para2mesh(self, hand_para):
+        # decode hand para to mesh
+
     def train(self):
         init_step = self.step 
         for idx in range(init_step, self.train_num_steps):

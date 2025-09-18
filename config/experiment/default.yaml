@@ -4,12 +4,12 @@ general:
   rerun: false
   wandb: false
   train_num_steps: 1_000_000
-  vis_every: 1000
   eval_every: 1000
-  save_and_sample_every: 40000
+  save_and_sample_every: 1000
+
 
 train:
-  lr: 1e-4
+  lr: 2e-4
   batch_size: 32
   ema_decay: 0.995
   step_start_ema: 2000

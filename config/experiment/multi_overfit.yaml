@@ -3,3 +3,9 @@
 defaults:
   - default.yaml
 
+
+datasets:
+  t0: 300
+  one_window: true
+  split: mini
+  test_split: mini

@@ -749,7 +749,7 @@ class HandToObjectDataset(Dataset):
 
     def __len__(self):
         if self.is_train:
-            return max(1000, len(self.windows))
+            return max(100000, len(self.windows))
         else:
             return len(self.windows)
 

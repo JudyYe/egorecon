@@ -1,10 +1,81 @@
 import copy
+import os
+import torch.nn as nn
 
 import numpy as np
 import smplx
 import torch
-from jutils import geom_utils, hand_utils, mesh_utils
+from jutils import geom_utils, hand_utils, mesh_utils, plot_utils
 from scipy.spatial.transform import Rotation as R
+
+
+class HandWrapper(nn.Module):
+    def __init__(self, mano_dir):
+        super().__init__()
+        self.sided_mano_models = {
+            'left': smplx.create(
+                os.path.join(mano_dir, 'MANO_LEFT.pkl'),
+                'mano',
+                is_rhand=False,
+                num_pca_comps=15,
+            ),
+            'right': smplx.create(
+                os.path.join(mano_dir, 'MANO_RIGHT.pkl'),
+                'mano',
+                is_rhand=True,
+                num_pca_comps=15,
+            ),
+        }
+    
+    def joint2verts_faces(self, joints, ):
+        """
+
+        :param joints: (..., 21, 3)
+        """
+        
+        J, D = joints.shape[-2:]
+        pref_dim = joints.shape[:-2]
+        joints = joints.reshape(-1, J, D)
+
+        meshes = plot_utils.pc_to_cubic_meshes(joints.reshape(B*T, -1, 3), )
+        verts = meshes.verts_padded()
+        faces = meshes.faces_padded()
+
+        verts = verts.reshape(*pref_dim, -1, 3)
+        faces = faces.reshape(*pref_dim, -1, 3)
+
+        return verts, faces
+
+    def hand_para2verts_faces_joints(self, hand_para, hand_shape, side='right'):
+        """
+        :param hand_para: (B, T, 3+3+15)
+        :param hand_shape: (B, T, 10)
+        :param side: _description_, defaults to 'right'
+        """
+
+        pref_dim = hand_para.shape[:-1]
+        hand_para = hand_para.reshape(-1, hand_para.shape[-1])
+        hand_shape = hand_shape.reshape(-1, hand_shape.shape[-1])
+
+        model = self.sided_mano_models[side]
+        body_params_dict = {
+            'transl': hand_para[:, :3],
+            'global_orient': hand_para[:, 3:6],
+            'betas': hand_shape,
+            'hand_pose': hand_para[:, 6:],
+        }
+        
+        mano_out = model(**body_params_dict)
+        hand_verts = mano_out.vertices
+        print('face', model.faces_tensor.shape)
+        hand_faces = model.faces_tensor.repeat(hand_verts.shape[0], 1, 1)
+        hand_joints = mano_out.joints
+
+        hand_verts = hand_verts.reshape(*pref_dim, -1, 3)
+        hand_faces = hand_faces.reshape(*pref_dim, -1, 3)
+        hand_joints = hand_joints.reshape(*pref_dim, *hand_joints.shape[-2:])
+
+        return hand_verts, hand_faces, hand_joints
 
 
 def cano_seq_mano(canoTw, positions, mano_params_dict, return_transf_mat=False, mano_model=None, device='cpu'):
