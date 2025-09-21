@@ -37,7 +37,7 @@ class HandWrapper(nn.Module):
         pref_dim = joints.shape[:-1]
         joints = joints.reshape(-1, 21, 3)
 
-        meshes = plot_utils.pc_to_cubic_meshes(joints)
+        meshes = plot_utils.pc_to_cubic_meshes(joints, eps=0.01)
         verts = meshes.verts_padded()
         faces = meshes.faces_padded()
 

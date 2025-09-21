@@ -1703,7 +1703,25 @@ def vis_mini_dataset(data_file):
                 ))
         
 
-def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
+def make_all_dataset():
+    splits = json.load(open(osp.join(root_dir, 'sets', 'split.json'), 'r'))
+
+    all_splits = []
+    for split in splits.values():
+        all_splits.extend(split)
+    
+    all_data = {}
+    for seq in tqdm(all_splits):
+        data = make_a_mini_dataset(seq, num=-1, pred='none', save_to_file=False)
+        all_data[seq] = data
+    
+    save_file = osp.join(root_dir, "pred_pose", "all_dataset.pkl")
+    with open(save_file, 'wb') as f:
+        pickle.dump(all_data, f)
+    print(f"Saved all dataset to {save_file}")
+
+
+def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp', save_to_file=True):
     # format: 
     # "objects": ['uid1', 'uid2', ...], 
     # "left_hand_theta": [T, 3+3+15], 3aa+3tsl+pcax15
@@ -1718,6 +1736,10 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
     # "uid{i}_gt_valid": [T, ],
 
     meta_file = osp.join(root_dir, "pred_pose", seq, "meta.pkl")
+    with open(meta_file, 'rb') as f:
+        meta = pickle.load(f)
+
+
     if pred == 'fp':
         pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
         uid2pred = {}
@@ -1731,10 +1753,16 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
         pred_file = osp.join(root_dir, "pred_pose", seq, "pose_3d.pkl")
         with open(pred_file, 'rb') as f:
             uid2pred = pickle.load(f)
+    elif pred == 'none':
+        # find all uid in meta['T_w_o'][t].keys(), and set {uid: None}
+        uid2pred = {}
+        for t in range(len(meta['T_w_o'])):
+            for uid in meta['T_w_o'][t].keys():
+                uid2pred[uid] = None
+    else:
+        raise ValueError(f"Unknown pred: {pred}")
     intrinsic_file = osp.join(root_dir, "pred_pose", seq, "intrinsic.pkl")
     
-    with open(meta_file, 'rb') as f:
-        meta = pickle.load(f)
     with open(intrinsic_file, 'rb') as f:
         intrinsic = pickle.load(f)
 
@@ -1749,7 +1777,19 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
 
     data['wTc'] = meta['T_w_c']
     for uid in data['objects']:
+        data[f'obj_{uid}_wTo'] = []
+        data[f'obj_{uid}_wTo_valid'] = []
+        for t in range(len(meta['T_w_o'])):
+            if uid not in meta['T_w_o'][t].keys():
+                print(t, uid)
+                data[f'obj_{uid}_wTo'].append(np.eye(4))
+                data[f'obj_{uid}_wTo_valid'].append(False)
+            else:
+                data[f'obj_{uid}_wTo'].append(meta['T_w_o'][t][uid])
+                data[f'obj_{uid}_wTo_valid'].append(True)
         shelf = uid2pred[uid]
+        if shelf is None:
+            continue
         for t in range(len(shelf['cTo'])):
             if shelf['cTo'][t] is None:
                 print('cTo is None at frame', t)
@@ -1758,7 +1798,6 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
         data[f'obj_{uid}_cTo_shelf'] = shelf['cTo']
         data[f'obj_{uid}_shelf_valid'] = shelf['valid']
         # data[f'obj_{uid}_wTo'] = 
-        data[f'obj_{uid}_wTo'] = [meta['T_w_o'][t][str(uid)] for t in range(len(meta['T_w_o']))]
     
     for k, v in data.items():
         data[k] = np.array(v)
@@ -1766,11 +1805,23 @@ def make_a_mini_dataset(seq='P0001_624f2ba9', num=-1, pred='fp'):
             data[k] = data[k][:num]
         print(k, data[k].shape)
     
-    save_file = osp.join(root_dir, "pred_pose", f"mini_{seq}_{pred}")
-    np.savez_compressed(save_file, **data)
-    print(f"Saved mini dataset to {save_file}")
+    if save_to_file:
+        save_file = osp.join(root_dir, "pred_pose", f"mini_{seq}_{pred}")
+        np.savez_compressed(save_file, **data)
+        print(f"Saved mini dataset to {save_file}")
+    return data
     
 
+def compute_norm_stats():
+    data_file = osp.join(root_dir, "pred_pose", "all_dataset.pkl")
+
+    data = load_pickle(data_file)
+    # compute left_hand_mean, left_hand_std, right_hand_mean, right_hand_std
+    left_hand = data['left_hand_theta']
+    right_hand = data['right_hand_theta']
+    
+    
+    
 
 
     
@@ -1801,9 +1852,13 @@ if __name__ == "__main__":
     # Fire(run_mono_depth)
     # Fire(esitimate_alpha)
 
-    Fire(vis_meta)
+    # Fire(vis_meta)
     
     # Fire(make_a_mini_dataset)
+
+    # Fire(make_all_dataset)
+
+    compute_norm_stats()
     # Fire(vis_mini_dataset)
 
 

@@ -1,3 +1,37 @@
+[] only dynamic object 
+[] only hand conditioned 
+[] guidance 
+[] noise eval
+[] metadata
+
+bowl: 194930206998778
+spoon: 225397651484143
+
+
+-
+python -m egorecon.training.trainer_proof_of_idea    \
+  expname=dev/tmp_test_meta \
+  experiment=init_large \
+  datasets.split=trainone \
+
+
+-
+python -m egorecon.manip.data.hand_to_object_dataset \
+  datasets.split=train 
+
+python -m egorecon.training.trainer_proof_of_idea    \
+  expname=seq/\${datasets.split} \
+  experiment=init_large \
+  datasets.split=trainone \
+
+
+
+python -m egorecon.training.trainer_proof_of_idea    \
+  expname=seq_go/\${datasets.split} \
+  experiment=init_large \
+  datasets.split=testone \
+  general.rerun=True general.wandb=true \
+
 python -m  scripts.view_foundation_pose --num 540
 
 

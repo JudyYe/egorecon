@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-
+import hydra
+from tqdm import tqdm
+import json
 import os
 import os.path as osp
+import pickle
 from copy import deepcopy
 
 import numpy as np
@@ -21,7 +24,28 @@ def load_pickle(path):
     """Load and return the object stored in a pickle file."""
     # with open(path, "rb") as f:
     #     return pickle.load(f)
-    data = np.load(path, allow_pickle=True)
+    if path.endswith(".pkl"):
+        with open(path, "rb") as f:
+            all_seq = pickle.load(f)
+
+        all_processed_data = {}
+        for seq, data in all_seq.items():
+            processed_data = decode_npz(data)
+            all_processed_data[seq] = processed_data
+
+    elif path.endswith(".npz"):
+        # legacy for mini
+        data = np.load(path, allow_pickle=True)
+        seq_index = osp.basename(path).split(".")[0]
+
+        processed_data = decode_npz(data)
+
+        all_processed_data = {seq_index: processed_data}
+    return all_processed_data
+
+
+def decode_npz(data):
+    # data = np.load(path, allow_pickle=True)
     data = dict(data)
     uid_list = data["objects"]
     data.pop("objects")
@@ -35,11 +59,12 @@ def load_pickle(path):
                 new_key = k.replace(f"obj_{uid}_", "")
                 objects[uid][new_key] = data[k]
         # get wTo_shelf
-        cTo_shelf = objects[uid]["cTo_shelf"]
-        wTc = data["wTc"]
-        # cTw = np.linalg.inv(wTc)
-        wTo_shelf = wTc @ cTo_shelf
-        objects[uid]["wTo_shelf"] = wTo_shelf
+        if "cTo_shelf" in objects[uid]:
+            cTo_shelf = objects[uid]["cTo_shelf"]
+            wTc = data["wTc"]
+            # cTw = np.linalg.inv(wTc)
+            wTo_shelf = wTc @ cTo_shelf
+            objects[uid]["wTo_shelf"] = wTo_shelf
 
     processed_data["left_hand"] = {}
     processed_data["right_hand"] = {}
@@ -53,9 +78,7 @@ def load_pickle(path):
                 processed_data[k] = data[k]
 
     processed_data["objects"] = objects
-    seq_index = osp.basename(path).split(".")[0]
-
-    return {seq_index: processed_data}
+    return processed_data
 
 
 # in rohm:
@@ -101,8 +124,12 @@ class HandToObjectDataset(Dataset):
         traj_std_obj_rot=0.0,
         traj_std_obj_trans=0.0,
         use_constant_noise=False,
+        one_window=False,
+        t0=300,
+        split_file=None,
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
+        data_cfg=None,
     ):
         self.is_train = is_train
         self.data_path = data_path
@@ -114,9 +141,15 @@ class HandToObjectDataset(Dataset):
         self.split = split
         self.val_split_ratio = val_split_ratio
         self.split_seed = split_seed
+        self.one_window = one_window
+        self.t0 = t0
+        self.use_constant_noise = use_constant_noise
+        self.noise_scheme = noise_scheme
+        self.split_file = split_file
         self.opt = opt
+        self.data_cfg = data_cfg
 
-        self.mano_model_path =  opt.paths.mano_dir
+        self.mano_model_path = opt.paths.mano_dir
         self.sided_mano_models = {
             "left": smplx.create(
                 os.path.join(self.mano_model_path, "MANO_LEFT.pkl"),
@@ -139,28 +172,27 @@ class HandToObjectDataset(Dataset):
 
         self.pose_dim = 9
 
-        # Filter for single demo/object if specified (for overfitting)
-        if single_demo or single_object:
-            self.processed_data = self._filter_data(
-                single_demo, single_object.split("+")
-            )
-            print(
-                f"Filtered to demo: {single_demo} object: {single_object}, total: {len(self.processed_data)} demonstrations for overfitting"
-            )
+        self.processed_data = self._filter_data(
+            single_demo, single_object
+        )
+        print(
+            f"Filtered to demo: {single_demo} object: {single_object}, total: {len(self.processed_data)} demonstrations for overfitting"
+        )
 
         # Create windows
+        print(f"Creating windows for {self.split}...")
         self.windows = self._create_windows()
         print(f"Created {len(self.windows)} windows")
 
         # Apply train/validation split
-        self.windows = self._apply_train_val_split()
         print(f"Created {len(self.windows)} {self.split} windows")
 
         # Compute normalization statistics
-        self._compute_normalization_stats()
+        # self._compute_normalization_stats()
+        self.stats = {}
 
         # Setup full trajectory data for the current split
-        self._setup_full_trajectory_data_from_windows()
+        # self._setup_full_trajectory_data_from_windows()
 
         self.noise_std_params_dict = {
             "global_orient": noise_std_mano_global_rot,
@@ -169,11 +201,9 @@ class HandToObjectDataset(Dataset):
             "betas": noise_std_mano_betas,
             "object_rot": noise_std_obj_rot,
             "object_trans": noise_std_obj_trans,
-            'traj_rot': traj_std_obj_rot,
-            'traj_trans': traj_std_obj_trans,
+            "traj_rot": traj_std_obj_rot,
+            "traj_trans": traj_std_obj_trans,
         }
-        self.use_constant_noise = use_constant_noise
-        self.noise_scheme = noise_scheme
 
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
@@ -181,16 +211,21 @@ class HandToObjectDataset(Dataset):
         if self.split == "mini":
             # seq = 'P0001_624f2ba9'
             seq = list(self.processed_data.keys())[0]
+            seq_list = [seq]
+        else:
+            seq_list = json.load(open(self.split_file))[self.split]
+        
+        for seq in seq_list:
             filtered_data[seq] = {}
             # '194930206998778',
             if single_object:
                 # 225397651484143 : bowl
-                obj_list = single_object
+                obj_list = single_object.split("+")
             else:
                 obj_list = list(self.processed_data[seq]["objects"].keys())
 
-            if self.opt.datasets.one_window:
-                t0 = self.opt.datasets.t0
+            if self.one_window:
+                t0 = self.t0
                 t1 = t0 + 120
             else:
                 t0 = 0
@@ -219,35 +254,19 @@ class HandToObjectDataset(Dataset):
                     print(key, type(value))
                     filtered_data[seq][key] = value
 
-            return filtered_data
-
-        for demo_id, demo_data in self.processed_data.items():
-            if single_demo and demo_id != single_demo:
-                continue
-
-            if single_object and "objects" in demo_data:
-                # Keep only the specified object
-                if single_object in demo_data["objects"]:
-                    filtered_demo = {
-                        "left_hand": demo_data.get("left_hand"),
-                        "right_hand": demo_data.get("right_hand"),
-                        "objects": {single_object: demo_data["objects"][single_object]},
-                    }
-                    filtered_data[demo_id] = filtered_demo
-            else:
-                filtered_data[demo_id] = demo_data
-
         return filtered_data
 
     def _create_windows(self):
         """Create sliding windows from trajectory data."""
         windows = []
+        cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}.pkl")
+        if osp.exists(cache_name):
+            self.windows = pickle.load(open(cache_name, 'rb'))
+            return self.windows
 
-        for demo_id, demo_data in self.processed_data.items():
+        print('creating window cache')
+        for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
             for obj_id, obj_data in demo_data["objects"].items():
-                print(obj_id, "current window obj_id:")
-                for win in windows:
-                    print(win["object_id"])
 
                 object_traj = obj_data["wTo"]  # (T, 4, 4)
                 camera_traj = demo_data["wTc"]  # (T, 4, 4)
@@ -275,6 +294,17 @@ class HandToObjectDataset(Dataset):
                 ):
                     end_idx = start_idx + self.window_size
 
+                    if "wTo_valid" in demo_data["objects"][obj_id]:
+                        object_valid = demo_data["objects"][obj_id]["wTo_valid"][
+                            start_idx:end_idx
+                        ]
+                    else:
+                        object_valid = np.ones(self.window_size).astype(bool)
+                        print("No object valid mask found?????? " , self.data_path)
+
+                    if not np.all(object_valid):
+                        # TODO: use strict checking for now
+                        continue 
                     left_wrist_aa = left_hand_trimmed[start_idx:end_idx][:, 0:3]
                     left_wrist_pos = left_hand_trimmed[start_idx:end_idx][:, 3:6]
 
@@ -320,21 +350,23 @@ class HandToObjectDataset(Dataset):
                         object_quat[np.newaxis],
                     )
 
-                    object_shelf = demo_data["objects"][obj_id]["wTo_shelf"][
-                        start_idx:end_idx
-                    ]
-                    object_shelf_pos = object_shelf[:, :3, 3]
-                    object_shelf_r = R.from_matrix(object_shelf[:, :3, :3])
-                    object_shelf_quat = object_shelf_r.as_quat()[:, [3, 0, 1, 2]]
+                    if self.noise_scheme == "real":
 
-                    _, _, cano_object_shelf_pos, cano_object_shelf_quat, _ = (
-                        rotate_at_frame_w_obj(
-                            camera_pos[np.newaxis, :, np.newaxis, :],
-                            camera_quat[np.newaxis, :, np.newaxis, :],
-                            object_shelf_pos[np.newaxis],
-                            object_shelf_quat[np.newaxis],
+                        object_shelf = demo_data["objects"][obj_id]["wTo_shelf"][
+                            start_idx:end_idx
+                        ]
+                        object_shelf_pos = object_shelf[:, :3, 3]
+                        object_shelf_r = R.from_matrix(object_shelf[:, :3, :3])
+                        object_shelf_quat = object_shelf_r.as_quat()[:, [3, 0, 1, 2]]
+
+                        _, _, cano_object_shelf_pos, cano_object_shelf_quat, _ = (
+                            rotate_at_frame_w_obj(
+                                camera_pos[np.newaxis, :, np.newaxis, :],
+                                camera_quat[np.newaxis, :, np.newaxis, :],
+                                object_shelf_pos[np.newaxis],
+                                object_shelf_quat[np.newaxis],
+                            )
                         )
-                    )
 
                     _, _, cano_left_wrist_pos, cano_left_wrist_quat, _ = (
                         rotate_at_frame_w_obj(
@@ -363,8 +395,9 @@ class HandToObjectDataset(Dataset):
                     cano_right_wrist_pos = cano_right_wrist_pos[0]  # T X 3
                     cano_right_wrist_quat = cano_right_wrist_quat[0]  # T X 4
 
-                    cano_object_shelf_pos = cano_object_shelf_pos[0]  # T X 3
-                    cano_object_shelf_quat = cano_object_shelf_quat[0]  # T X 4
+                    if self.noise_scheme == "real":
+                        cano_object_shelf_pos = cano_object_shelf_pos[0]  # T X 3
+                        cano_object_shelf_quat = cano_object_shelf_quat[0]  # T X 4
 
                     cano_camera_pos = cano_camera_pos[0, :, 0, :]  # T X 3
                     cano_camera_quat = cano_camera_quat[0, :, 0, :]  # T X 4
@@ -386,7 +419,6 @@ class HandToObjectDataset(Dataset):
                     cano_right_wrist_pos -= camera2origin_trans
                     cano_object_pos -= camera2origin_trans
 
-                    print(left_hand_trimmed[start_idx:end_idx].shape)
                     mano_params_dict = {
                         "global_orient": left_wrist_aa,
                         "transl": left_wrist_pos,
@@ -438,15 +470,16 @@ class HandToObjectDataset(Dataset):
                     cano_camera_rot_mat = quaternion_to_matrix_numpy(cano_camera_quat)
                     cano_camera_rot6d = matrix_to_rotation_6d_numpy(cano_camera_rot_mat)
 
-                    cano_object_shelf_rot_mat = quaternion_to_matrix_numpy(
-                        cano_object_shelf_quat
-                    )
-                    cano_object_shelf_rot6d = matrix_to_rotation_6d_numpy(
-                        cano_object_shelf_rot_mat
-                    )
-                    cano_object_shelf_data = np.concatenate(
-                        (cano_object_shelf_pos, cano_object_shelf_rot6d), axis=-1
-                    )
+                    if self.noise_scheme == "real":
+                        cano_object_shelf_rot_mat = quaternion_to_matrix_numpy(
+                            cano_object_shelf_quat
+                        )
+                        cano_object_shelf_rot6d = matrix_to_rotation_6d_numpy(
+                            cano_object_shelf_rot_mat
+                        )
+                        cano_object_shelf_data = np.concatenate(
+                            (cano_object_shelf_pos, cano_object_shelf_rot6d), axis=-1
+                        )
 
                     cano_left_hand_data = np.concatenate(
                         (cano_left_wrist_pos, cano_left_wrist_rot6d), axis=-1
@@ -460,9 +493,6 @@ class HandToObjectDataset(Dataset):
                     cano_camera_data = np.concatenate(
                         (cano_camera_pos, cano_camera_rot6d), axis=-1
                     )
-                    shelf_valid = demo_data["objects"][obj_id]["shelf_valid"][
-                        start_idx:end_idx
-                    ]
 
                     window_data = {
                         "demo_id": demo_id,
@@ -471,8 +501,9 @@ class HandToObjectDataset(Dataset):
                         "end_idx": end_idx,
                         # 'left_hand': cano_left_hand_data,
                         # 'right_hand': cano_right_hand_data,
-                        "shelf_valid": shelf_valid,
-                        "object_shelf": cano_object_shelf_data,
+                        # "shelf_valid": shelf_valid,
+                        # "object_shelf": cano_object_shelf_data,
+                        "object_valid": object_valid,
                         "object": cano_object_data,
                         "camera": cano_camera_data,
                         "left_hand": cano_left_positions.reshape(-1, 21 * 3),
@@ -491,25 +522,34 @@ class HandToObjectDataset(Dataset):
                         # 'object':cano_object_data,
                     }
 
+                    if self.noise_scheme == "real":
+                        shelf_valid = demo_data["objects"][obj_id]["shelf_valid"][
+                            start_idx:end_idx
+                        ]
+                        window_data["shelf_valid"] = shelf_valid
+                        window_data["object_shelf"] = cano_object_shelf_data
+
                     # Check if this is a motion window
                     is_motion = self._is_motion_window(cano_object_data)
                     window_data["is_motion"] = is_motion
 
-                    window_data["mean_velocity"] = self._compute_mean_velocity(
-                        cano_object_data
-                    )
-
-                    windows.append(window_data)
+                    if self.window_check(window_data):
+                        windows.append(window_data)
 
         # Apply sampling strategy
         # windows = self._apply_sampling_strategy(windows)
+        
+        os.makedirs(osp.dirname(cache_name), exist_ok=True)
+        pickle.dump(windows, open(cache_name, 'wb'))
+        
         return windows
 
-    def _compute_mean_velocity(self, object_traj):
-        """Compute the mean velocity of the object trajectory."""
-        positions = object_traj[:, :3]
-        velocities = np.linalg.norm(np.diff(positions, axis=0), axis=1)
-        return np.mean(velocities)
+    def window_check(self, window_data):
+        # if one of objecdt_valid is not valid, return False
+        if not np.any(window_data["object_valid"]):
+            return False
+
+        return True
 
     def _is_motion_window(self, object_traj):
         """Determine if this window contains significant object motion."""
@@ -572,116 +612,18 @@ class HandToObjectDataset(Dataset):
         else:  # 'random'
             return windows
 
-    def _apply_train_val_split(self):
-        """Apply train/validation split to windows."""
 
-        if self.split == "all" or self.split == "mini":
-            return self.windows
-
-        # Use seed for reproducible splits
-        np.random.seed(self.split_seed)
-
-        # Shuffle windows for random split
-        indices = np.arange(len(self.windows))
-        np.random.shuffle(indices)
-
-        # Split indices
-        n_val = int(len(self.windows) * self.val_split_ratio)
-        if self.split == "val":
-            selected_indices = indices[:n_val]
-        else:  # 'train'
-            selected_indices = indices[n_val:]
-
-        # Return selected windows
-        selected_windows = [self.windows[i] for i in selected_indices]
-
-        print(
-            f"Split info: {len(selected_windows)}/{len(self.windows)} windows for {self.split}"
-        )
-        return selected_windows
-
-    def _compute_normalization_stats(self):
+    def set_metadata(self):
         """Compute normalization statistics for the dataset."""
-        all_left_hand = []
-        all_right_hand = []
-        all_objects = []
-
-        for window in self.windows:
-            all_left_hand.append(window["left_hand"])
-            all_right_hand.append(window["right_hand"])
-            all_objects.append(window["object"])
-
-        if not all_left_hand:
-            print("Warning: No windows found for normalization")
-            self.stats = {}
-            return
-
-        # Stack all data
-        all_left_data = np.vstack(all_left_hand)  # [N*T, D]
-        all_right_data = np.vstack(all_right_hand)  # [N*T, D]
-        all_object_data = np.vstack(all_objects)  # [N*T, D]
-
-        # Use standard normalization approach
-        left_mean = np.mean(all_left_data, axis=0)
-        left_std = np.std(all_left_data, axis=0)
-        right_mean = np.mean(all_right_data, axis=0)
-        right_std = np.std(all_right_data, axis=0)
-        object_mean = np.mean(all_object_data, axis=0)
-        object_std = np.std(all_object_data, axis=0)
-
-        # Ensure minimum std to prevent division by very small values
-        min_std = 1e-6
-        left_std = np.maximum(left_std, min_std)
-        right_std = np.maximum(right_std, min_std)
-        object_std = np.maximum(object_std, min_std)
-
-        # use minmax for mean and std such that it's land in [-1, 1]
-        object_min, object_max = (
-            np.min(all_object_data, axis=0),
-            np.max(all_object_data, axis=0),
-        )
-        object_std = (object_max - object_min) / 2.0
-        object_mean = (object_max + object_min) / 2.0
-
-        if all_left_data.shape[-1] != all_object_data.shape[-1]:
-            all_data = np.concatenate((all_left_data, all_right_data), axis=0)
-            all_min, all_max = np.min(all_data, axis=0), np.max(all_data, axis=0)
-            all_std = (all_max - all_min) / 2.0
-            all_mean = (all_max + all_min) / 2.0
-
-            self.stats = {
-                "left_hand_mean": all_mean,
-                "left_hand_std": all_std,
-                "right_hand_mean": all_mean,
-                "right_hand_std": all_std,
-                "object_mean": object_mean,
-                "object_std": object_std,
-            }
-
-        else:
-            all_data = np.concatenate(
-                (all_left_data, all_right_data, all_object_data), axis=0
-            )
-            all_min, all_max = np.min(all_data, axis=0), np.max(all_data, axis=0)
-            all_std = (all_max - all_min) / 2.0
-            all_mean = (all_max + all_min) / 2.0
-
-            self.stats = {
-                "left_hand_mean": all_mean,
-                "left_hand_std": all_std,
-                "right_hand_mean": all_mean,
-                "right_hand_std": all_std,
-                "object_mean": all_mean,
-                "object_std": all_std,
-            }
-
-        print("Computed normalization statistics")
-        print(
-            f"Object trajectory - Mean range: [{object_mean.min():.3f}, {object_mean.max():.3f}]"
-        )
-        print(
-            f"Object trajectory - Std range: [{object_std.min():.3f}, {object_std.max():.3f}]"
-        )
+        meta_file = self.data_cfg.meta_file
+        if not osp.exists(meta_file):
+            print(f'compute metadata....  and save to {meta_file}')
+            compute_norm_stats(self.opt)
+        print(f'using loadded metadata from {meta_file}')
+        self.stats = pickle.load(open(meta_file, 'rb'))
+        for k, v in self.stats.items():
+            self.stats[k] = v.numpy()
+    
 
     def _setup_full_trajectory_data_from_windows(self):
         """Setup full trajectory data by concatenating all windows in the current split."""
@@ -730,6 +672,7 @@ class HandToObjectDataset(Dataset):
     def normalize_data(self, data, data_type):
         """Normalize data using computed statistics."""
         if not self.stats:
+            print("no stats!!! you'd better doing normailization right now!")
             return data
 
         mean = self.stats[f"{data_type}_mean"]
@@ -740,6 +683,7 @@ class HandToObjectDataset(Dataset):
     def denormalize_data(self, data, data_type):
         """Denormalize data using computed statistics."""
         if not self.stats:
+            print("no stats!!! you'd better doing normailization right now!")
             return data
 
         mean = self.stats[f"{data_type}_mean"]
@@ -795,6 +739,7 @@ class HandToObjectDataset(Dataset):
             "demo_id": window["demo_id"],
             "object_id": str(window["object_id"]),
             "is_motion": window["is_motion"],
+            "object_valid": window["object_valid"],
             "mean_velocity": window["mean_velocity"],
         }
 
@@ -947,6 +892,90 @@ def create_hand_to_object_dataset(
     )
 
 
+
+
+@hydra.main(config_path="../../../config", config_name="train", version_base=None)
+def compute_norm_stats(opt):
+    from torch.utils.data import DataLoader
+    ds = HandToObjectDataset(
+            is_train=True,
+            data_path=opt.traindata.data_path,
+            window_size=opt.model.window,
+            single_demo=opt.traindata.demo_id,
+            single_object=opt.traindata.target_object_id,
+            sampling_strategy="random",
+            split=opt.datasets.split,
+            split_seed=42,  # Ensure reproducible splits
+            noise_scheme="syn",
+            split_file=opt.traindata.split_file,
+            **opt.datasets.augument,
+            opt=opt,
+            data_cfg=opt.traindata,
+        )
+    dataloader = DataLoader(ds, batch_size=100, shuffle=True, num_workers=4)
+    all_target = []
+    all_hand = []
+    for b, batch in enumerate(dataloader):
+        hand_raw = batch['hand_raw']
+        all_hand.append(hand_raw)
+        
+        target = batch['target'] # (BS, T, D)
+        # target = batch['target_raw'] # (BS, T, D)
+        valid = batch['object_valid']  # (BS, )
+        target = target[valid]
+        print(target.shape)
+        all_target.append(target)
+        if b >= 1:
+            break
+    
+    all_hand = torch.cat(all_hand, axis=0)  # (BS, T, J*3*2)
+    all_hand = all_hand.reshape(-1, all_hand.shape[-1] // 2) # (BS, 2T, J*3)
+    print(all_hand.shape, 'hand shape')
+    hand_mean = torch.mean(all_hand, axis=0)
+    hand_std = torch.std(all_hand, axis=0)
+    print(hand_mean.shape, hand_std.shape)
+
+    
+    all_target = torch.cat(all_target, axis=0)
+    all_target = all_target.reshape(-1, all_target.shape[-1])
+    mean = torch.mean(all_target, axis=0)
+    std = torch.std(all_target, axis=0)
+    print(mean.shape, std.shape)
+    norm_target = (all_target - mean) / std
+
+    # for each dim, plot the distribution of the target, headless
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 10))
+    os.makedirs("outputs/compute_norm_stats", exist_ok=True)
+    for i in range(all_target.shape[1]):
+        plt.hist(target[:, i], bins=100)
+        plt.savefig(f"outputs/compute_norm_stats/target_dim_{i}.png")
+        plt.close()
+
+
+    # only use mean std for the first 3 dim, for the rest rotation: use 0, 1
+    mean[3:] = 0
+    std[3:] = 1
+
+    J = 21
+    hand_mean = mean[:3].reshape(1, 3).repeat(J, 1)  # repeat J times
+    hand_std = std[:3].reshape(1, 3).repeat(J, 1)  # repeat J times
+    metadata = {
+        "left_hand_mean": hand_mean,
+        "left_hand_std": hand_std,
+        "right_hand_mean": hand_mean,
+        "right_hand_std": hand_std,
+        "object_mean": mean,
+        "object_std": std,
+    }
+    for k, v in metadata.items():
+        metadata[k] = v.cpu().detach().numpy()
+
+    meta_file = osp.join(opt.paths.data_dir, "cache", f"metadata_{opt.traindata.name}.pkl")
+    os.makedirs(osp.dirname(meta_file), exist_ok=True)
+    pickle.dump(metadata, open(meta_file, 'wb'))
+    return mean, std
+
 def vis_traj():
     import plotly.graph_objects as go
 
@@ -1007,4 +1036,7 @@ if __name__ == "__main__":
     #     print(f"  Object ID: {sample['object_id']}")
     #     print(f"  Is motion: {sample['is_motion']}")
 
-    vis_traj()
+    # vis_traj()
+
+    
+    compute_norm_stats()

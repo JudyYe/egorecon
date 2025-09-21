@@ -1,7 +1,7 @@
-# @package _global_
-
-data:
-  data_root_folder: ${paths.data_dir}
-  data_path: ${data.data_root_folder}/HOT3D/pred_pose/mini_P0001_624f2ba9_3d.npz
-  demo_id: P0001_624f2ba9
-  target_object_id: null
+name: hot3d_mini
+data_root_folder: ${paths.data_dir}
+data_path: ${.data_root_folder}/HOT3D/pred_pose/mini_P0001_624f2ba9_3d.npz
+demo_id: P0001_624f2ba9
+target_object_id: 96945373046044+253405647833885+225397651484143 
+split_file: null
+meta_file: ${paths.data_dir}/cache/metadata_hot3d.pkl
