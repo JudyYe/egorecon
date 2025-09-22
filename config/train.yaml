@@ -19,9 +19,9 @@ defaults:
 
 
 # task name, determines output directory path
-task_name: ${expname}
 expname: ft
 exp_dir: ${paths.output_dir}/${expname}
+ngpu: 1
 log: wandb
 
 # set False to skip model training

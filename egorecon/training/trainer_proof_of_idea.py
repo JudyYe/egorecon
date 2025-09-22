@@ -26,7 +26,7 @@ from ..manip.model.transformer_hand_to_object_diffusion_model import (
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..utils.motion_repr import HandWrapper
-
+from move_utils.slurm_utils import slurm_engine
 
 def run_smplx_model(
     root_trans, aa_rot_rep, betas, gender, bm_dict, return_joints24=False
@@ -777,6 +777,7 @@ def run_train(opt, device):
 
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
+@slurm_engine()
 def main(opt):
     if opt.test:
         run_sample(opt, device)
@@ -784,7 +785,6 @@ def main(opt):
         run_train(opt, device)
     return
 
-
+device = torch.device(f"cuda:0")
 if __name__ == "__main__":
-    device = torch.device(f"cuda:0" if torch.cuda.is_available() else "cpu")
     main()

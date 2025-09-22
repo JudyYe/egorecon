@@ -1,24 +1,7 @@
-# @package _global_
-# https://hydra.cc/docs/configure_hydra/intro/
+# this is optional. But it's Judy's naming convention. 
 
-# enable color logging
-defaults:
-  - override /hydra/hydra_logging: colorlog
-  - override /hydra/job_logging: colorlog
-
-
-hydra:
-  run:
-    dir: ${exp_dir}/hydra
-  sweep:
-    dir: ${exp_dir}/hydra
-    subdir: ID${hydra.job.id}
-  job:
-    config:
-      override_dirname:
-        exclude_keys:
-          - trainer
-          - trainer.devices
-          - trainer.num_nodes
-          - callbacks
-          - debug
+run:
+  dir: ${exp_dir}/outputs
+sweep:
+  dir: ${exp_dir}/outputs
+  subdir: ID${hydra.job.id} 
