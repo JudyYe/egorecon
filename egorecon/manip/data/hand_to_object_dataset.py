@@ -182,6 +182,11 @@ class HandToObjectDataset(Dataset):
         # Create windows
         print(f"Creating windows for {self.split}...")
         self.windows = self._create_windows()
+        print("Created ", len(self.windows), " windows")
+        print("Filtering dynamic windows...")
+        if self.opt.dyn_only:
+            # only keep the dynamic windows
+            self._filter_windows()
         print(f"Created {len(self.windows)} windows")
 
         # Apply train/validation split
@@ -190,9 +195,6 @@ class HandToObjectDataset(Dataset):
         # Compute normalization statistics
         # self._compute_normalization_stats()
         self.stats = {}
-
-        # Setup full trajectory data for the current split
-        # self._setup_full_trajectory_data_from_windows()
 
         self.noise_std_params_dict = {
             "global_orient": noise_std_mano_global_rot,
@@ -256,15 +258,23 @@ class HandToObjectDataset(Dataset):
 
         return filtered_data
 
+    def _filter_windows(self, threshold=0.05):
+        """Filter windows to only include dynamic windows."""
+        origin_size = len(self.windows)
+        filtered_windows = [window for window in self.windows if window["is_motion"] > threshold]
+        self.windows = filtered_windows
+        print(f"{origin_size} -> {len(self.windows)} dynamic windows")
+
     def _create_windows(self):
         """Create sliding windows from trajectory data."""
         windows = []
         cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}.pkl")
         if osp.exists(cache_name):
+            print('loading window cache from ', cache_name)
             self.windows = pickle.load(open(cache_name, 'rb'))
             return self.windows
 
-        print('creating window cache')
+        print('creating window cache and save to ', cache_name)
         for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
             for obj_id, obj_data in demo_data["objects"].items():
 
@@ -532,6 +542,15 @@ class HandToObjectDataset(Dataset):
                     # Check if this is a motion window
                     is_motion = self._is_motion_window(cano_object_data)
                     window_data["is_motion"] = is_motion
+                    
+                    # Calculate mean velocity for the object trajectory
+                    if len(cano_object_data) > 1:
+                        # Calculate velocity as displacement between consecutive frames
+                        velocities = np.linalg.norm(np.diff(cano_object_data[:, :3], axis=0), axis=1)
+                        mean_velocity = np.mean(velocities)
+                    else:
+                        mean_velocity = 0.0
+                    window_data["mean_velocity"] = mean_velocity
 
                     if self.window_check(window_data):
                         windows.append(window_data)
@@ -551,30 +570,89 @@ class HandToObjectDataset(Dataset):
 
         return True
 
-    def _is_motion_window(self, object_traj):
-        """Determine if this window contains significant object motion."""
-        if len(object_traj) < 2:
-            return False
+    def _is_motion_window(self, object_traj, motion_threshold=0.05):
+        """Determine if this window contains significant object motion.
+        :param object_traj: [T, 3+6] - position (3D) + rotation (6D)
+        :return: bool
+        """
+        # Extract position and rotation from trajectory
+        positions = object_traj[:, :3]  # [T, 3]
+        rotations = object_traj[:, 3:]  # [T, 6]
+        
+        # Convert 6D rotation to rotation matrices
+        rot_matrices = rotation_6d_to_matrix_numpy(rotations)  # [T, 3, 3]
+        
+        # Define object keypoints: origin (0,0,0) and x,y,z axes with 0.01m length
+        keypoints_local = np.array([
+            [0.0, 0.0, 0.0],  # origin
+            [0.01, 0.0, 0.0], # x-axis
+            [0.0, 0.01, 0.0], # y-axis
+            [0.0, 0.0, 0.01]  # z-axis
+        ])  # [4, 3]
+        
+        # Transform keypoints to world coordinates for all frames at once
+        # keypoints_local: [4, 3], rot_matrices: [T, 3, 3], positions: [T, 3]
+        # Use batch matrix multiplication: [T, 3, 3] @ [3, 4] -> [T, 3, 4]
+        keypoints_world = np.einsum('tij,jk->tik', rot_matrices, keypoints_local.T)  # [T, 3, 4]
+        # Transpose to [T, 4, 3] and add translation
+        keypoints_world = keypoints_world.transpose(0, 2, 1) + positions[:, np.newaxis, :]  # [T, 4, 3]
+        
+        # Calculate accumulated motion for all keypoints at once
+        # Calculate displacement between consecutive frames for all keypoints
+        # keypoints_world: [T, 4, 3] -> diff: [T-1, 4, 3]
+        displacements = np.linalg.norm(np.diff(keypoints_world, axis=0), axis=2)  # [T-1, 4]
+        
+        # Sum displacements across time for each keypoint, then sum across all keypoints
+        total_motion = np.sum(displacements)  # Scalar
+        
+        # Check if total motion exceeds threshold
+        return total_motion
 
-        # Extract positions (first 3 dimensions)
-        positions = object_traj[:, :3]
-        velocities = np.linalg.norm(np.diff(positions, axis=0), axis=1)
-
-        # Check if there are consecutive frames above threshold
-        above_threshold = velocities > self.motion_threshold
-
-        # Find longest consecutive sequence
-        max_consecutive = 0
-        current_consecutive = 0
-
-        for is_moving in above_threshold:
-            if is_moving:
-                current_consecutive += 1
-                max_consecutive = max(max_consecutive, current_consecutive)
-            else:
-                current_consecutive = 0
-
-        return max_consecutive >= self.min_motion_frames
+    def _batchify_is_motion_window(self, object_data, motion_threshold=0.05):
+        """Batch version: Determine motion for multiple windows at once.
+        :param object_data: [NUM_WINDOWS, T, 3+6] - position (3D) + rotation (6D) for multiple windows
+        :param motion_threshold: float - threshold for motion detection
+        :return: [NUM_WINDOWS] - boolean array indicating motion for each window
+        """
+        num_windows, T, D = object_data.shape
+        
+        # Extract position and rotation from trajectory
+        positions = object_data[:, :, :3]  # [NUM_WINDOWS, T, 3]
+        rotations = object_data[:, :, 3:]  # [NUM_WINDOWS, T, 6]
+        
+        # Convert 6D rotation to rotation matrices for all windows
+        # Reshape to [NUM_WINDOWS * T, 6] for batch conversion
+        rotations_flat = rotations.reshape(-1, 6)  # [NUM_WINDOWS * T, 6]
+        rot_matrices_flat = rotation_6d_to_matrix_numpy(rotations_flat)  # [NUM_WINDOWS * T, 3, 3]
+        rot_matrices = rot_matrices_flat.reshape(num_windows, T, 3, 3)  # [NUM_WINDOWS, T, 3, 3]
+        
+        # Define object keypoints: origin (0,0,0) and x,y,z axes with 0.01m length
+        keypoints_local = np.array([
+            [0.0, 0.0, 0.0],  # origin
+            [0.01, 0.0, 0.0], # x-axis
+            [0.0, 0.01, 0.0], # y-axis
+            [0.0, 0.0, 0.01]  # z-axis
+        ])  # [4, 3]
+        
+        # Transform keypoints to world coordinates for all windows and frames at once
+        # keypoints_local: [4, 3], rot_matrices: [NUM_WINDOWS, T, 3, 3], positions: [NUM_WINDOWS, T, 3]
+        # Use batch matrix multiplication: [NUM_WINDOWS, T, 3, 3] @ [3, 4] -> [NUM_WINDOWS, T, 3, 4]
+        keypoints_world = np.einsum('ntij,jk->ntik', rot_matrices, keypoints_local.T)  # [NUM_WINDOWS, T, 3, 4]
+        # Transpose to [NUM_WINDOWS, T, 4, 3] and add translation
+        keypoints_world = keypoints_world.transpose(0, 1, 3, 2) + positions[:, :, np.newaxis, :]  # [NUM_WINDOWS, T, 4, 3]
+        
+        # Calculate accumulated motion for all windows and keypoints at once
+        # Calculate displacement between consecutive frames for all keypoints
+        # keypoints_world: [NUM_WINDOWS, T, 4, 3] -> diff: [NUM_WINDOWS, T-1, 4, 3]
+        displacements = np.linalg.norm(np.diff(keypoints_world, axis=1), axis=3)  # [NUM_WINDOWS, T-1, 4]
+        
+        # Sum displacements across time and keypoints for each window
+        total_motion = np.sum(displacements, axis=(1, 2))  # [NUM_WINDOWS]
+        
+        # Check if total motion exceeds threshold for each window
+        is_motion = total_motion > motion_threshold  # [NUM_WINDOWS]
+        
+        return is_motion
 
     def _apply_sampling_strategy(self, windows):
         """Apply sampling strategy to balance motion vs stationary windows."""
@@ -612,7 +690,6 @@ class HandToObjectDataset(Dataset):
         else:  # 'random'
             return windows
 
-
     def set_metadata(self):
         """Compute normalization statistics for the dataset."""
         meta_file = self.data_cfg.meta_file
@@ -620,10 +697,7 @@ class HandToObjectDataset(Dataset):
             print(f'compute metadata....  and save to {meta_file}')
             compute_norm_stats(self.opt)
         print(f'using loadded metadata from {meta_file}')
-        self.stats = pickle.load(open(meta_file, 'rb'))
-        for k, v in self.stats.items():
-            self.stats[k] = v.numpy()
-    
+        self.stats = pickle.load(open(meta_file, 'rb'))    
 
     def _setup_full_trajectory_data_from_windows(self):
         """Setup full trajectory data by concatenating all windows in the current split."""
@@ -723,10 +797,12 @@ class HandToObjectDataset(Dataset):
             self.normalize_data(window_noisy["object"], "object")
         )
 
-        # Concatenate hand inputs for conditioning
         condition = torch.cat(
-            [left_hand_norm, right_hand_norm, traj_noisy_norm], dim=-1
-        )  # [T, 3*D]
+                [left_hand_norm, right_hand_norm], dim=-1
+        )
+        # Concatenate hand inputs for conditioning
+        if self.opt.condition.noisy_obj:
+            condition = torch.cat([condition, traj_noisy_norm], dim=-1)
 
         return {
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
@@ -958,8 +1034,8 @@ def compute_norm_stats(opt):
     std[3:] = 1
 
     J = 21
-    hand_mean = mean[:3].reshape(1, 3).repeat(J, 1)  # repeat J times
-    hand_std = std[:3].reshape(1, 3).repeat(J, 1)  # repeat J times
+    hand_mean = mean[:3].reshape(1, 3).repeat(J, 1).reshape(-1)  # repeat J times
+    hand_std = std[:3].reshape(1, 3).repeat(J, 1).reshape(-1)  # repeat J times
     metadata = {
         "left_hand_mean": hand_mean,
         "left_hand_std": hand_std,
@@ -969,7 +1045,7 @@ def compute_norm_stats(opt):
         "object_std": std,
     }
     for k, v in metadata.items():
-        metadata[k] = v.cpu().detach().numpy()
+        metadata[k] = v.cpu().detach().numpy().reshape(1, -1)
 
     meta_file = osp.join(opt.paths.data_dir, "cache", f"metadata_{opt.traindata.name}.pkl")
     os.makedirs(osp.dirname(meta_file), exist_ok=True)

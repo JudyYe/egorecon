@@ -1,0 +1,26 @@
+# @package _global_
+
+defaults:
+  - default.yaml
+
+
+
+general: 
+  rerun: false
+  wandb: false
+  train_num_steps: 1_000_000
+  vis_every: 10000  # vis_every = k* eval_every  but can be divisible by eval_every
+  eval_every: 10000
+  save_and_sample_every: 10000
+
+
+datasets:
+  t0: 300
+  # one_window: true
+  split: train
+  test_split: mini
+
+condition: 
+  noisy_obj: false
+
+dyn_only: true

@@ -8,6 +8,12 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
+python -m egorecon.training.trainer_proof_of_idea    \
+  expname=dynamic_obj/dyn_on\${dyn_only}_cond_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+
+
+
 -
 python -m egorecon.training.trainer_proof_of_idea    \
   expname=dev/tmp_test_meta \

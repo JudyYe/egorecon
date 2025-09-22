@@ -17,6 +17,11 @@ train:
   ema_update_every: 10
 
 
+condition: 
+  noisy_obj: true
+
+dyn_only: false
+
 model: 
   window: 120
   n_dec_layers: 4

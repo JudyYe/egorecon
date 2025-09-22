@@ -315,7 +315,7 @@ class Trainer(object):
             batch_size=1,
             shuffle=False,
             pin_memory=True,
-            num_workers=4,
+            num_workers=1,
         )
         
 
@@ -572,7 +572,7 @@ class Trainer(object):
         object_pred_raw, _ = diffusion_model.sample_raw(
             torch.randn_like(object_motion), cond, padding_mask=padding_mask
         )
-
+        print('object_pred_raw: ', object_pred_raw.shape, 'object_motion_raw: ', object_motion_raw.shape, object_motion.shape)
         metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
         # if needs to save
@@ -684,15 +684,20 @@ class Trainer(object):
         pref="training/",
         object_id=None,
     ):
+
+        kwargs = {
+            "object_pred": object_pred,
+            "seq_len": seq_len,
+            "pref": pref,
+        }
+        if self.opt.condition.noisy_obj:
+            kwargs["object_noisy"] = object_noisy
         self.visualizer.log_training_step(
             step,
             left_hand,
             right_hand,
             object_gt,
-            object_pred=object_pred,
-            object_noisy=object_noisy,
-            seq_len=seq_len,
-            pref=pref,
+            **kwargs
         )
         left_hand_verts, left_hand_faces = self.hand_wrapper.joint2verts_faces(left_hand[0])
         right_hand_verts, right_hand_faces = self.hand_wrapper.joint2verts_faces(right_hand[0])
@@ -702,8 +707,12 @@ class Trainer(object):
         right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
         right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
 
-        wTo_list = [object_gt[0], object_pred[0], object_noisy[0]]
-        color_list = ['red', 'yellow', 'purple']
+
+        wTo_list = [object_gt[0], object_pred[0]]
+        color_list = ['red', 'yellow']
+        if self.opt.condition.noisy_obj:
+            wTo_list.append(object_noisy[0])
+            color_list.append('purple')
 
         return self.viz_off.log_training_step(
             left_hand_meshes,
@@ -731,7 +740,9 @@ def run_train(opt, device):
     repr_dim = 24 * 3 + 22 * 6
 
     repr_dim = 9  # Output dimension (3D translation + 6D rotation)
-    cond_dim = 2 * 21 * 3 + 9  # Input dimension (2 hands × pose_dim each)
+    cond_dim = 2 * 21 * 3 
+    if opt.condition.noisy_obj:
+        cond_dim += 9  # Input dimension (2 hands × pose_dim each)
 
     diffusion_model = CondGaussianDiffusion(
         opt,

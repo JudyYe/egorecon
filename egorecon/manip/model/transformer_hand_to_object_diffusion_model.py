@@ -301,8 +301,8 @@ class CondGaussianDiffusion(nn.Module):
         mean = stats["object_mean"]
         std = stats["object_std"]
         print("mean", mean.shape, std.shape)
-        self.register_buffer("mean", torch.FloatTensor(mean[None, None]))
-        self.register_buffer("std", torch.FloatTensor(std[None, None]))
+        self.register_buffer("mean", torch.FloatTensor(mean.reshape(1, 1, -1)))
+        self.register_buffer("std", torch.FloatTensor(std.reshape(1, 1, -1)))
 
     def normalize_data(self, data):
         return (data - self.mean) / self.std
