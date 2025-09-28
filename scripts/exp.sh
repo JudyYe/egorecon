@@ -9,6 +9,16 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dynamic_obj2/dyn_on\${dyn_only}_cond_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true,false condition.noisy_obj=false,true \
+  general.rerun=True general.wandb=true \
+  +engine=move
+
+
+
 python -m egorecon.manip.data.hand_to_object_dataset
 
 

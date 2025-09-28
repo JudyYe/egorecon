@@ -187,8 +187,8 @@ class HandToObjectDataset(Dataset):
         print("Filtering dynamic windows...")
         if self.opt.dyn_only:
             # only keep the dynamic windows
-            self._filter_windows()
-        print(f"Created {len(self.windows)} windows")
+            self._filter_windows(threshold=th)
+            print(f"Filtered to {len(self.windows)} dynamic windows")
 
         # Apply train/validation split
         print(f"Created {len(self.windows)} {self.split} windows")
@@ -597,7 +597,7 @@ class HandToObjectDataset(Dataset):
                     # cano_right_wrist_rot6d = matrix_to_rotation_6d_numpy(
                     #     cano_right_wrist_rot_mat
                     # )
-                    print('debug')
+                    # print('debug')
                     # cano_object_rot_mat = quaternion_to_matrix_numpy(cano_object_quat)
                     # cano_object_rot6d = matrix_to_rotation_6d_numpy(cano_object_rot_mat)
 
@@ -672,8 +672,8 @@ class HandToObjectDataset(Dataset):
                         window_data["object_shelf"] = cano_object_shelf_data
 
                     # Check if this is a motion window
-                    # is_motion = self._is_motion_window(cano_object_data)
-                    is_motion = True
+                    is_motion = self._is_motion_window(cano_object_data)
+                    # is_motion = True
                     window_data["is_motion"] = is_motion
                     
                     # Calculate mean velocity for the object trajectory
@@ -734,6 +734,7 @@ class HandToObjectDataset(Dataset):
         # Calculate displacement between consecutive frames for all keypoints
         # keypoints_world: [T, 4, 3] -> diff: [T-1, 4, 3]
         displacements = np.linalg.norm(np.diff(keypoints_world, axis=0), axis=2)  # [T-1, 4]
+        displacements = displacements.mean(axis=-1)
         
         # Sum displacements across time for each keypoint, then sum across all keypoints
         total_motion = np.sum(displacements)  # Scalar
@@ -1216,7 +1217,7 @@ def vis_clip(opt):
             data_path=opt.traindata.data_path,
             window_size=opt.model.window,
             single_demo="P0001_624f2ba9",
-            single_object="225397651484143",
+            # single_object="225397651484143",
             sampling_strategy="random",
             split=opt.datasets.split,
             split_seed=42,  # Ensure reproducible splits
@@ -1231,6 +1232,7 @@ def vis_clip(opt):
     dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
     for b, batch in enumerate(dataloader):
         batch = model_utils.to_cuda(batch, device)
+        print('motion', batch['is_motion'])
 
         wTo = batch['target_raw']  # (1, T, D)
         hand_raw = batch['hand_raw']  # (1, T, 2*D)
@@ -1419,6 +1421,8 @@ def vis_traj(cano=False):
 
         break
 
+
+th = 0.05
 use_cache = False
 if __name__ == "__main__":
     

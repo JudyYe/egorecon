@@ -467,10 +467,10 @@ class Trainer(object):
         object_motion = sample["target"][:bs_for_vis]
 
         # add guide
-        guided_object_pred_raw, _ = diffusion_model.sample_raw(
-            torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
-        )
-        metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+        # guided_object_pred_raw, _ = diffusion_model.sample_raw(
+        #     torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
+        # )
+        # metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
         object_pred_raw, _ = diffusion_model.sample_raw(
             torch.randn_like(object_motion), cond, padding_mask=padding_mask
@@ -478,7 +478,7 @@ class Trainer(object):
         print('object_pred_raw: ', object_pred_raw.shape, 'object_motion_raw: ', object_motion_raw.shape, object_motion.shape)
         metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
-        metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
+        # metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
 
         if self.step % self.vis_every == 0:
             bs_for_vis = 1
@@ -498,16 +498,16 @@ class Trainer(object):
                 object_id = val_data_dict["object_id"][bs_for_vis-1]
                 wandb.log({f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step)
             
-            fname = self.gen_vis_res(
-                self.step,
-                left_hand_raw[:bs_for_vis],
-                right_hand_raw[:bs_for_vis],
-                object_motion_raw[:bs_for_vis],
-                object_pred=guided_object_pred_raw[:bs_for_vis],
-                object_id=val_data_dict["object_id"][bs_for_vis-1],
-                seq_len=seq_len,
-                pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
-            )
+            # fname = self.gen_vis_res(
+            #     self.step,
+            #     left_hand_raw[:bs_for_vis],
+            #     right_hand_raw[:bs_for_vis],
+            #     object_motion_raw[:bs_for_vis],
+            #     object_pred=guided_object_pred_raw[:bs_for_vis],
+            #     object_id=val_data_dict["object_id"][bs_for_vis-1],
+            #     seq_len=seq_len,
+            #     pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
+            # )
             if self.use_wandb:
                 wandb.log({f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)}, step=self.step)
         return metrics
@@ -588,6 +588,7 @@ class Trainer(object):
 
         return metrics
     
+    @torch.no_grad()
     def gen_vis_res(
         self,
         step,

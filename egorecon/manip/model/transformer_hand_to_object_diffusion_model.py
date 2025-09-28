@@ -425,7 +425,7 @@ class CondGaussianDiffusion(nn.Module):
             wTc = geom_utils.rt_to_homo(wTc_mat, wTc_tsl)
             cTw = geom_utils.inverse_rt_v2(wTc)
 
-            print("todo: proxy for proof of idea")
+            # print("todo: proxy for proof of idea")
             wTo_gt = batch['target_raw']
             # iPoints_gt = batch['iPoints']   # (B, T, P, 2)
 
@@ -441,7 +441,7 @@ class CondGaussianDiffusion(nn.Module):
             grad = torch.autograd.grad([loss.sum()], [x])[0]  # 
             # grad[..., 0] = 0
             x.detach()
-        print("grad: ", grad.shape, 'loss: ', loss)
+        # print("grad: ", grad.shape, 'loss: ', loss)
         return loss, grad
     
     def project_oPoints(self, oPoints, wTo_pred_se3, intr, cTw):
