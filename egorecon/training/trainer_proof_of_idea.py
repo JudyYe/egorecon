@@ -28,121 +28,12 @@ from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..utils.motion_repr import HandWrapper
 from move_utils.slurm_utils import slurm_engine
 
-def run_smplx_model(
-    root_trans, aa_rot_rep, betas, gender, bm_dict, return_joints24=False
-):
-    # root_trans: BS X T X 3
-    # aa_rot_rep: BS X T X 22 X 3
-    # betas: BS X 16
-    # gender: BS
-    bs, num_steps, num_joints, _ = aa_rot_rep.shape
-    if num_joints != 52:
-        padding_zeros_hand = torch.zeros(bs, num_steps, 30, 3).to(
-            aa_rot_rep.device
-        )  # BS X T X 30 X 3
-        aa_rot_rep = torch.cat(
-            (aa_rot_rep, padding_zeros_hand), dim=2
-        )  # BS X T X 52 X 3
-
-    aa_rot_rep = aa_rot_rep.reshape(bs * num_steps, -1, 3)  # (BS*T) X n_joints X 3
-    betas = (
-        betas[:, None, :].repeat(1, num_steps, 1).reshape(bs * num_steps, -1)
-    )  # (BS*T) X 16
-    gender = np.asarray(gender)[:, np.newaxis].repeat(num_steps, axis=1)
-    gender = gender.reshape(-1).tolist()  # (BS*T)
-
-    smpl_trans = root_trans.reshape(-1, 3)  # (BS*T) X 3
-    smpl_betas = betas  # (BS*T) X 16
-    smpl_root_orient = aa_rot_rep[:, 0, :]  # (BS*T) X 3
-    smpl_pose_body = aa_rot_rep[:, 1:22, :].reshape(-1, 63)  # (BS*T) X 63
-    smpl_pose_hand = aa_rot_rep[:, 22:, :].reshape(-1, 90)  # (BS*T) X 90
-
-    B = smpl_trans.shape[0]  # (BS*T)
-
-    smpl_vals = [
-        smpl_trans,
-        smpl_root_orient,
-        smpl_betas,
-        smpl_pose_body,
-        smpl_pose_hand,
-    ]
-    # batch may be a mix of genders, so need to carefully use the corresponding SMPL body model
-    gender_names = ["male", "female"]
-    pred_joints = []
-    pred_verts = []
-    prev_nbidx = 0
-    cat_idx_map = np.ones((B), dtype=int) * -1
-    for gender_name in gender_names:
-        gender_idx = np.array(gender) == gender_name
-        nbidx = np.sum(gender_idx)
-
-        cat_idx_map[gender_idx] = np.arange(prev_nbidx, prev_nbidx + nbidx, dtype=int)
-        prev_nbidx += nbidx
-
-        gender_smpl_vals = [val[gender_idx] for val in smpl_vals]
-
-        if nbidx == 0:
-            # skip if no frames for this gender
-            continue
-
-        # reconstruct SMPL
-        (
-            cur_pred_trans,
-            cur_pred_orient,
-            cur_betas,
-            cur_pred_pose,
-            cur_pred_pose_hand,
-        ) = gender_smpl_vals
-        bm = bm_dict[gender_name]
-
-        pred_body = bm(
-            pose_body=cur_pred_pose,
-            pose_hand=cur_pred_pose_hand,
-            betas=cur_betas,
-            root_orient=cur_pred_orient,
-            trans=cur_pred_trans,
-        )
-
-        pred_joints.append(pred_body.Jtr)
-        pred_verts.append(pred_body.v)
-
-    # cat all genders and reorder to original batch ordering
-    if return_joints24:
-        x_pred_smpl_joints_all = torch.cat(pred_joints, axis=0)  # () X 52 X 3
-        lmiddle_index = 28
-        rmiddle_index = 43
-        x_pred_smpl_joints = torch.cat(
-            (
-                x_pred_smpl_joints_all[:, :22, :],
-                x_pred_smpl_joints_all[:, lmiddle_index : lmiddle_index + 1, :],
-                x_pred_smpl_joints_all[:, rmiddle_index : rmiddle_index + 1, :],
-            ),
-            dim=1,
-        )
-    else:
-        x_pred_smpl_joints = torch.cat(pred_joints, axis=0)[:, :num_joints, :]
-
-    x_pred_smpl_joints = x_pred_smpl_joints[cat_idx_map]  # (BS*T) X 22 X 3
-
-    x_pred_smpl_verts = torch.cat(pred_verts, axis=0)
-    x_pred_smpl_verts = x_pred_smpl_verts[cat_idx_map]  # (BS*T) X 6890 X 3
-
-    x_pred_smpl_joints = x_pred_smpl_joints.reshape(
-        bs, num_steps, -1, 3
-    )  # BS X T X 22 X 3/BS X T X 24 X 3
-    x_pred_smpl_verts = x_pred_smpl_verts.reshape(
-        bs, num_steps, -1, 3
-    )  # BS X T X 6890 X 3
-
-    mesh_faces = pred_body.f
-
-    return x_pred_smpl_joints, x_pred_smpl_verts, mesh_faces
-
 
 def cycle(dl):
     while True:
         for data in dl:
             yield data
+
 
 
 class Trainer(object):
@@ -200,10 +91,10 @@ class Trainer(object):
             save_runid()
 
         self.batch_size = train_batch_size
+        self.model = diffusion_model
+
         self.prep_dataloader(window_size=opt.model.window)
 
-        self.model = diffusion_model
-        diffusion_model.set_metadata(self.ds.stats)
         diffusion_model.to(device)
         self.ema = EMA(diffusion_model, beta=ema_decay, update_every=ema_update_every)
 
@@ -256,6 +147,15 @@ class Trainer(object):
 
     def prep_dataloader(self, window_size):
         opt = self.opt
+        if not opt.test:
+            self.prep_train_dataset(opt)
+            self.model.set_metadata(self.ds.stats)
+            self.prep_val_dataset(opt)
+        else:
+            self.prep_val_dataset(opt)
+            self.model.set_metadata(self.val_ds.stats)
+
+    def prep_train_dataset(self, opt):
         train_dataset = HandToObjectDataset(
             is_train=True,
             data_path=opt.traindata.data_path,
@@ -272,7 +172,17 @@ class Trainer(object):
             data_cfg=opt.traindata,
         )
         train_dataset.set_metadata()
-
+        self.ds = train_dataset
+        self.dl = cycle(
+            data.DataLoader(
+                self.ds,
+                batch_size=self.batch_size,
+                shuffle=True,
+                pin_memory=True,
+                num_workers=4,
+            )
+        )
+    def prep_val_dataset(self, opt):
         val_dataset = HandToObjectDataset(
             is_train=False,
             data_path=opt.testdata.data_path,
@@ -289,27 +199,7 @@ class Trainer(object):
             data_cfg=opt.testdata,
         )
         val_dataset.set_metadata()
-
-        self.ds = train_dataset
         self.val_ds = val_dataset
-        self.dl = cycle(
-            data.DataLoader(
-                self.ds,
-                batch_size=self.batch_size,
-                shuffle=True,
-                pin_memory=True,
-                num_workers=4,
-            )
-        )
-        # self.val_dl = cycle(
-        #     data.DataLoader(
-        #         self.val_ds,
-        #         batch_size=1,
-        #         shuffle=False,
-        #         pin_memory=True,
-        #         num_workers=4,
-        #     )
-        # )
         self.val_dl = data.DataLoader(
             self.val_ds,
             batch_size=1,
@@ -317,7 +207,7 @@ class Trainer(object):
             pin_memory=True,
             num_workers=1,
         )
-        
+
 
     def save(self, milestone):
         data = {
@@ -509,6 +399,13 @@ class Trainer(object):
         if self.use_wandb:
             wandb.run.finish()
 
+    def test(self):
+        self.ema.ema_model.eval()
+        with torch.no_grad():
+            for b, val_data_dict in enumerate(self.val_dl):
+                val_data_dict = model_utils.to_cuda(val_data_dict)
+                self.validation_step(val_data_dict, pref=f"eval/")
+
     def accumulate_metrics(self, metrics, all_metrics, pref):
         for metric_name, metric_dict in metrics.items():
             if metric_name not in all_metrics:
@@ -569,14 +466,20 @@ class Trainer(object):
         seq_len = torch.tensor([cond.shape[1]])
         object_motion = sample["target"][:bs_for_vis]
 
+        # add guide
+        guided_object_pred_raw, _ = diffusion_model.sample_raw(
+            torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
+        )
+        metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+
         object_pred_raw, _ = diffusion_model.sample_raw(
             torch.randn_like(object_motion), cond, padding_mask=padding_mask
         )
         print('object_pred_raw: ', object_pred_raw.shape, 'object_motion_raw: ', object_motion_raw.shape, object_motion.shape)
         metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
-        # if needs to save
-        
+        metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
+
         if self.step % self.vis_every == 0:
             bs_for_vis = 1
             
@@ -594,6 +497,19 @@ class Trainer(object):
             if self.use_wandb:
                 object_id = val_data_dict["object_id"][bs_for_vis-1]
                 wandb.log({f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step)
+            
+            fname = self.gen_vis_res(
+                self.step,
+                left_hand_raw[:bs_for_vis],
+                right_hand_raw[:bs_for_vis],
+                object_motion_raw[:bs_for_vis],
+                object_pred=guided_object_pred_raw[:bs_for_vis],
+                object_id=val_data_dict["object_id"][bs_for_vis-1],
+                seq_len=seq_len,
+                pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
+            )
+            if self.use_wandb:
+                wandb.log({f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)}, step=self.step)
         return metrics
     
     def eval_step(self, pred_moton, gt_motion, object_id_list, scale=0.05):
@@ -754,6 +670,10 @@ def run_train(opt, device):
         loss_type="l1",
         **opt.model,
     )
+    if opt.ckpt:
+        ckpt = torch.load(opt.ckpt)
+        model_utils.load_my_state_dict(diffusion_model, ckpt['model'])
+
     diffusion_model.to(device)
 
     trainer = Trainer(
@@ -771,18 +691,23 @@ def run_train(opt, device):
         train_num_steps=opt.general.train_num_steps,
     )
 
-    trainer.train()
+    if opt.test:
+        trainer.test()
+    else:
+        trainer.train()
 
     torch.cuda.empty_cache()
+
+
 
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()
 def main(opt):
-    if opt.test:
-        run_sample(opt, device)
-    else:
-        run_train(opt, device)
+    # if opt.test:
+    #     run_sample(opt, device)
+    # else:
+    run_train(opt, device)
     return
 
 device = torch.device(f"cuda:0")

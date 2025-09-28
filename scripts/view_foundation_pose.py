@@ -1852,13 +1852,13 @@ if __name__ == "__main__":
     # Fire(run_mono_depth)
     # Fire(esitimate_alpha)
 
-    # Fire(vis_meta)
+    Fire(vis_meta)
     
     # Fire(make_a_mini_dataset)
 
     # Fire(make_all_dataset)
 
-    compute_norm_stats()
+    # compute_norm_stats()
     # Fire(vis_mini_dataset)
 
 

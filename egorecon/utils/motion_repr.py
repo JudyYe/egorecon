@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation as R
 class HandWrapper(nn.Module):
     def __init__(self, mano_dir):
         super().__init__()
-        self.sided_mano_models = {
+        sided_mano_models = {
             'left': smplx.create(
                 os.path.join(mano_dir, 'MANO_LEFT.pkl'),
                 'mano',
@@ -26,6 +26,7 @@ class HandWrapper(nn.Module):
                 num_pca_comps=15,
             ),
         }
+        self.sided_mano_models = nn.ModuleDict(sided_mano_models)
     
     def joint2verts_faces(self, joints, ):
         """
@@ -46,6 +47,21 @@ class HandWrapper(nn.Module):
 
         return verts, faces
 
+    def para2dict(self, hand_para, hand_shape, ):
+        body_params_dict = {
+            'transl': hand_para[:, 3:6],
+            'global_orient': hand_para[:, :3],
+            'betas': hand_shape,
+            'hand_pose': hand_para[:, 6:],
+        }
+        return body_params_dict
+
+    
+    def dict2para(self, body_params_dict, side='right'):
+        hand_para = torch.cat([body_params_dict['global_orient'], body_params_dict['transl'], body_params_dict['hand_pose']], dim=-1)
+        hand_shape = body_params_dict['betas']
+        return hand_para, hand_shape
+
     def hand_para2verts_faces_joints(self, hand_para, hand_shape, side='right'):
         """
         :param hand_para: (B, T, 3+3+15)
@@ -58,16 +74,20 @@ class HandWrapper(nn.Module):
         hand_shape = hand_shape.reshape(-1, hand_shape.shape[-1])
 
         model = self.sided_mano_models[side]
-        body_params_dict = {
-            'transl': hand_para[:, :3],
-            'global_orient': hand_para[:, 3:6],
-            'betas': hand_shape,
-            'hand_pose': hand_para[:, 6:],
-        }
-        
+        if isinstance(hand_para, torch.Tensor):
+            body_params_dict = {
+                'transl': hand_para[:, 3:6],
+                'global_orient': hand_para[:, :3],
+                'betas': hand_shape,
+                'hand_pose': hand_para[:, 6:],
+            }
+        elif isinstance(hand_para, dict):
+            body_params_dict = hand_para
+        else:
+            raise ValueError(f"Invalid hand_para type: {type(hand_para)}")
+
         mano_out = model(**body_params_dict)
         hand_verts = mano_out.vertices
-        print('face', model.faces_tensor.shape)
         hand_faces = model.faces_tensor.repeat(hand_verts.shape[0], 1, 1)
         hand_joints = mano_out.joints
 
@@ -112,6 +132,7 @@ def cano_seq_mano(canoTw, positions, mano_params_dict, return_transf_mat=False, 
             cano_smplx_params_dict_torch[key] = torch.FloatTensor(cano_smplx_params_dict[key])
         canoPositions = mano_model(**cano_smplx_params_dict_torch).joints
     
+    # cano_smplx_params_dict = {k: v.astype(np.float32) for k, v in cano_smplx_params_dict.items()}
 
     if not return_transf_mat:
         return canoPositions, cano_smplx_params_dict
@@ -138,7 +159,10 @@ def update_globalRT_for_smplx(body_param_dict, trans_to_target_origin, mano_mode
     if delta_T is None:
         body_param_dict_torch = {}
         for key in body_param_dict.keys():
-            body_param_dict_torch[key] = torch.FloatTensor(body_param_dict[key]).to(device)
+            if isinstance(body_param_dict[key], np.ndarray):
+                body_param_dict_torch[key] = torch.FloatTensor(body_param_dict[key]).to(device)
+            else:
+                body_param_dict_torch[key] = body_param_dict[key].to(device)
         body_param_dict_torch['transl'] = torch.zeros([bs, 3], dtype=torch.float32).to(device)
 
         smpl_out = mano_model(**body_param_dict_torch)
@@ -216,7 +240,7 @@ def test():
 
     smpl_out = model(**body_param_dict_torch)
     wPositions = smpl_out.joints  # (T, 21, 3)
-    print('positions shape: ', wPositions.shape, wPositions)
+
 
     canoPositions, cano_smplx_params_dict = cano_seq_mano(canoTw, wPositions, body_param_dict, mano_model=model, device='cpu')
     cano_smplx_params_dict_torch = {}

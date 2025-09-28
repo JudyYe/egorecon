@@ -32,7 +32,7 @@ train: True
 test: False
 
 # simply provide checkpoint path to resume training
-ckpt_path: null
+ckpt: null
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: null

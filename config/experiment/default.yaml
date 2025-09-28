@@ -63,3 +63,7 @@ datasets:
 #   data_path: ${testdata.data_root_folder}/HOT3D/pred_pose/mini_P0001_624f2ba9_3d.npz
 #   demo_id: P0001_624f2ba9
 #   target_object_id: 96945373046044+253405647833885+225397651484143
+
+
+guide:
+  hint: reproj_com

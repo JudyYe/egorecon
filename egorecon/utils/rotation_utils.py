@@ -8,44 +8,44 @@ import torch
 import numpy as np
 
 
-def rotation_6d_to_matrix(rotation_6d):
-    """
-    Convert 6D rotation representation to rotation matrix using Gram-Schmidt orthogonalization.
+# def rotation_6d_to_matrix(rotation_6d):
+#     """
+#     Convert 6D rotation representation to rotation matrix using Gram-Schmidt orthogonalization.
     
-    This is compatible with pytorch3d's rotation_6d_to_matrix function.
+#     This is compatible with pytorch3d's rotation_6d_to_matrix function.
     
-    Args:
-        rotation_6d: tensor of shape [..., 6] - 6D rotation representation
-                    First 3 elements represent the first column of rotation matrix
-                    Last 3 elements represent the second column of rotation matrix
+#     Args:
+#         rotation_6d: tensor of shape [..., 6] - 6D rotation representation
+#                     First 3 elements represent the first column of rotation matrix
+#                     Last 3 elements represent the second column of rotation matrix
     
-    Returns:
-        rotation matrix of shape [..., 3, 3]
-    """
-    if isinstance(rotation_6d, np.ndarray):
-        return rotation_6d_to_matrix_numpy(rotation_6d)
+#     Returns:
+#         rotation matrix of shape [..., 3, 3]
+#     """
+#     if isinstance(rotation_6d, np.ndarray):
+#         return rotation_6d_to_matrix_numpy(rotation_6d)
     
-    batch_shape = rotation_6d.shape[:-1]
-    rotation_6d = rotation_6d.view(-1, 6)
+#     batch_shape = rotation_6d.shape[:-1]
+#     rotation_6d = rotation_6d.view(-1, 6)
     
-    # Extract first two columns
-    col1 = rotation_6d[:, :3]  # First column
-    col2 = rotation_6d[:, 3:]  # Second column
+#     # Extract first two columns
+#     col1 = rotation_6d[:, :3]  # First column
+#     col2 = rotation_6d[:, 3:]  # Second column
     
-    # Normalize first column
-    col1 = col1 / torch.norm(col1, dim=-1, keepdim=True)
+#     # Normalize first column
+#     col1 = col1 / torch.norm(col1, dim=-1, keepdim=True)
     
-    # Gram-Schmidt orthogonalization for second column
-    col2 = col2 - torch.sum(col1 * col2, dim=-1, keepdim=True) * col1
-    col2 = col2 / torch.norm(col2, dim=-1, keepdim=True)
+#     # Gram-Schmidt orthogonalization for second column
+#     col2 = col2 - torch.sum(col1 * col2, dim=-1, keepdim=True) * col1
+#     col2 = col2 / torch.norm(col2, dim=-1, keepdim=True)
     
-    # Third column is cross product
-    col3 = torch.cross(col1, col2, dim=-1)
+#     # Third column is cross product
+#     col3 = torch.cross(col1, col2, dim=-1)
     
-    # Stack columns to form rotation matrix
-    matrix = torch.stack([col1, col2, col3], dim=-1)
+#     # Stack columns to form rotation matrix
+#     matrix = torch.stack([col1, col2, col3], dim=-1)
     
-    return matrix.view(*batch_shape, 3, 3)
+#     return matrix.view(*batch_shape, 3, 3)
 
 
 def rotation_6d_to_matrix_numpy(rotation_6d):
@@ -58,61 +58,39 @@ def rotation_6d_to_matrix_numpy(rotation_6d):
     Returns:
         rotation matrix of shape [..., 3, 3]
     """
-    if rotation_6d.ndim == 1:
-        # Single rotation
-        a = rotation_6d[:3]  # First column
-        b = rotation_6d[3:]  # Second column
-        
-        # Normalize a
-        a = a / np.linalg.norm(a)
-        
-        # Gram-Schmidt to get orthogonal b
-        b = b - np.dot(b, a) * a
-        b = b / np.linalg.norm(b)
-        
-        # Cross product to get third column
-        c = np.cross(a, b)
-        
-        # Construct rotation matrix
-        R = np.column_stack([a, b, c])
-        return R
-    else:
-        # Batch of rotations
-        batch_shape = rotation_6d.shape[:-1]
-        rotation_6d = rotation_6d.reshape(-1, 6)
-        
-        matrices = []
-        for rot in rotation_6d:
-            matrices.append(rotation_6d_to_matrix_numpy(rot))
-        
-        result = np.stack(matrices, axis=0)
-        return result.reshape(*batch_shape, 3, 3)
+    a1, a2 = rotation_6d[..., :3], rotation_6d[..., 3:]
+    b1 = a1 / np.linalg.norm(a1, axis=-1, keepdims=True)
+    b2 = a2 - np.sum(b1 * a2, axis=-1, keepdims=True) * b1
+    b2 = b2 / np.linalg.norm(b2, axis=-1, keepdims=True)
+    b3 = np.cross(b1, b2, axis=-1)
+    return np.stack([b1, b2, b3], axis=-2)
 
 
-def matrix_to_rotation_6d(matrix):
-    """
-    Convert rotation matrix to 6D rotation representation.
+
+# def matrix_to_rotation_6d(matrix):
+#     """
+#     Convert rotation matrix to 6D rotation representation.
     
-    Args:
-        matrix: tensor of shape [..., 3, 3] - rotation matrices
+#     Args:
+#         matrix: tensor of shape [..., 3, 3] - rotation matrices
     
-    Returns:
-        6D rotation representation of shape [..., 6]
-    """
-    if isinstance(matrix, np.ndarray):
-        return matrix_to_rotation_6d_numpy(matrix)
+#     Returns:
+#         6D rotation representation of shape [..., 6]
+#     """
+#     if isinstance(matrix, np.ndarray):
+#         return matrix_to_rotation_6d_numpy(matrix)
     
-    batch_shape = matrix.shape[:-2]
-    matrix = matrix.view(-1, 3, 3)
+#     batch_shape = matrix.shape[:-2]
+#     matrix = matrix.view(-1, 3, 3)
     
-    # Extract first two columns
-    col1 = matrix[:, :, 0]  # First column
-    col2 = matrix[:, :, 1]  # Second column
+#     # Extract first two columns
+#     col1 = matrix[:, :, 0]  # First column
+#     col2 = matrix[:, :, 1]  # Second column
     
-    # Concatenate to form 6D representation
-    rotation_6d = torch.cat([col1, col2], dim=-1)
+#     # Concatenate to form 6D representation
+#     rotation_6d = torch.cat([col1, col2], dim=-1)
     
-    return rotation_6d.view(*batch_shape, 6)
+#     return rotation_6d.view(*batch_shape, 6)
 
 
 def matrix_to_rotation_6d_numpy(matrix):
@@ -125,23 +103,8 @@ def matrix_to_rotation_6d_numpy(matrix):
     Returns:
         6D rotation representation of shape [..., 6]
     """
-    if matrix.ndim == 2:
-        # Single matrix
-        col1 = matrix[:, 0]  # First column
-        col2 = matrix[:, 1]  # Second column
-        return np.concatenate([col1, col2])
-    else:
-        # Batch of matrices
-        batch_shape = matrix.shape[:-2]
-        matrix = matrix.reshape(-1, 3, 3)
-        
-        rotation_6ds = []
-        for mat in matrix:
-            rotation_6ds.append(matrix_to_rotation_6d_numpy(mat))
-        
-        result = np.stack(rotation_6ds, axis=0)
-        return result.reshape(*batch_shape, 6)
-
+    batch_dim = matrix.shape[:-2]
+    return matrix[..., :2, :].copy().reshape(batch_dim + (6,))
 
 def quaternion_to_matrix(quaternion):
     """
@@ -302,10 +265,18 @@ def axis_angle_to_matrix_numpy(axis_angle):
         return result.reshape(*batch_shape, 3, 3)
 
 
-# Backward compatibility aliases
-transforms = type('Transforms', (), {
-    'rotation_6d_to_matrix': rotation_6d_to_matrix,
-    'matrix_to_rotation_6d': matrix_to_rotation_6d,
-    'quaternion_to_matrix': quaternion_to_matrix,
-    'axis_angle_to_matrix': axis_angle_to_matrix,
-})()
+def test():
+    from pytorch3d.transforms import rotation_6d_to_matrix, matrix_to_rotation_6d
+
+    rotation_6d = torch.randn(10, 6)
+    matrix = rotation_6d_to_matrix(rotation_6d)
+    rotation_6d_numpy = rotation_6d.numpy()
+    matrix_numpy = rotation_6d_to_matrix_numpy(rotation_6d_numpy)
+    print(matrix.numpy() - matrix_numpy)
+
+    rotation_6d_numpy_2 = matrix_to_rotation_6d_numpy(matrix.numpy())
+    rotation_6d_2 = matrix_to_rotation_6d(matrix)
+
+    print(rotation_6d_numpy_2 - rotation_6d_2.numpy())
+
+

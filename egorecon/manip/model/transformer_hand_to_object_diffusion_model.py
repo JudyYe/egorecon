@@ -8,7 +8,7 @@ from torch import nn
 from tqdm.auto import tqdm
 
 from .transformer_module import Decoder
-
+from jutils import geom_utils, mesh_utils
 
 def exists(x):
     return x is not None
@@ -209,6 +209,7 @@ class CondGaussianDiffusion(nn.Module):
         # condition_dim = input hand poses dimension (2 * d_feats for left + right hand)
         # condition_dim = 3 * d_feats  # Left hand + Right hand
         d_input_feats = d_feats + condition_dim  # Object trajectory + hand poses
+        self.opt = opt
 
         self.denoise_fn = TransformerDiffusionModel(
             # condition_dim=condition_dim,
@@ -346,7 +347,7 @@ class CondGaussianDiffusion(nn.Module):
         return model_mean, posterior_variance, posterior_log_variance
 
     @torch.no_grad()
-    def p_sample(self, x, t, x_cond, padding_mask=None, clip_denoised=True):
+    def p_sample(self, x, t, x_cond, padding_mask=None, clip_denoised=True, guide=False, **kwargs):
         b, *_, device = *x.shape, x.device
         model_mean, _, model_log_variance = self.p_mean_variance(
             x=x,
@@ -355,13 +356,122 @@ class CondGaussianDiffusion(nn.Module):
             padding_mask=padding_mask,
             clip_denoised=clip_denoised,
         )
+
+        if guide: 
+            # spatial guidance/classifier guidance
+            model_mean = self.guide(model_mean, t, model_kwargs=kwargs)
+
         noise = torch.randn_like(x)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
         return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
+    def guide(self, x, t, model_kwargs=None, t_stopgrad=-10, 
+            scale=.01, n_guide_steps=10, train=False, min_variance=0.01, ddim=False, return_grad=False, **kwargs):
+        """
+        Spatial guidance
+        :param x: (B, T, J, 3) this is x_{t-1} ?!
+        """
+        model_variance = extract(self.posterior_variance, t, x.shape)
+        
+        if model_variance[0, 0, 0] < min_variance:
+            model_variance = min_variance
+        if train:
+            if t[0] < 200:
+                n_guide_steps = 100
+            else:
+                n_guide_steps = 20
+        else:
+            if ddim:
+                if t[0] <= 200:
+                    n_guide_steps = 50
+                else:
+                    n_guide_steps = 10
+            else:
+                if t[0] < 10:
+                    n_guide_steps = 200 # 500
+                else:
+                    n_guide_steps = 20
+
+        # process hint
+        batch = model_kwargs['obs']
+
+        # # TODO: ?? 
+        # if not train:
+        #     scale = self.calc_grad_scale(mask_hint)
+
+        for _ in range(n_guide_steps):
+            loss, grad = self.gradients(x, batch)
+            # print('grad', scale, grad * scale, x)
+            grad = model_variance * grad
+
+            if t[0] >= t_stopgrad:
+                x = x - scale * grad 
+
+        if return_grad:
+            return grad
+        return x.detach()
+
+    def gradients(self, x,  batch={}, use_x0=True):
+        with torch.enable_grad():
+            x.requires_grad_(True)
+            
+            B, T = x.shape[:2]
+            wTo_pred_se3 = self.denormalize_data(x)  # (B, T, 3+6)
+            intr = batch['intr']  # (B, 3, 3? )
+            wTc = batch['wTc']  # (B, T, 4, 4)
+            wTc_tsl, wTc_rot6d = wTc[..., :3], wTc[..., 3:]
+            wTc_mat = geom_utils.rotation_6d_to_matrix(wTc_rot6d)
+            wTc = geom_utils.rt_to_homo(wTc_mat, wTc_tsl)
+            cTw = geom_utils.inverse_rt_v2(wTc)
+
+            print("todo: proxy for proof of idea")
+            wTo_gt = batch['target_raw']
+            # iPoints_gt = batch['iPoints']   # (B, T, P, 2)
+
+            if self.opt.guide.hint == 'reproj_com':
+                oPoints = torch.zeros([B, T, 1, 3], device=x.device)
+            
+            iPoints_gt = self.project_oPoints(oPoints, wTo_gt, intr, cTw)
+            iPoints_pred = self.project_oPoints(oPoints, wTo_pred_se3, intr, cTw)  # (B, T, P, 2)
+            # print(iPoints_pred, iPoints_gt)
+        
+            loss = (iPoints_pred - iPoints_gt).norm(dim=-1).mean(dim=-1).mean(dim=-1)  # (B, )
+                
+            grad = torch.autograd.grad([loss.sum()], [x])[0]  # 
+            # grad[..., 0] = 0
+            x.detach()
+        print("grad: ", grad.shape, 'loss: ', loss)
+        return loss, grad
+    
+    def project_oPoints(self, oPoints, wTo_pred_se3, intr, cTw):
+        """
+
+        :param oPoints: (B, T, P, 3)
+        :param wTo_pred_se3: (B, T, 3+6)
+        :param intr: (B, 3, 3)
+        :param cTw: (B, T, 4, 4)
+        """
+
+        B, T, P, _ = oPoints.shape
+
+        wTo_pred_tsl, wTo_pred_rot6d = wTo_pred_se3[..., :3], wTo_pred_se3[..., 3:]
+        wTo_pred_mat = geom_utils.rotation_6d_to_matrix(wTo_pred_rot6d)
+        wTo_pred = geom_utils.rt_to_homo(wTo_pred_mat, wTo_pred_tsl)  # (B, T, 4, 4)
+
+        cTo_pred = cTw @ wTo_pred
+
+        # oPoints_homo = torch.cat([oPoints, torch.ones_like(oPoints[..., :1])], dim=-1)  # (B, T, P, 4)
+
+        cPoints_pred = mesh_utils.apply_transform(oPoints.reshape(B*T, P, 3), cTo_pred.reshape(B*T, 4, 4)).reshape(B, T, P, 3)  # (B, T, P, 3)  
+        
+        intr_exp = intr.unsqueeze(1).repeat(1, T, 1, 1)
+        iPoints_pred = cPoints_pred @ intr_exp.transpose(-2, -1)
+        iPoints_pred = iPoints_pred[..., :2] / iPoints_pred[..., 2:3]
+        return iPoints_pred
+
     @torch.no_grad()
-    def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None):
+    def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None, **kwargs):
         device = self.betas.device
 
         b = shape[0]
@@ -377,18 +487,19 @@ class CondGaussianDiffusion(nn.Module):
                 torch.full((b,), i, device=device, dtype=torch.long),
                 x_cond,
                 padding_mask=padding_mask,
+                **kwargs
             )
 
         return x  # BS X T X D
 
     @torch.no_grad()
-    def sample_raw(self, x_start, hand_condition, padding_mask=None):
-        motion = self.sample(x_start, hand_condition, padding_mask=padding_mask)
+    def sample_raw(self, x_start, hand_condition, padding_mask=None, **kwargs):
+        motion = self.sample(x_start, hand_condition, padding_mask=padding_mask, **kwargs)
         motion_raw = self.denormalize_data(motion)
         return motion_raw, {"motion": motion}
 
     @torch.no_grad()
-    def sample(self, x_start, hand_condition, cond_mask=None, padding_mask=None):
+    def sample(self, x_start, hand_condition, cond_mask=None, padding_mask=None, guide=False,  **kwargs):
         """
         Sample object trajectory conditioned on hand poses.
 
@@ -401,7 +512,12 @@ class CondGaussianDiffusion(nn.Module):
         self.denoise_fn.eval()
 
         sample_res = self.p_sample_loop(
-            x_start.shape, x_start, hand_condition, padding_mask
+            x_start.shape, 
+            x_start, 
+            hand_condition, 
+            padding_mask, 
+            guide=guide, 
+            **kwargs,
         )
         # BS X T X D
 

@@ -1,11 +1,34 @@
-[] only dynamic object 
-[] only hand conditioned 
+[x] only dynamic object 
+[x] only hand conditioned 
+[] data cano??? data is somehow wrong? 
 [] guidance 
 [] noise eval
 [] metadata
 
 bowl: 194930206998778
 spoon: 225397651484143
+
+
+python -m egorecon.manip.data.hand_to_object_dataset
+
+
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dynamic_obj/dyn_on\${dyn_only}_cond_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true condition.noisy_obj=false \
+  ckpt=
+  +engine=move
+
+
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dev/test_guide \
+  experiment=obj_only \
+  dyn_only=true condition.noisy_obj=false \
+  +engine=move
 
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \

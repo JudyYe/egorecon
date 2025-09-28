@@ -51,6 +51,7 @@ class Pt3dVisualizer:
         uid,
         step=0,
         pref="training/",
+        save_to_file=True,
     ):
         """
         render one seq
@@ -82,7 +83,6 @@ class Pt3dVisualizer:
             scene_points.append(wObj_verts[0])  # (V, 3)
 
         scene_points = torch.cat(scene_points, 0)[None]
-        print("scene_points shape", scene_points.shape)
 
         nTw = mesh_utils.get_nTw(scene_points, new_scale=1.2)
 
@@ -104,21 +104,18 @@ class Pt3dVisualizer:
         coord = plot_utils.create_coord(device, T, size=0.2)
         wScene = mesh_utils.join_scene([wScene, coord])
 
-        # tmp_file = "outputs/tmp/wScene.pkl"
-        # os.makedirs(osp.dirname(tmp_file), exist_ok=True)
-        # with open(tmp_file, "wb") as f:
-        #     pickle.dump({"wScene": wScene.cpu(), "nTw": nTw.cpu()}, f)
-
-        print("Rendering wScene len", len(wScene), "nTw", nTw.shape, wScene.device)
-        # image_list = mesh_utils.render_geom_rot_v2(wScene, nTw=nTw.repeat(T, 1, 1), time_len=1, out_size=512)
+        print('render wScene', wScene.verts_packed().shape)
         image_list = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
         print("render done!")
 
         image_list = image_list["image"]
 
-        fname = osp.join(self.save_dir, f"{pref}{step:07d}")
-        image_utils.save_gif(image_list.unsqueeze(1), fname, fps=30, ext=".mp4")
-        return fname + ".mp4"
+        if save_to_file:
+            fname = osp.join(self.save_dir, f"{pref}{step:07d}")
+            image_utils.save_gif(image_list.unsqueeze(1), fname, fps=30, ext=".mp4")
+            return fname + ".mp4"
+        else:
+            return image_list
 
 
 def render_scene_from_azel(
@@ -136,7 +133,6 @@ def render_scene_from_azel(
 
     azel = azel.repeat(N, 1)
     roll = torch.zeros([N, 1], device=device)
-    print("azel", azel.shape, roll.shape)
     angle = torch.cat([azel, roll], dim=-1)
 
     R = euler_angles_to_matrix(angle, "YXZ")
@@ -147,9 +143,9 @@ def render_scene_from_azel(
     cTn = geom_utils.rt_to_homo(R, tsl)
 
     cTw_rot, cTw_tsl = look_at_view_transform(dist, el, az, True, up=((0, 0, 1),), device=device)
-    print("cTw_p", cTw_rot.shape, cTw_tsl.shape)
-    print("cTw my", cTn.shape)
-    print(cTn[0], cTw_rot, cTw_tsl)
+    # print("cTw_p", cTw_rot.shape, cTw_tsl.shape)
+    # print("cTw my", cTn.shape)
+    # print(cTn[0], cTw_rot, cTw_tsl)
 
     cTw = cTn @ nTw_exp
 
