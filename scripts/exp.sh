@@ -8,6 +8,17 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
+# refinement later
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dynamic_obj2/better_noise_dyn_on\${dyn_only}_cond_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true,false condition.noisy_obj=true \
+  general.rerun=True general.wandb=true \
+  +engine=move
+
+
 
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \

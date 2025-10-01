@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from glob import glob
 import hydra
 from tqdm import tqdm
 import json
@@ -12,13 +13,32 @@ import smplx
 import torch
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
-from jutils import geom_utils
+from jutils import geom_utils, mesh_utils
 from ...utils.motion_repr import cano_seq_mano
 from ...utils.rotation_utils import (matrix_to_rotation_6d_numpy,
                                      quaternion_to_matrix_numpy,
                                      rotation_6d_to_matrix_numpy)
 from ..lafan1.utils import rotate_at_frame_w_obj
 
+from pytorch3d.ops import sample_points_from_meshes
+from bps_torch.bps import bps_torch
+from bps_torch.tools import sample_sphere_uniform
+from bps_torch.tools import sample_uniform_cylinder
+
+
+
+def rotate(points, R):
+    shape = list(points.shape)
+    points = to_tensor(points)
+    R = to_tensor(R)
+    if len(shape)>3:
+        points = points.squeeze()
+    if len(shape)<3:
+        points = points.unsqueeze(dim=1)
+    if R.shape[0] > shape[0]:
+        shape[0] = R.shape[0]
+    r_points = torch.matmul(points, R.transpose(1,2))
+    return r_points.reshape(shape)
 
 def load_pickle(path):
     """Load and return the object stored in a pickle file."""
@@ -150,6 +170,19 @@ class HandToObjectDataset(Dataset):
         self.opt = opt
         self.data_cfg = data_cfg
 
+        self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
+        bps_dir = osp.join(opt.paths.data_dir, 'bps')
+
+        # dest_obj_bps_npy_folder = os.path.join(bps_dir, "object_bps_npy_files_joints24")
+        # dest_obj_bps_npy_folder_for_test = os.path.join(bps_dir, "object_bps_npy_files_for_eval_joints24")
+
+        # if self.is_train:
+        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder 
+        # else:
+        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder_for_test 
+      
+        self.prep_bps_data()
+
         self.mano_model_path = opt.paths.mano_dir
         self.sided_mano_models = {
             "left": smplx.create(
@@ -208,12 +241,41 @@ class HandToObjectDataset(Dataset):
             "traj_trans": traj_std_obj_trans,
         }
 
-        if noise_scheme == "syn":
-            std_file = osp.join(self.opt.paths.data_dir, "cache", f"noise_stats.pkl")
-            with open(std_file, 'rb') as f:
-                data = pickle.load(f)
-            self.traj_std = data["traj_std"]
-            self.frame_std = data["frame_std"]
+    def compute_object_geo_bps(self, obj_verts, obj_trans):
+        # obj_verts: T X Nv X 3, obj_trans: T X 3
+        bps_object_geo = self.bps_torch.encode(x=obj_verts, \
+                    feature_type=['deltas'], \
+                    custom_basis=self.obj_bps.repeat(obj_trans.shape[0], \
+                    1, 1)+obj_trans[:, None, :])['deltas'] # T X N X 3 
+
+        return bps_object_geo
+
+    def prep_bps_data(self):
+        n_obj = 1024
+        r_obj = 1.0 
+        if not os.path.exists(self.bps_path):
+            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(1, -1, 3)
+            
+            bps = {
+                'obj': bps_obj.cpu(),
+                # 'sbj': bps_sbj.cpu(),
+            }
+            print("Generate new bps data to:{0}".format(self.bps_path))
+            os.makedirs(osp.dirname(self.bps_path), exist_ok=True)
+            torch.save(bps, self.bps_path)
+        
+        self.bps = torch.load(self.bps_path)
+        self.bps_torch = bps_torch()
+
+        self.obj_bps = self.bps['obj']
+
+        # load object geometry
+        self.object_library = {}
+        glob_file = glob(osp.join(self.opt.paths.object_mesh_dir, "*.glb"))
+        print("glob_file", glob_file, "object_mesh_dir", self.opt.paths.object_mesh_dir)
+        for mesh_file in glob_file:
+            uid = osp.basename(mesh_file).split(".")[0]
+            self.object_library[uid] = sample_points_from_meshes(mesh_utils.load_mesh(mesh_file), 50000)
 
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
@@ -275,126 +337,6 @@ class HandToObjectDataset(Dataset):
         filtered_windows = [window for window in self.windows if window["is_motion"] > threshold]
         self.windows = filtered_windows
         print(f"{origin_size} -> {len(self.windows)} dynamic windows")
-
-    def _create_windows(self):
-        windows = []
-        cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}_{self.noise_scheme}.pkl")
-        if osp.exists(cache_name) and use_cache:
-            print('loading window cache from ', cache_name)
-            self.windows = pickle.load(open(cache_name, 'rb'))
-            return self.windows
-        print('creating window cache and save to ', cache_name)
-        
-        for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
-            for obj_id, obj_data in demo_data["objects"].items():
-
-                object_traj = obj_data["wTo"]  # (T, 4, 4)
-                camera_traj = demo_data["wTc"]  # (T, 4, 4)
-
-                # Find the overlapping time range for all trajectories
-                left_hand = demo_data["left_hand"]["theta"]
-                right_hand = demo_data["right_hand"]["theta"]
-                min_len = min(len(left_hand), len(right_hand), len(object_traj))
-
-                if min_len < self.window_size:
-                    print(
-                        f"Warning: Trajectory too short for demo {demo_id}, obj {obj_id}: {min_len}"
-                    )
-                    continue
-
-                # Trim all trajectories to same length
-                # left_hand_trimmed = left_hand[:min_len]
-                # right_hand_trimmed = right_hand[:min_len]
-                # object_traj_trimmed = object_traj[:min_len]
-                # camera_traj_trimmed = camera_traj[:min_len]
-                # Create sliding windows
-                for start_idx in range(
-                    0, min_len - self.window_size + 1, self.window_size // 2
-                ):
-                    end_idx = start_idx + self.window_size
-
-                    if "wTo_valid" in demo_data["objects"][obj_id]:
-                        object_valid = demo_data["objects"][obj_id]["wTo_valid"][
-                            start_idx:end_idx
-                        ]
-                    else:
-                        object_valid = np.ones(self.window_size).astype(bool)
-                        print("No object valid mask found?????? " , self.data_path)
-
-                    if not np.all(object_valid):
-                        # TODO: use strict checking for now
-                        continue 
-                    wTo = object_traj[start_idx:end_idx]
-                    wTo_rot = wTo[..., :3, :3]
-                    wTo_pos = wTo[..., :3, 3]
-                    wTo_rot6d = geom_utils.matrix_to_rotation_6d(to_tensor(wTo_rot)).detach().numpy()
-                    wTo = np.concatenate([wTo_pos, wTo_rot6d], axis=1)
-                    canoTo = wTo
-
-                    wTc = camera_traj[start_idx:end_idx]
-                    canoTc = wTc
-
-                    cano_left_mano_params_dict = {
-                        "global_orient": left_hand[start_idx:end_idx][:, 0:3],
-                        "transl": left_hand[start_idx:end_idx][:, 3:6],
-                        "betas": demo_data["left_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": left_hand[start_idx:end_idx][:, 6:],
-                    }
-
-                    cano_right_mano_params_dict = {
-                        "global_orient": right_hand[start_idx:end_idx][:, 0:3],
-                        "transl": right_hand[start_idx:end_idx][:, 3:6],
-                        "betas": demo_data["right_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": right_hand[start_idx:end_idx][:, 6:],
-                    }
-
-                    smpl_out_left = self.sided_mano_models["left"](**{k: torch.FloatTensor(v) for k, v in cano_left_mano_params_dict.items()})
-                    smpl_out_right = self.sided_mano_models["right"](**{k: torch.FloatTensor(v) for k, v in cano_right_mano_params_dict.items()})
-                    cano_left_positions = smpl_out_left.joints
-                    cano_right_positions = smpl_out_right.joints
-
-                    window_data = {
-                        "demo_id": demo_id,
-                        "object_id": obj_id,
-                        "start_idx": start_idx,
-                        "end_idx": end_idx,
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # "shelf_valid": shelf_valid,
-                        # "object_shelf": cano_object_shelf_data,
-                        "object_valid": object_valid,
-                        "object": canoTo, # cano_object_data,
-                        "wTc": canoTc,
-                        "intr": demo_data["intrinsic"],
-                        "left_hand": cano_left_positions.reshape(-1, 21 * 3),
-                        "right_hand": cano_right_positions.reshape(-1, 21 * 3),
-                        "left_hand_params": cano_left_mano_params_dict,
-                        "right_hand_params": cano_right_mano_params_dict,
-                        # "left_hand_joints": cano_left_positions,
-                        # "right_hand_joints": cano_right_positions,
-                        # 'wTc':
-                        # 'wTo':
-                        # 'wTo_shelf':
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'left_hand_theta': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'object':cano_object_data,
-                    }
-
-                    is_motion = self._is_motion_window(canoTo)
-                    window_data["is_motion"] = is_motion
-
-                    if self.noise_scheme == "real":
-                        shelf_valid = demo_data["objects"][obj_id]["shelf_valid"][
-                            start_idx:end_idx
-                        ]
-                        window_data["shelf_valid"] = shelf_valid
-                        window_data["object_shelf"] = cano_object_shelf_data
-                    windows.append(window_data)        
-        os.makedirs(osp.dirname(cache_name), exist_ok=True)
-        pickle.dump(windows, open(cache_name, 'wb'))
-        return windows
 
     def _create_windows_legecy(self):
         """Create sliding windows from trajectory data."""
@@ -590,24 +532,6 @@ class HandToObjectDataset(Dataset):
                         device="cpu",
                     )
 
-                    # Prepare 9D repreesntation for left/right hand, and object
-                    # cano_left_wrist_rot_mat = quaternion_to_matrix_numpy(
-                    #     cano_left_wrist_quat
-                    # )
-                    # cano_left_wrist_rot6d = matrix_to_rotation_6d_numpy(
-                    #     cano_left_wrist_rot_mat
-                    # )
-
-                    # cano_right_wrist_rot_mat = quaternion_to_matrix_numpy(
-                    #     cano_right_wrist_quat
-                    # )
-                    # cano_right_wrist_rot6d = matrix_to_rotation_6d_numpy(
-                    #     cano_right_wrist_rot_mat
-                    # )
-                    # print('debug')
-                    # cano_object_rot_mat = quaternion_to_matrix_numpy(cano_object_quat)
-                    # cano_object_rot6d = matrix_to_rotation_6d_numpy(cano_object_rot_mat)
-
                     wTo = object_traj_trimmed[start_idx:end_idx]  # (T, 4, 4)
                     wTo = canoTw[None] @ wTo  
                     cano_object_pos = wTo[:, :3, 3]
@@ -629,12 +553,6 @@ class HandToObjectDataset(Dataset):
                             (cano_object_shelf_pos, cano_object_shelf_rot6d), axis=-1
                         )
 
-                    # cano_left_hand_data = np.concatenate(
-                    #     (cano_left_wrist_pos, cano_left_wrist_rot6d), axis=-1
-                    # )
-                    # cano_right_hand_data = np.concatenate(
-                    #     (cano_right_wrist_pos, cano_right_wrist_rot6d), axis=-1
-                    # )
                     cano_object_data = np.concatenate(
                         (cano_object_pos, cano_object_rot6d), axis=-1
                     )
@@ -919,9 +837,13 @@ class HandToObjectDataset(Dataset):
         ######### 2. add synthetic noise / use off-the-shelf noise to the data ##########
         # get noisy data
         window_noisy = self.add_noise_data(window)
-        # window_noisy = window
+        
 
-        ######### 3. create motion repr ##########
+        ######### 3. add geometry, add random canonical augmentation ##########
+        if aug_cano:
+            window, newoTo = self.augment_cano_object(window)
+            window_noisy['object'] = self.transform_wTo_traj(window_noisy['object'], newoTo)
+
 
         ######### 4. Convert to tensors ##########
         left_hand = to_tensor(window["left_hand"])  # [T, D]
@@ -946,7 +868,7 @@ class HandToObjectDataset(Dataset):
         if self.opt.condition.noisy_obj:
             condition = torch.cat([condition, traj_noisy_norm], dim=-1)
 
-        data = {
+        return {
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
             "target": object_norm,  # [T, D] - object trajectory to denoise
             "traj_noisy_raw": to_tensor(window_noisy["object"]),
@@ -962,10 +884,50 @@ class HandToObjectDataset(Dataset):
             "object_valid": window["object_valid"],
             "intr":  to_tensor(window["intr"]),
             "wTc": to_tensor(window["wTc"]),
+            
+            "object_bps_new": window["object_bps_new"],
+            "newTo": window["newTo"],
+            "newPoints": window["newPoints"],
         }
-        if self.noise_scheme == "real":
-            data["shelf_valid"] = to_tensor(window_noisy["shelf_valid"])
-        return data
+    
+    def transform_wTo_traj(self, wTo, newTo):
+        wTo = geom_utils.se3_to_matrix_v2(torch.FloatTensor(wTo)) # (T, 4, 4)
+
+        oTnew = geom_utils.inverse_rt_v2(newTo)
+        wTnew = wTo @ oTnew  # (T, 4, 4)
+        wTnew = geom_utils.matrix_to_se3_v2(wTnew).cpu().numpy()
+        return wTnew        
+
+    def augment_cano_object(self, window, newTo=None):
+        """Load object geometry, use a random orientation as canonical pose, 
+        then, get its bps in canonical pose, and also change wTo to the new wTo
+
+        :param window: _description_
+        """
+        if newTo is None:
+            newTo = geom_utils.random_rotations(1, )  # (1, 3, 3)
+            newTo = geom_utils.rt_to_homo(newTo) # (1, 4, 4)
+        
+        window['object'] = self.transform_wTo_traj(window['object'], newTo)
+
+        # load_goemetry 
+        oPoints = self.object_library[window['object_id']]
+        newPoints = mesh_utils.apply_transform(oPoints, newTo)  # (1, P, 3)  torch        
+        newCom = newPoints.mean(dim=1) # (1, 3)
+
+        # compute bps
+        bps = self.compute_object_geo_bps(newPoints, newCom)
+
+        # randomly sample nP points for vis
+        nP = min(5000, newPoints.shape[1])
+        index = torch.randint(0, newPoints.shape[1], (nP, ))
+        newPoints = newPoints[:, index, :]
+        window['object_bps_new'] = bps
+        window['newTo'] = newTo
+        window['newPoints'] = newPoints
+        
+        return window, newTo
+
 
     def add_noise_data(self, can_window_dict):
         # just for 6d pose for now
@@ -977,7 +939,6 @@ class HandToObjectDataset(Dataset):
             can_window_dict_noisy["object"] = (
                 can_window_dict_noisy["object"] * mask[:, None]
             )
-            can_window_dict_noisy["shelf_valid"] = mask
             return can_window_dict_noisy
 
         ######################################## add noise to  params
@@ -986,95 +947,48 @@ class HandToObjectDataset(Dataset):
         for param_name in [
             "object",
         ]:
-            param = torch.FloatTensor(can_window_dict[param_name])  # [T, D]
+            param = can_window_dict[param_name]  # [T, D]
+            transl, rot6d = param[:, :3], param[:, 3:]
 
-            param_noisy = generate_noisy_trajectory(param[None], self.traj_std, self.frame_std)
-            param_noisy = param_noisy[0].cpu().numpy()
+            transl_noisy = transl + np.random.normal(
+                loc=0.0,
+                scale=self.noise_std_params_dict["object_trans"],
+                size=transl.shape,
+            )
 
-            # transl, rot6d = param[:, :3], param[:, 3:]
+            rot_mat = rotation_6d_to_matrix_numpy(rot6d)
+            # euler angle
+            rot_euler = R.from_matrix(rot_mat).as_euler("zxy", degrees=True)
+            rot_euler_noisy = rot_euler + np.random.normal(
+                loc=0.0,
+                scale=self.noise_std_params_dict["object_rot"],
+                size=rot_euler.shape,
+            )
 
-            # transl_noisy = transl + np.random.normal(
-            #     loc=0.0,
-            #     scale=self.noise_std_params_dict["object_trans"],
-            #     size=transl.shape,
-            # )
+            # add a constatn random translation noise to object traj
+            if self.use_constant_noise:
+                transl_noise = np.random.normal(
+                    loc=0.0,
+                    scale=self.noise_std_params_dict["traj_trans"],
+                    size=(1, transl_noisy.shape[-1]),
+                )
+                transl_noisy = transl_noisy + transl_noise
 
-            # rot_mat = rotation_6d_to_matrix_numpy(rot6d)
-            # # euler angle
-            # rot_euler = R.from_matrix(rot_mat).as_euler("zxy", degrees=True)
-            # rot_euler_noisy = rot_euler + np.random.normal(
-            #     loc=0.0,
-            #     scale=self.noise_std_params_dict["object_rot"],
-            #     size=rot_euler.shape,
-            # )
+                rot_noise = np.random.normal(
+                    loc=0.0,
+                    scale=self.noise_std_params_dict["traj_rot"],
+                    size=(1, rot_euler_noisy.shape[-1]),
+                )
+                rot_euler_noisy = rot_euler_noisy + rot_noise
 
-            # # add a constatn random translation noise to object traj
-            # if self.use_constant_noise:
-            #     transl_noise = np.random.normal(
-            #         loc=0.0,
-            #         scale=self.noise_std_params_dict["traj_trans"],
-            #         size=(1, transl_noisy.shape[-1]),
-            #     )
-            #     transl_noisy = transl_noisy + transl_noise
+            rot_mat_noisy = R.from_euler(
+                "zxy", rot_euler_noisy, degrees=True
+            ).as_matrix()
+            rot6d_noisy = matrix_to_rotation_6d_numpy(rot_mat_noisy)
 
-            #     rot_noise = np.random.normal(
-            #         loc=0.0,
-            #         scale=self.noise_std_params_dict["traj_rot"],
-            #         size=(1, rot_euler_noisy.shape[-1]),
-            #     )
-            #     rot_euler_noisy = rot_euler_noisy + rot_noise
-
-            # rot_mat_noisy = R.from_euler(
-            #     "zxy", rot_euler_noisy, degrees=True
-            # ).as_matrix()
-            # rot6d_noisy = matrix_to_rotation_6d_numpy(rot_mat_noisy)
-
-            can_window_dict_noisy[param_name] = param_noisy
-
-            # if param_name == 'transl' or param_name == 'betas':
-            #         noise_1 = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=can_window_dict[param_name].shape)
-            #     cano_smplx_params_dict_noisy[param_name] = can_window_dict[param_name] + noise_1
-            #     if param_name not in smplx_noise_dict.keys():
-            #         smplx_noise_dict[param_name] = []
-            #     smplx_noise_dict[param_name].append(noise_1)
-            # elif param_name == 'global_orient':
-            #     global_orient_mat = R.from_rotvec(can_window_dict['global_orient'])  # [145, 3, 3]
-            #     global_orient_angle = global_orient_mat.as_euler('zxy', degrees=True)
-            #     if self.load_noise:
-            #         noise_global_rot = self.loaded_smplx_noise_dict[param_name][i*self.spacing]
-            #     else:
-            #         noise_global_rot = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=global_orient_angle.shape)
-            #     global_orient_angle_noisy = global_orient_angle + noise_global_rot
-            #     cano_smplx_params_dict_noisy[param_name] = R.from_euler('zxy', global_orient_angle_noisy, degrees=True).as_rotvec()
-            #     if param_name not in smplx_noise_dict.keys():
-            #         smplx_noise_dict[param_name] = []
-            #     smplx_noise_dict[param_name].append(noise_global_rot)  #  [145, 3] in euler angle
-            # elif param_name == 'body_pose':
-            #     body_pose_mat = R.from_rotvec(can_window_dict['body_pose'].reshape(-1, 3))
-            #     body_pose_angle = body_pose_mat.as_euler('zxy', degrees=True)  # [145*21, 3]
-            #     if self.load_noise:
-            #         noise_body_pose_rot = self.loaded_smplx_noise_dict[param_name][i*self.spacing].reshape(-1, 3)
-            #     else:
-            #         noise_body_pose_rot = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=body_pose_angle.shape)
-            #     body_pose_angle_noisy = body_pose_angle + noise_body_pose_rot
-            #     cano_smplx_params_dict_noisy[param_name] = R.from_euler('zxy', body_pose_angle_noisy, degrees=True).as_rotvec().reshape(-1, 21, 3)
-            #     if param_name not in smplx_noise_dict.keys():
-            #         smplx_noise_dict[param_name] = []
-            #     smplx_noise_dict[param_name].append(noise_body_pose_rot.reshape(-1, 21, 3))  # [145, 21, 3]  in euler angle
-
-        # ### using FK to obtain noisy joint positions from noisy smplx params
-        # smplx_params_dict_noisy_torch = {}
-        # for key in cano_smplx_params_dict_noisy.keys():
-        #     smplx_params_dict_noisy_torch[key] = torch.FloatTensor(cano_smplx_params_dict_noisy[key]).to(self.device)
-        # bs = smplx_params_dict_noisy_torch['transl'].shape[0]
-        # # we do not consider face/hand details in RoHM
-        # smplx_params_dict_noisy_torch['jaw_pose'] = torch.zeros(bs, 3).to(self.device)
-        # smplx_params_dict_noisy_torch['leye_pose'] = torch.zeros(bs, 3).to(self.device)
-        # smplx_params_dict_noisy_torch['reye_pose'] = torch.zeros(bs, 3).to(self.device)
-        # smplx_params_dict_noisy_torch['left_hand_pose'] = torch.zeros(bs, 45).to(self.device)
-        # smplx_params_dict_noisy_torch['right_hand_pose'] = torch.zeros(bs, 45).to(self.device)
-        # smplx_params_dict_noisy_torch['expression'] = torch.zeros(bs, 10).to(self.device)
-        # cano_positions_noisy = self.smplx_neutral(**smplx_params_dict_noisy_torch).joints[:, 0:22].detach().cpu().numpy()  # [clip_len, 22, 3]
+            can_window_dict_noisy[param_name] = np.concatenate(
+                [transl_noisy, rot6d_noisy], axis=-1
+            )
 
         return can_window_dict_noisy
 
@@ -1119,99 +1033,12 @@ def create_hand_to_object_dataset(
     )
 
 
-
-
-@hydra.main(config_path="../../../config", config_name="train", version_base=None)
-def compute_norm_stats(opt):
-    from torch.utils.data import DataLoader
-    ds = HandToObjectDataset(
-            is_train=True,
-            data_path=opt.traindata.data_path,
-            window_size=opt.model.window,
-            single_demo=opt.traindata.demo_id,
-            single_object=opt.traindata.target_object_id,
-            sampling_strategy="random",
-            split=opt.datasets.split,
-            split_seed=42,  # Ensure reproducible splits
-            noise_scheme="syn",
-            split_file=opt.traindata.split_file,
-            **opt.datasets.augument,
-            opt=opt,
-            data_cfg=opt.traindata,
-        )
-    dataloader = DataLoader(ds, batch_size=100, shuffle=True, num_workers=4)
-    all_target = []
-    all_hand = []
-    for b, batch in enumerate(dataloader):
-        hand_raw = batch['hand_raw']
-        all_hand.append(hand_raw)
-        
-        target = batch['target'] # (BS, T, D)
-        # target = batch['target_raw'] # (BS, T, D)
-        valid = batch['object_valid']  # (BS, )
-        target = target[valid]
-        all_target.append(target)
-        if b >= 1:
-            break
-    
-    all_hand = torch.cat(all_hand, axis=0)  # (BS, T, J*3*2)
-    all_hand = all_hand.reshape(-1, all_hand.shape[-1] // 2) # (BS, 2T, J*3)
-    hand_mean = torch.mean(all_hand, axis=0)
-    hand_std = torch.std(all_hand, axis=0)
-
-    
-    all_target = torch.cat(all_target, axis=0)
-    all_target = all_target.reshape(-1, all_target.shape[-1])
-    mean = torch.mean(all_target, axis=0)
-    std = torch.std(all_target, axis=0)
-    norm_target = (all_target - mean) / std
-
-    # for each dim, plot the distribution of the target, headless
-    import matplotlib.pyplot as plt
-    plt.figure(figsize=(10, 10))
-    os.makedirs("outputs/compute_norm_stats", exist_ok=True)
-    for i in range(all_target.shape[1]):
-        plt.hist(target[:, i], bins=100)
-        plt.savefig(f"outputs/compute_norm_stats/target_dim_{i}.png")
-        plt.close()
-
-
-    # only use mean std for the first 3 dim, for the rest rotation: use 0, 1
-    mean[3:] = 0
-    std[3:] = 1
-
-    J = 21
-    hand_mean = mean[:3].reshape(1, 3).repeat(J, 1).reshape(-1)  # repeat J times
-    hand_std = std[:3].reshape(1, 3).repeat(J, 1).reshape(-1)  # repeat J times
-    metadata = {
-        "left_hand_mean": hand_mean,
-        "left_hand_std": hand_std,
-        "right_hand_mean": hand_mean,
-        "right_hand_std": hand_std,
-        "object_mean": mean,
-        "object_std": std,
-    }
-    for k, v in metadata.items():
-        metadata[k] = v.cpu().detach().numpy().reshape(1, -1)
-
-    meta_file = osp.join(opt.paths.data_dir, "cache", f"metadata_{opt.traindata.name}.pkl")
-    os.makedirs(osp.dirname(meta_file), exist_ok=True)
-    pickle.dump(metadata, open(meta_file, 'wb'))
-    return mean, std
-
-
-
 @hydra.main(config_path="../../../config", config_name="train", version_base=None)
 @torch.no_grad()
-def est_noise(opt):
-
-    # okay if we load seq
-    import plotly.graph_objects as go
-    # from visualization.rerun_visualizer import RerunVisualizer
+def vis_cano(opt):
     from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-    import smplx
-    from jutils import geom_utils, image_utils, mesh_utils, model_utils
-    from pytorch3d.structures import Meshes
+    from jutils import geom_utils, image_utils, mesh_utils, model_utils, plot_utils
+    from pytorch3d.structures import Meshes, Pointclouds
     from egorecon.utils.motion_repr import HandWrapper
     pt3d_viz = Pt3dVisualizer(
         exp_name="vis_traj",
@@ -1222,9 +1049,6 @@ def est_noise(opt):
 
     mano_model_folder = "assets/mano"
     device = 'cuda:0'
-
-    cnt = 0
-    sided_mano_model = HandWrapper(mano_model_folder).to(device)
 
     train_dataset = HandToObjectDataset(
             is_train=False,
@@ -1242,360 +1066,50 @@ def est_noise(opt):
             data_cfg=opt.traindata,
         )
     train_dataset.set_metadata()
-    
-    gt_list = []
-    est_list = []
-    dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
-    for b, batch in enumerate(dataloader):
-        batch = model_utils.to_cuda(batch, device)
-        print('motion', batch['is_motion'])
-
-        wTo = batch['target_raw']  # (1, T, D)
-        wTo_noisy = batch['traj_noisy_raw']  # (1, T, D)
-        valid = batch['shelf_valid']  # (1, T, )
-
-        gt_list.append(wTo)
-        est_list.append(wTo_noisy)
-    
-    gt_list = torch.stack(gt_list, axis=0)
-    est_list = torch.stack(est_list, axis=0)
-    print('gt_list', gt_list.shape, 'est_list', est_list.shape)
-    traj_std, frame_std = compute_trajectory_noise_stats(gt_list, est_list)
-    traj_std = traj_std * 2
-    frame_std = frame_std / 10
-
-    cache_file = osp.join(opt.paths.data_dir, "cache", f"noise_stats.pkl")
-    os.makedirs(osp.dirname(cache_file), exist_ok=True)
-    pickle.dump({"traj_std": traj_std.cpu(), "frame_std": frame_std.cpu()}, open(cache_file, 'wb'))
-    print('saved cache', cache_file)
-
-    print('traj_std', traj_std, traj_std.shape)
-    print('frame_std', frame_std, frame_std.shape)
-
-    syn_list = generate_noisy_trajectory(gt_list, traj_std, frame_std)
-    video_list = []
-    for b, batch in enumerate(dataloader):
-        wTo = batch['target_raw'].cuda()
-        wTo_syn = syn_list[b].cuda()
-        wTo_real = batch['traj_noisy_raw'].cuda()
-
-        wTo_list = [wTo, wTo_syn, wTo_real]
-        color_list = ['red', 'yellow', 'purple']
-        image_list = pt3d_viz.log_training_step(None, None, wTo_list, color_list, batch['object_id'], step=b, pref="debug_vis_clip", save_to_file=False)
-        video_list.append(image_list)
-    video_list = torch.cat(video_list, axis=0)
-    image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_traj/video_{cnt}", fps=30, ext=".mp4")
-    print('saved video', f"outputs/debug_traj/video_{cnt}.mp4")
-    return 
-
-
-
-def compute_trajectory_noise_stats(gt_vec, est_vec):
-    """Compute trajectory-level and per-frame noise statistics.
-    
-    Args:
-        gt_traj: (BS, T, 4, 4) ground truth SE(3) trajectories
-        est_traj: (BS, T, 4, 4) estimated SE(3) trajectories
-    
-    Returns:
-        traj_std: (9,) trajectory-level noise std [6D rot + 3D trans]
-        frame_std: (9,) per-frame jittering noise std [6D rot + 3D trans]
-    """
-    # Convert to vector representation
-    # gt_vec = se3_to_vec(gt_traj)  # (BS, T, 9)
-    # est_vec = se3_to_vec(est_traj)  # (BS, T, 9)
-    
-    # Compute residual
-    residual = est_vec - gt_vec  # (BS, T, 9)
-    
-    # Trajectory-level noise: mean across time, then std across batch
-    traj_mean_residual = residual.mean(dim=1)  # (BS, 9)
-    traj_std = traj_mean_residual.std(dim=0)  # (9,)
-    
-    # Per-frame noise: remove trajectory bias, then compute std
-    frame_residual = residual - traj_mean_residual.unsqueeze(1)  # (BS, T, 9)
-    frame_std = frame_residual.reshape(-1, 9).std(dim=0)  # (9,)
-    
-    return traj_std, frame_std
-
-
-def generate_noisy_trajectory(clean_vec, traj_std, frame_std):
-    """Generate synthetic noisy trajectories.
-    
-    Args:
-        clean_traj: (BS, T, 4, 4) clean SE(3) trajectories
-        traj_std: (9,) trajectory-level noise std
-        frame_std: (9,) per-frame noise std
-    
-    Returns:
-        noisy_traj: (BS, T, 4, 4) noisy SE(3) trajectories
-    """
-    BS, T = clean_vec.shape[:2]
-    device = clean_vec.device
-    
-    # Convert to vector representation
-    # clean_vec = se3_to_vec(clean_traj)  # (BS, T, 9)
-    
-    # Generate trajectory-level noise (same for all frames in a trajectory)
-    traj_noise = traj_std.to(device) * torch.randn(BS, 1, 9, device=device)  # (BS, 1, 9)
-    
-    # Generate per-frame noise
-    frame_noise = frame_std.to(device) * torch.randn(BS, T, 9, device=device)  # (BS, T, 9)
-    
-    # Add noise
-    noisy_vec = clean_vec + traj_noise + frame_noise  # (BS, T, 9)
-    
-    # Convert back to SE(3)
-    # noisy_traj = vec_to_se3(noisy_vec)
-    
-    return noisy_vec
-
-
-
-@hydra.main(config_path="../../../config", config_name="train", version_base=None)
-@torch.no_grad()
-def vis_clip(opt):
-
-    # okay if we load seq
-    import plotly.graph_objects as go
-    # from visualization.rerun_visualizer import RerunVisualizer
-    from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-    import smplx
-    from jutils import geom_utils, image_utils, mesh_utils, model_utils
-    from pytorch3d.structures import Meshes
-    from egorecon.utils.motion_repr import HandWrapper
-    pt3d_viz = Pt3dVisualizer(
-        exp_name="vis_traj",
-        save_dir="outputs/debug_vis",
-        mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
-    )
-
-    mano_model_folder = "assets/mano"
-    device = 'cuda:0'
-
-    cnt = 0
     sided_mano_model = HandWrapper(mano_model_folder).to(device)
 
-    train_dataset = HandToObjectDataset(
-            is_train=False,
-            data_path=opt.traindata.data_path,
-            window_size=opt.model.window,
-            single_demo="P0001_624f2ba9",
-            # single_object="225397651484143",
-            sampling_strategy="random",
-            split=opt.datasets.split,
-            split_seed=42,  # Ensure reproducible splits
-            noise_scheme="syn",
-            split_file=opt.traindata.split_file,
-            **opt.datasets.augument,
-            opt=opt,
-            data_cfg=opt.traindata,
-        )
-    train_dataset.set_metadata()
-    video_list = []
+    
     dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
     for b, batch in enumerate(dataloader):
         batch = model_utils.to_cuda(batch, device)
-        print('motion', batch['is_motion'])
-
-        wTo = batch['target_raw']  # (1, T, D)
-        hand_raw = batch['hand_raw']  # (1, T, 2*D)
 
         left_hand_param, left_hand_shape = sided_mano_model.dict2para(batch['left_hand_params'], side='left')
         right_hand_param, right_hand_shape = sided_mano_model.dict2para(batch['right_hand_params'], side='right')
         
+        newPoints = batch['newPoints']
+        red = torch.zeros_like(newPoints)
+        red[:, :, 0] = 1
+        new_pc = Pointclouds(points=newPoints, features=red)
+
+        image_list = mesh_utils.render_geom_rot_v2(new_pc, )
+        image_utils.save_gif(image_list, f"outputs/debug_cano/newPoints_{b}_cano", fps=30, ext=".mp4")
+
+        wTo = batch['target_raw']
         left_hand_verts, left_hand_faces, left_hand_joints = sided_mano_model.hand_para2verts_faces_joints(left_hand_param.float(), left_hand_shape.float(), side='left')
         right_hand_verts, right_hand_faces, right_hand_joints = sided_mano_model.hand_para2verts_faces_joints(right_hand_param.float(), right_hand_shape.float(), side='right')
-        # left_hand, right_hand = torch.split(hand_raw, 21 * 3, dim=-1)
-        # left_hand_verts, left_hand_faces = sided_mano_model.joint2verts_faces(left_hand)
-        # right_hand_verts, right_hand_faces = sided_mano_model.joint2verts_faces(right_hand)
         left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
         left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'white')
         right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
         right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
+
+        newMesh = plot_utils.pc_to_cubic_meshes(newPoints)
+        # newMesh.textures = mesh_utils.pad_texture(newMesh, 'red')
         wTo_list = [wTo]
         color_list = ['red']
-        image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, batch['object_id'], step=b, pref="debug_vis_clip", save_to_file=False)
-        video_list.append(image_list)
-    video_list = torch.cat(video_list, axis=0)
-    image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_vis_clip/video_{cnt}", fps=30, ext=".mp4")
-    print('saved video', f"outputs/debug_vis_clip/video_{cnt}.mp4")
-        
 
-@torch.no_grad()
-def vis_traj(cano=False):
-
-    # okay if we load seq
-    import plotly.graph_objects as go
-    # from visualization.rerun_visualizer import RerunVisualizer
-    from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-    import smplx
-    from jutils import geom_utils, image_utils, mesh_utils
-    from pytorch3d.structures import Meshes
-    from egorecon.utils.motion_repr import HandWrapper
-    # rerun_viz = RerunVisualizer(
-    #     exp_name="vis_traj",
-    #     save_dir="outputs/debug_vis",
-    #     enable_visualization=True,
-    #     mano_models_dir="data/mano_models",
-    #     # object_mesh_dir="data/object_meshes",
-    # )
-    pt3d_viz = Pt3dVisualizer(
-        exp_name="vis_traj",
-        save_dir="outputs/debug_vis",
-        mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
-    )
-
-    mano_model_folder = "assets/mano"
-    device = "cpu"
-
-    data = load_pickle("/move/u/yufeiy2/data/HOT3D/pred_pose/mini_P0001_624f2ba9.npz")
-    cnt = 0
-    sided_mano_model = HandWrapper(mano_model_folder).to(device)
-
-    # sided_mano_models = {
-    #         "left": smplx.create(
-    #             os.path.join(mano_model_folder, "MANO_LEFT.pkl"),
-    #             "mano",
-    #             is_rhand=False,
-    #             num_pca_comps=15,
-    #         ),
-    #         "right": smplx.create(
-    #             os.path.join(mano_model_folder, "MANO_RIGHT.pkl"),
-    #             "mano",
-    #             is_rhand=True,
-    #             num_pca_comps=15,
-    #         ),
-    #     }
-
-    bs = 64
-    for demo_id, demo_data in data.items():
-        for uid, obj_data in demo_data["objects"].items():
-            video_list = []
-            cnt += 1
-            if uid != "225397651484143":
-                continue
-            total_T = len(obj_data["wTo"])
-            for start_idx in range(0, total_T, bs):
-                end_idx = min(start_idx + bs, total_T)
-
-                wTo = obj_data["wTo"][start_idx:end_idx]
-                object_pos = wTo[:, :3, 3]
-                object_rot = wTo[:, :3, :3]
-                object_quat = R.from_matrix(object_rot).as_quat()[:, [3, 0, 1, 2]]
-                        
-                wTo = torch.FloatTensor(wTo).cuda()
-                color_list = ['red']
-
-                right_theta = torch.FloatTensor(demo_data['right_hand']['theta'][start_idx:end_idx]).to(device)
-                right_shape = torch.FloatTensor(demo_data['right_hand']['shape'][start_idx:end_idx]).to(device)
-
-                left_theta = torch.FloatTensor(demo_data['left_hand']['theta'][start_idx:end_idx])
-                left_shape = torch.FloatTensor(demo_data['left_hand']['shape'][start_idx:end_idx])
-
-                if cano:
-                    (
-                        _,
-                        _,
-                        cano_object_pos,
-                        cano_object_quat,
-                        canoTw_rot,
-                    ) = rotate_at_frame_w_obj(
-                        object_pos[np.newaxis, :, np.newaxis, :],
-                        object_quat[np.newaxis, :, np.newaxis, :],
-                        object_pos[np.newaxis],
-                        object_quat[np.newaxis],
-                    )
-                    canoTw_rot = torch.FloatTensor(canoTw_rot).cuda().reshape(1, 3,3)
-
-                    # canoTw_rot = geom_utils.random_rotations(1,).cuda()
-                    canoTw_trans = torch.randn(1, 3).cuda()
-                    canoTw = geom_utils.rt_to_homo(canoTw_rot, canoTw_trans)[0]  # (1, 4, 4)
-                    
-                    mano_params_dict = {k: v.cpu() for k, v in sided_mano_model.para2dict(right_theta, right_shape).items()}
-            
-                    cano_right_positions, cano_right_mano_params_dict = cano_seq_mano(
-                            canoTw=canoTw.cpu(),
-                            positions=None,
-                            mano_params_dict=mano_params_dict,
-                            mano_model=sided_mano_model.sided_mano_models["right"],
-                            device=device,
-                        )
-                    cano_right_mano_params_dict = {k: torch.FloatTensor(v).to(device) for k, v in cano_right_mano_params_dict.items()}
-                    right_theta, right_shape = sided_mano_model.dict2para(cano_right_mano_params_dict)
-
-                    mano_params_dict = {k: v.cpu() for k, v in sided_mano_model.para2dict(left_theta, left_shape).items()}
-                    cano_left_positions, cano_left_mano_params_dict = cano_seq_mano(
-                            canoTw=canoTw.cpu(),
-                            positions=None,
-                            mano_params_dict=mano_params_dict,
-                            mano_model=sided_mano_model.sided_mano_models["left"],
-                            device=device,
-                        )
-                    cano_left_mano_params_dict = {k: torch.FloatTensor(v).to(device) for k, v in cano_left_mano_params_dict.items()}
-                    left_theta, left_shape = sided_mano_model.dict2para(cano_left_mano_params_dict)
-
-                    # wTo = canoTw[None] @ wTo
-                    cano_object_pos = cano_object_pos[0] + canoTw_trans.cpu().detach().numpy()
-                    cano_object_quat = cano_object_quat[0]
-                    cano_object_rot_mat = quaternion_to_matrix_numpy(cano_object_quat)
-                    cano_object_rot6d = matrix_to_rotation_6d_numpy(cano_object_rot_mat)
-
-                    wTo = np.tile(np.eye(4)[np.newaxis, :, :], (wTo.shape[0], 1, 1))
-                    wTo[:, :3, :3] = cano_object_rot_mat
-                    wTo[:, :3, 3] = cano_object_pos
-
-                    # wTo = np.concatenate([cano_object_pos, cano_object_rot6d], axis=-1)
-                    wTo = torch.FloatTensor(wTo).cuda()
-
-                
-                wTo_rot, wTo_tsl, _ = geom_utils.homo_to_rt(wTo, ignore_scale=True)
-                wTo_6d = geom_utils.matrix_to_rotation_6d(wTo_rot)
-                wTo_list = [torch.cat([wTo_tsl, wTo_6d], dim=-1)]
-                
-                right_hand_verts, right_hand_faces, right_hand_joints = sided_mano_model.hand_para2verts_faces_joints(right_theta, right_shape, side='right')
-                left_hand_verts, left_hand_faces, left_hand_joints = sided_mano_model.hand_para2verts_faces_joints(left_theta, left_shape, side='left')
-
-                # left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces)
-                # right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces)
-                # left_hand_verts, left_hand_faces = sided_mano_model.joint2verts_faces(cano_left_positions.reshape(-1, 21*3))
-                # right_hand_verts, right_hand_faces = sided_mano_model.joint2verts_faces(cano_right_positions.reshape(-1, 21*3))
-                left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces)
-                right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces)
-                mesh_utils.pad_texture(left_hand_meshes)
-                mesh_utils.pad_texture(right_hand_meshes, 'blue')
-
-                image_list = pt3d_viz.log_training_step(
-                    left_hand_meshes.cuda(),
-                    right_hand_meshes.cuda(), 
-                    wTo_list,
-                    color_list,
-                    uid,
-                    step=cnt,
-                    pref="debug_vis",
-                    save_to_file=False
-                )
-                video_list.append(image_list)
-        
-            video_list = torch.cat(video_list, axis=0)
-            print('video_list shape', video_list.shape)
-            image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_vis/video_{cnt}_cano{cano}", fps=30, ext=".mp4")
-            print('saved video', f"outputs/debug_vis/video_{cnt}_cano{cano}.mp4")
-
-        break
+        image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, newMesh, step=b, pref="debug_vis_cano", save_to_file=False, )
+        image_utils.save_gif(image_list, f"outputs/debug_cano/newPoints_{b}", fps=30, ext=".mp4")
 
 
 
 th = 0.05
 use_cache = False
+aug_cano = True
 if __name__ == "__main__":
     
     # vis_traj()
     # vis_clip()
-
-    est_noise()
+    vis_cano()
 
     
     # compute_norm_stats()

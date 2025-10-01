@@ -52,6 +52,7 @@ class Pt3dVisualizer:
         step=0,
         pref="training/",
         save_to_file=True,
+        device='cuda:0',
     ):
         """
         render one seq
@@ -62,18 +63,25 @@ class Pt3dVisualizer:
         :param uid
         :param wTc: [T, 4, 4]
         """
-        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
-        device = left_hand_meshes.device
-        T = len(left_hand_meshes)
-        if uid not in self.object_cache:
-            print(uid, self.object_cache.keys())
-        oObj = self.object_cache[uid].to(device)
-        oObj_verts = oObj.verts_padded()  # (1, V, 3)
+        scene_points = []
+        if left_hand_meshes is not None:
+            left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'white')
+            scene_points.append(left_hand_meshes.verts_packed())
+        if right_hand_meshes is not None:
+            right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
+            scene_points.append(right_hand_meshes.verts_packed())
+        # right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
+        # device = left_hand_meshes.device
+        # T = len(left_hand_meshes)
+        if isinstance(uid, Meshes):
+            oObj = uid.to(device)
+        else:
+            if uid not in self.object_cache:
+                print(uid, self.object_cache.keys())
+            oObj = self.object_cache[uid].to(device)
 
-        scene_points = [
-            left_hand_meshes.verts_packed(),
-            right_hand_meshes.verts_packed(),
-        ]
+        oObj_verts = oObj.verts_padded()  # (1, V, 3)
+    
         for wTo, color in zip(wTo_list, color_list):
             wTo_tsl, wTo_6d = wTo[..., :3], wTo[..., 3:]
             wTo_mat = geom_utils.rotation_6d_to_matrix(wTo_6d)
@@ -86,10 +94,15 @@ class Pt3dVisualizer:
 
         nTw = mesh_utils.get_nTw(scene_points, new_scale=1.2)
 
-        wScene = [left_hand_meshes, right_hand_meshes]  # bathc=T
+        wScene = []
+        if left_hand_meshes is not None:
+            wScene.append(left_hand_meshes)
+        if right_hand_meshes is not None:
+            wScene.append(right_hand_meshes)
 
         for wTo, color in zip(wTo_list, color_list):
             wTo_tsl, wTo_6d = wTo[..., :3], wTo[..., 3:]
+            T = wTo.shape[0]
             wTo_mat = geom_utils.rotation_6d_to_matrix(wTo_6d)
             wTo = geom_utils.rt_to_homo(wTo_mat, wTo_tsl)
 
