@@ -8,7 +8,7 @@ defaults:
   # - testdata
   - paths: move.yaml
   - hydra: default.yaml
-  - experiment: multi_overfit
+  - experiment: obj_only
   - traindata: hot3d_train.yaml
   - testdata: hot3d_mini.yaml
 
@@ -30,6 +30,7 @@ train: True
 # evaluate on test set, using best model weights achieved during training
 # lightning chooses best weights based on the metric specified in checkpoint callback
 test: False
+test_folder: eval
 
 # simply provide checkpoint path to resume training
 ckpt: null

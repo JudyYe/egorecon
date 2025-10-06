@@ -19,6 +19,7 @@ train:
 
 condition: 
   noisy_obj: true
+  bps: false
 
 dyn_only: false
 
@@ -39,6 +40,8 @@ datasets:
   test_split: mini
 
   augument:
+    motion_threshold: 0.05
+    
     noise_std_obj_rot: 2
     noise_std_obj_trans: 0.1
     noise_std_mano_global_rot: 2

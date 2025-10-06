@@ -4,13 +4,13 @@ import json
 from glob import glob
 
 root_dir = "/move/u/yufeiy2/data/HOT3D"
+hawor_eval_seqs = [
+    "P0001_a68492d5", "P0001_9b6feab7", "P0014_8254f925", "P0011_76ea6d47", "P0014_84ea2dcc", "P0001_8d136980", "P0012_476bae57", "P0012_130a66e1", "P0014_24cb3bf0", "P0010_1c9fe708", "P0002_2ea9af5b", "P0011_11475e24", "P0010_0ecbf39f", "P0010_160e551c", "P0015_42b8b389", "P0012_915e71c6", "P0002_65085bfc", "P0011_47878e48", "P0011_cee8fe4f", "P0002_016222d1", "P0012_d85e10f6", "P0012_119de519", "P0010_41c4c626", "P0012_f7e3880b", "P0009_02511c2f", "P0011_72efb935", "P0010_924e574e",
+] + ["P0001_624f2ba9", ]
 def make_split():
     # from hawor
-    seqs = [
-        "P0001_a68492d5", "P0001_9b6feab7", "P0014_8254f925", "P0011_76ea6d47", "P0014_84ea2dcc", "P0001_8d136980", "P0012_476bae57", "P0012_130a66e1", "P0014_24cb3bf0", "P0010_1c9fe708", "P0002_2ea9af5b", "P0011_11475e24", "P0010_0ecbf39f", "P0010_160e551c", "P0015_42b8b389", "P0012_915e71c6", "P0002_65085bfc", "P0011_47878e48", "P0011_cee8fe4f", "P0002_016222d1", "P0012_d85e10f6", "P0012_119de519", "P0010_41c4c626", "P0012_f7e3880b", "P0009_02511c2f", "P0011_72efb935", "P0010_924e574e",
-    ]
     test_list = []
-
+    seqs = hawor_eval_seqs
     # make sure they are all in the root_dir
     for seq in seqs:
         if not osp.exists(osp.join(root_dir, seq, 'metadata.json')):

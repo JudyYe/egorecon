@@ -7,7 +7,6 @@ Implements common rotation conversions and transformations.
 import torch
 import numpy as np
 
-
 # def rotation_6d_to_matrix(rotation_6d):
 #     """
 #     Convert 6D rotation representation to rotation matrix using Gram-Schmidt orthogonalization.
@@ -46,7 +45,6 @@ import numpy as np
 #     matrix = torch.stack([col1, col2, col3], dim=-1)
     
 #     return matrix.view(*batch_shape, 3, 3)
-
 
 def rotation_6d_to_matrix_numpy(rotation_6d):
     """

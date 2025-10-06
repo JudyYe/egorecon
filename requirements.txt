@@ -1,1 +1,4 @@
 imageio-ffmpeg
+trimesh
+scipy
+scikit-image

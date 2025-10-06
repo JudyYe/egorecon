@@ -5,6 +5,8 @@ import os
 import os.path as osp
 import random
 from pathlib import Path
+from bps_torch.bps import bps_torch
+from bps_torch.tools import sample_sphere_uniform
 
 import hydra
 import numpy as np
@@ -12,20 +14,21 @@ import torch
 import wandb
 import yaml
 from ema_pytorch import EMA
-from jutils import model_utils
+from jutils import model_utils, plot_utils
 from omegaconf import OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
 from torch.utils import data
 from tqdm import tqdm
 
-from ..manip.data.hand_to_object_dataset import HandToObjectDataset
+from ..manip.data.hand_to_object_dataset_w_geometry import HandToObjectDataset
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
 )
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..utils.motion_repr import HandWrapper
+
 from move_utils.slurm_utils import slurm_engine
 
 
@@ -145,6 +148,29 @@ class Trainer(object):
             object_mesh_dir=opt.paths.object_mesh_dir,
         )
 
+        self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
+        self.prep_bps_data()
+        self.obj_bps = self.obj_bps.to(device)
+
+    def prep_bps_data(self):
+        n_obj = 1024
+        r_obj = 1.0 
+        if not os.path.exists(self.bps_path):
+            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(1, -1, 3)
+            
+            bps = {
+                'obj': bps_obj.cpu(),
+            }
+            print("Generate new bps data to:{0}".format(self.bps_path))
+            os.makedirs(osp.dirname(self.bps_path), exist_ok=True)
+            torch.save(bps, self.bps_path)
+        
+        self.bps = torch.load(self.bps_path)
+        self.bps_torch = bps_torch()
+        self.obj_bps = self.bps['obj']
+        
+
+
     def prep_dataloader(self, window_size):
         opt = self.opt
         if not opt.test:
@@ -152,8 +178,10 @@ class Trainer(object):
             self.model.set_metadata(self.ds.stats)
             self.prep_val_dataset(opt)
         else:
+            self.prep_train_dataset(opt)
+            self.model.set_metadata(self.ds.stats)
             self.prep_val_dataset(opt)
-            self.model.set_metadata(self.val_ds.stats)
+            # self.model.set_metadata(self.val_ds.stats)
 
     def prep_train_dataset(self, opt):
         train_dataset = HandToObjectDataset(
@@ -312,18 +340,20 @@ class Trainer(object):
 
                 # Extract data from sample and move to device
                 # Generate padding mask
-                actual_seq_len = seq_len + 1
-                tmp_mask = torch.arange(self.window + 1, device=device).expand(
-                    1, self.window + 1
-                ) < actual_seq_len[:, None].repeat(1, self.window + 1)
+                actual_seq_len = seq_len + 2
+                tmp_mask = torch.arange(self.window + 2, device=device).expand(
+                    1, self.window + 2
+                ) < actual_seq_len[:, None].repeat(1, self.window + 2)
                 padding_mask = tmp_mask[:, None, :]
+
+                sample["object_bps_new"] = self.encode_bps(sample["newPoints"])
 
                 # valid_mask = sample['object_valid']
                 # print('padding mask: ', padding_mask.shape, 'valid mask: ', valid_mask.shape)
 
                 # with autocast(device_type='cuda', enabled=self.amp):
                 with autocast(enabled=self.amp):
-                    loss_diffusion = self.model(object_motion, cond, padding_mask)
+                    loss_diffusion = self.model(object_motion, cond, padding_mask, bps_cond=sample["object_bps_new"])
 
                     loss = loss_diffusion
 
@@ -377,7 +407,6 @@ class Trainer(object):
                 # Collect all metrics for comprehensive logging
                 with torch.no_grad():
                     for b, val_data_dict in enumerate(self.val_dl):
-                        print(b, val_data_dict["object_id"])
                         val_data_dict = model_utils.to_cuda(val_data_dict)
 
                         metrics_train = self.validation_step(sample, pref=f"train/")
@@ -402,9 +431,26 @@ class Trainer(object):
     def test(self):
         self.ema.ema_model.eval()
         with torch.no_grad():
+            for b, val_data_dict in enumerate(self.dl):
+                val_data_dict = model_utils.to_cuda(val_data_dict)
+                for s in range(2):
+                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_", just_vis=True, sample_guide=False)
+
             for b, val_data_dict in enumerate(self.val_dl):
                 val_data_dict = model_utils.to_cuda(val_data_dict)
-                self.validation_step(val_data_dict, pref=f"eval/")
+                for s in range(3):
+                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/{b}_sample_{s}_", just_vis=True, sample_guide=False)
+
+    def encode_bps(self, newPoints):
+        newCom = newPoints.mean(dim=1) # (1, 3)
+        obj_verts = newPoints
+        obj_trans = newCom
+        obj_bps = self.obj_bps.to(newPoints)
+        bps_object_geo = self.bps_torch.encode(x=obj_verts, \
+                    feature_type=['deltas'], \
+                    custom_basis=obj_bps.repeat(obj_trans.shape[0], \
+                    1, 1)+obj_trans[:, None, :])['deltas'] # T X N X 3 
+        return bps_object_geo
 
     def accumulate_metrics(self, metrics, all_metrics, pref):
         for metric_name, metric_dict in metrics.items():
@@ -425,23 +471,26 @@ class Trainer(object):
         if self.use_wandb:
             wandb.log(wandb_log, step=self.step)
 
-    def validation_step(self, val_data_dict, pref="val/"):
+    def validation_step(self, val_data_dict, pref="val/", just_vis=False, sample_guide=False):
         cond = val_data_dict["condition"]
         device = cond.device
         seq_len = torch.tensor([cond.shape[1]]).to(device)
 
         actual_seq_len = seq_len + 1
-        tmp_mask = torch.arange(self.window + 1, device=device).expand(
-            1, self.window + 1
-        ) < actual_seq_len[:, None].repeat(1, self.window + 1)
+        tmp_mask = torch.arange(self.window + 2, device=device).expand(
+            1, self.window + 2
+        ) < actual_seq_len[:, None].repeat(1, self.window + 2)
         padding_mask = tmp_mask[:, None, :]
         object_motion = val_data_dict["target"]
         cond = val_data_dict["condition"]
 
+        val_data_dict["object_bps_new"] = self.encode_bps(val_data_dict["newPoints"])
+
         # with autocast(device_type='cuda', enabled=self.amp):
         with autocast(enabled=self.amp):
             val_loss_diffusion = self.model(
-                object_motion, cond, padding_mask=padding_mask
+                object_motion, cond, padding_mask=padding_mask,
+                bps_cond=val_data_dict["object_bps_new"],
             )
 
         val_loss = val_loss_diffusion
@@ -465,24 +514,29 @@ class Trainer(object):
         cond = sample["condition"][:bs_for_vis]
         seq_len = torch.tensor([cond.shape[1]])
         object_motion = sample["target"][:bs_for_vis]
-
-        # add guide
-        # guided_object_pred_raw, _ = diffusion_model.sample_raw(
-        #     torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
-        # )
-        # metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+        sample["object_bps_new"] = self.encode_bps(sample["newPoints"])
 
         object_pred_raw, _ = diffusion_model.sample_raw(
-            torch.randn_like(object_motion), cond, padding_mask=padding_mask
+            torch.randn_like(object_motion), cond, padding_mask=padding_mask, bps_cond=sample["object_bps_new"][:bs_for_vis]
         )
-        print('object_pred_raw: ', object_pred_raw.shape, 'object_motion_raw: ', object_motion_raw.shape, object_motion.shape)
         metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
-        # metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
+        # add guide
+        if sample_guide:
+            guided_object_pred_raw, _ = diffusion_model.sample_raw(
+                torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
+                bps_cond=sample["object_bps_new"][:bs_for_vis]
+            )
+            metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+            metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
 
-        if self.step % self.vis_every == 0:
+        if self.step % self.vis_every == 0 or just_vis:
             bs_for_vis = 1
-            
+            # if 'newPoints' in sample:
+            points = val_data_dict["newPoints"][:bs_for_vis]
+            points = plot_utils.pc_to_cubic_meshes(points)
+
+
             fname = self.gen_vis_res(
                 self.step,
                 left_hand_raw[:bs_for_vis],
@@ -490,7 +544,7 @@ class Trainer(object):
                 object_motion_raw[:bs_for_vis],
                 object_noisy=sample["traj_noisy_raw"][:bs_for_vis],
                 object_pred=object_pred_raw[:bs_for_vis],
-                object_id=val_data_dict["object_id"][bs_for_vis-1],
+                object_id=points, # val_data_dict["object_id"][bs_for_vis-1],
                 seq_len=seq_len,
                 pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}",
             )
@@ -498,16 +552,17 @@ class Trainer(object):
                 object_id = val_data_dict["object_id"][bs_for_vis-1]
                 wandb.log({f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step)
             
-            # fname = self.gen_vis_res(
-            #     self.step,
-            #     left_hand_raw[:bs_for_vis],
-            #     right_hand_raw[:bs_for_vis],
-            #     object_motion_raw[:bs_for_vis],
-            #     object_pred=guided_object_pred_raw[:bs_for_vis],
-            #     object_id=val_data_dict["object_id"][bs_for_vis-1],
-            #     seq_len=seq_len,
-            #     pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
-            # )
+            if sample_guide:
+                fname = self.gen_vis_res(
+                    self.step,
+                    left_hand_raw[:bs_for_vis],
+                    right_hand_raw[:bs_for_vis],
+                    object_motion_raw[:bs_for_vis],
+                    object_pred=guided_object_pred_raw[:bs_for_vis],
+                    object_id=points,
+                    seq_len=seq_len,
+                    pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
+                )
             if self.use_wandb:
                 wandb.log({f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)}, step=self.step)
         return metrics
@@ -666,7 +721,7 @@ def run_train(opt, device):
         d_feats=repr_dim,
         out_dim=repr_dim,
         condition_dim=cond_dim,
-        max_timesteps=opt.model.window + 1,
+        max_timesteps=opt.model.window + 2,
         timesteps=1000,
         loss_type="l1",
         **opt.model,

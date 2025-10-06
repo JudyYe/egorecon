@@ -19,6 +19,7 @@ from ...utils.rotation_utils import (matrix_to_rotation_6d_numpy,
                                      quaternion_to_matrix_numpy,
                                      rotation_6d_to_matrix_numpy)
 from ..lafan1.utils import rotate_at_frame_w_obj
+from ...visualization.pt3d_visualizer import Pt3dVisualizer
 
 from pytorch3d.ops import sample_points_from_meshes
 from bps_torch.bps import bps_torch
@@ -129,7 +130,7 @@ class HandToObjectDataset(Dataset):
         window_size=120,
         single_demo=None,  # For overfitting: specify demo_id
         single_object=None,  # For overfitting: specify object_id
-        motion_threshold=0.005,  # Threshold for considering motion vs stationary
+        motion_threshold=0.05,  # Threshold for considering motion vs stationary
         sampling_strategy="balanced",  # 'balanced', 'motion_only', 'random'
         min_motion_frames=10,  # Minimum consecutive motion frames to consider
         augment=False,  # Whether in training mode (for data augmentation)
@@ -171,7 +172,7 @@ class HandToObjectDataset(Dataset):
         self.data_cfg = data_cfg
 
         self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
-        bps_dir = osp.join(opt.paths.data_dir, 'bps')
+        # bps_dir = osp.join(opt.paths.data_dir, 'bps')
 
         # dest_obj_bps_npy_folder = os.path.join(bps_dir, "object_bps_npy_files_joints24")
         # dest_obj_bps_npy_folder_for_test = os.path.join(bps_dir, "object_bps_npy_files_for_eval_joints24")
@@ -220,7 +221,7 @@ class HandToObjectDataset(Dataset):
         print("Filtering dynamic windows...")
         if self.opt.dyn_only:
             # only keep the dynamic windows
-            self._filter_windows(threshold=th)
+            self._filter_windows(threshold=self.motion_threshold)
             print(f"Filtered to {len(self.windows)} dynamic windows")
 
         # Apply train/validation split
@@ -270,12 +271,16 @@ class HandToObjectDataset(Dataset):
         self.obj_bps = self.bps['obj']
 
         # load object geometry
-        self.object_library = {}
-        glob_file = glob(osp.join(self.opt.paths.object_mesh_dir, "*.glb"))
-        print("glob_file", glob_file, "object_mesh_dir", self.opt.paths.object_mesh_dir)
-        for mesh_file in glob_file:
-            uid = osp.basename(mesh_file).split(".")[0]
-            self.object_library[uid] = sample_points_from_meshes(mesh_utils.load_mesh(mesh_file), 50000)
+        self.object_library = Pt3dVisualizer.setup_template(self.opt.paths.object_mesh_dir)
+        for uid, mesh in self.object_library.items():
+            self.object_library[uid] = sample_points_from_meshes(mesh, 50000)
+        
+        # self.object_library = {}
+        # glob_file = glob(osp.join(self.opt.paths.object_mesh_dir, "*.glb"))
+        # print("glob_file", glob_file, "object_mesh_dir", self.opt.paths.object_mesh_dir)
+        # for mesh_file in glob_file:
+        #     uid = osp.basename(mesh_file).split(".")[0]
+            # self.object_library[uid] = sample_points_from_meshes(mesh_utils.load_mesh(mesh_file), 50000)
 
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
@@ -885,9 +890,10 @@ class HandToObjectDataset(Dataset):
             "intr":  to_tensor(window["intr"]),
             "wTc": to_tensor(window["wTc"]),
             
-            "object_bps_new": window["object_bps_new"],
+            # "object_bps_new": window["object_bps_new"][0],
+
             "newTo": window["newTo"],
-            "newPoints": window["newPoints"],
+            "newPoints": window["newPoints"][0],
         }
     
     def transform_wTo_traj(self, wTo, newTo):
@@ -913,16 +919,17 @@ class HandToObjectDataset(Dataset):
         # load_goemetry 
         oPoints = self.object_library[window['object_id']]
         newPoints = mesh_utils.apply_transform(oPoints, newTo)  # (1, P, 3)  torch        
-        newCom = newPoints.mean(dim=1) # (1, 3)
+        # newCom = newPoints.mean(dim=1) # (1, 3)
 
-        # compute bps
-        bps = self.compute_object_geo_bps(newPoints, newCom)
+        # # compute bps
+        # bps = self.compute_object_geo_bps(newPoints, newCom)
+        # bps = torch.zeros((1, 1024, 3))
 
         # randomly sample nP points for vis
         nP = min(5000, newPoints.shape[1])
         index = torch.randint(0, newPoints.shape[1], (nP, ))
         newPoints = newPoints[:, index, :]
-        window['object_bps_new'] = bps
+        # window['object_bps_new'] = bps
         window['newTo'] = newTo
         window['newPoints'] = newPoints
         
@@ -1077,6 +1084,8 @@ def vis_cano(opt):
         right_hand_param, right_hand_shape = sided_mano_model.dict2para(batch['right_hand_params'], side='right')
         
         newPoints = batch['newPoints']
+        bps = batch['object_bps_new']
+        print('bps', bps.shape)
         red = torch.zeros_like(newPoints)
         red[:, :, 0] = 1
         new_pc = Pointclouds(points=newPoints, features=red)

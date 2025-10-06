@@ -8,7 +8,65 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=geom_clip/bps\${condition.bps}_noisy_obj\${condition.noisy_obj}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \
+  dyn_only=true \
+  condition.bps=true condition.noisy_obj=false  \
+  traindata=hotclip_train \
+  ckpt=outputs/\${expname}/weights/model-5.pt \
+  test=true datasets.split=test \
+  general.rerun=true general.wandb=true \
+  +engine=move
+
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=geom/bps\${condition.bps}_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true \
+  condition.bps=true condition.noisy_obj=false  \
+  test=true \
+  ckpt=outputs/geom/bpsTrue_noisy_objFalse/weights/model-5.pt \
+  general.rerun=True general.wandb=false \
+  guide.hint=com \
+  +engine=move
+
+
+-
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=geom/bps\${condition.bps}_noisy_obj\${condition.noisy_obj}_motion\${datasets.augument.motion_threshold} \
+  experiment=obj_only \
+  dyn_only=true \
+  condition.bps=true condition.noisy_obj=false  \
+  general.rerun=True general.wandb=true \
+  datasets.augument.motion_threshold=0.1,0.2,0.5 \
+  +engine=move
+
+
+
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=geom/bps\${condition.bps}_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true \
+  condition.bps=true,false condition.noisy_obj=false,true  \
+  general.rerun=True general.wandb=true \
+  +engine=move
+
+
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dev/tmp \
+  experiment=obj_only \
+  dyn_only=true condition.noisy_obj=false \
+  condition.bps=true \
+  general.rerun=True general.wandb=true \
+
+
 # refinement later
+
 
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \

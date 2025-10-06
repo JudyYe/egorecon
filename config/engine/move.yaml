@@ -1,7 +1,7 @@
 cluster: slurm
 
 slurm_signal_delay_s: 120
-timeout_min: 360 # 6 hours
+timeout_min: 1440 # 24 hours
 slurm_partition: move,humanoid
 account: move
 

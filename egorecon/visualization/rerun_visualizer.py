@@ -1,6 +1,13 @@
+
 #!/usr/bin/env python3
 """Concise Rerun visualizer based on proven working code"""
-
+from pytorch3d.structures import Meshes
+import smplx
+from scipy.spatial.transform import Rotation
+import json
+import os
+import os.path as osp
+from glob import glob
 import os
 import pickle
 import numpy as np
@@ -8,7 +15,7 @@ import rerun as rr
 import torch
 import shutil
 from pathlib import Path
-
+from jutils import geom_utils
 
 class RerunVisualizer:
     """Concise Rerun visualizer for hand-to-object training"""
@@ -31,71 +38,83 @@ class RerunVisualizer:
         self.rerun_dir = None
         self.left_mano = None
         self.right_mano = None
-        self.object_meshes = {}  # Cache loaded meshes
+        self.object_meshes = self.setup_template(self.object_mesh_dir)
 
-        if self.enable_visualization:
-            self._setup()
+        self._setup() 
+
+    @staticmethod
+    def setup_template(object_mesh_dir, lib="hotclip"):
+        object_cache = {}
+        if lib == "hot3d":
+            glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
+            print("glob_file", glob_file, "object_mesh_dir", object_mesh_dir)
+            for mesh_file in glob_file:
+                uid = osp.basename(mesh_file).split(".")[0]
+                object_cache[uid] = mesh_file
+        elif lib == "hotclip":
+            # make it compatible with hot3d
+            glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
+
+            model_info = json.load(open(osp.join(object_mesh_dir, "models_info.json")))
+            obj2uid = {}
+            for obj_id, obj_info in model_info.items():
+                obj2uid[int(obj_id)] = obj_info["original_id"]
+            for mesh_file in glob_file:
+                obj_id = int(osp.basename(mesh_file).split(".")[0].split("_")[-1])
+                object_cache[f"{obj_id:06d}"] = mesh_file
+                object_cache[obj2uid[obj_id]] = object_cache[f"{obj_id:06d}"]
+        else:
+            raise ValueError(f"Invalid library: {lib}")
+        return object_cache
 
     def _setup(self):
         """Setup Rerun and load models"""
-        try:
-            # Initialize Rerun
-            rr.init(f"HandToObject_{self.exp_name}")
-            self.rerun_dir = self.save_dir / "rerun_visualizations"
-            self.rerun_dir.mkdir(parents=True, exist_ok=True)
+        # Initialize Rerun
+        rr.init(f"HandToObject_{self.exp_name}")
+        self.rerun_dir = self.save_dir / "rerun_visualizations"
+        self.rerun_dir.mkdir(parents=True, exist_ok=True)
 
-            # Start recording immediately (like the working version)
-            main_output_file = self.rerun_dir / "training_session.rrd"
-            rr.save(str(main_output_file))
+        # Start recording immediately (like the working version)
+        main_output_file = self.rerun_dir / "training_session.rrd"
+        rr.save(str(main_output_file))
 
-            # Load MANO models
-            self._load_mano_models()
+        # Load MANO models
+        # self._load_mano_models()
 
-        except Exception as e:
-            print(f"⚠️ Visualization setup failed: {e}")
-            self.enable_visualization = False
 
     def _load_mano_models(self):
         """Load MANO models using proven working method"""
-        try:
-            import smplx
-
-            # Check files exist
-            left_src = self.mano_models_dir / "MANO_LEFT.pkl"
-            right_src = self.mano_models_dir / "MANO_RIGHT.pkl"
-
-            if not left_src.exists() or not right_src.exists():
-                print(f"⚠️ MANO files not found in {self.mano_models_dir}")
-                return
-
-            # Create temp directory (proven working method)
-            mano_temp_dir = "/tmp/mano_models"
-            os.makedirs(mano_temp_dir, exist_ok=True)
-
-            # Copy files
-            shutil.copy2(str(left_src), os.path.join(mano_temp_dir, "MANO_LEFT.pkl"))
-            shutil.copy2(str(right_src), os.path.join(mano_temp_dir, "MANO_RIGHT.pkl"))
-
-            # Load models
-            self.left_mano = smplx.MANO(
-                model_path=os.path.join(mano_temp_dir, "MANO_LEFT.pkl"),
-                is_rhand=False,
-                use_pca=False,
-                flat_hand_mean=True,
-            )
-            self.right_mano = smplx.MANO(
-                model_path=os.path.join(mano_temp_dir, "MANO_RIGHT.pkl"),
-                is_rhand=True,
-                use_pca=False,
-                flat_hand_mean=True,
-            )
-
-        except ImportError:
-            print("⚠️ smplx not available")
-        except Exception as e:
-            print(f"⚠️ MANO loading failed: {e}")
 
 
+        # Check files exist
+        left_src = self.mano_models_dir / "MANO_LEFT.pkl"
+        right_src = self.mano_models_dir / "MANO_RIGHT.pkl"
+
+        if not left_src.exists() or not right_src.exists():
+            print(f"⚠️ MANO files not found in {self.mano_models_dir}")
+            return
+
+        # Create temp directory (proven working method)
+        mano_temp_dir = "/tmp/mano_models"
+        os.makedirs(mano_temp_dir, exist_ok=True)
+
+        # Copy files
+        shutil.copy2(str(left_src), os.path.join(mano_temp_dir, "MANO_LEFT.pkl"))
+        shutil.copy2(str(right_src), os.path.join(mano_temp_dir, "MANO_RIGHT.pkl"))
+
+        # Load models
+        self.left_mano = smplx.MANO(
+            model_path=os.path.join(mano_temp_dir, "MANO_LEFT.pkl"),
+            is_rhand=False,
+            use_pca=False,
+            flat_hand_mean=True,
+        )
+        self.right_mano = smplx.MANO(
+            model_path=os.path.join(mano_temp_dir, "MANO_RIGHT.pkl"),
+            is_rhand=True,
+            use_pca=False,
+            flat_hand_mean=True,
+        )
     def load_object_mesh(self, object_id):
         """Load object mesh using proven working method"""
         if object_id in self.object_meshes:
@@ -139,6 +158,7 @@ class RerunVisualizer:
             print(f"⚠️ Mesh loading failed for {object_id}: {e}")
             return None
 
+
     def _apply_coordinate_transform(self, position):
         """Apply coordinate transformation (from proven working code)"""
         transform_matrix = np.array(
@@ -149,6 +169,65 @@ class RerunVisualizer:
             ]
         )
         return transform_matrix @ position
+
+    def log_dynamic_step(self, left_hand_meshes, right_hand_meshes, wTo_list, label_list, uid, step=0, pref='training/', save_to_file=True, device='cuda:0'):
+        T = len(wTo_list[0])
+        for t in range(T):
+            rr.set_time_sequence("frame", t)
+            if t == 0:
+                for wTo, label in zip(wTo_list, label_list):
+                    if isinstance(uid, str):
+                        rr.log(
+                            f"{pref}/{label}",
+                            rr.Asset3D(
+                                path=self.object_meshes[uid]
+                            )
+                        )
+                    elif isinstance(uid, Meshes):
+                        verts = uid.verts_packed().cpu().numpy()
+                        faces = uid.faces_packed().cpu().numpy()
+                        rr.log(
+                            f"{pref}/{label}",
+                            rr.Mesh3D(
+                                vertex_positions=verts,
+                                triangle_indices=faces,
+                            )
+                        )
+            
+            for wTo, label in zip(wTo_list, label_list):
+                wTo_tsl, wTo_6d = wTo[t, :3], wTo[t, ..., 3:]
+                wTo_mat = geom_utils.rotation_6d_to_matrix(wTo_6d)
+                wTo = geom_utils.rt_to_homo(wTo_mat, wTo_tsl)
+                wTo = wTo.cpu().numpy()
+
+                rr.log(
+                    f"{pref}/{label}",
+                    rr.Transform3D(
+                        translation=wTo[:3, 3],
+                        rotation=rr.Quaternion(xyzw=Rotation.from_matrix(wTo[:3, :3]).as_quat())
+                    )
+                )
+            if left_hand_meshes is not None:
+                rr.log(
+                    f"{pref}/left_hand_mesh",
+                    rr.Mesh3D(
+                        vertex_positions=left_hand_meshes.verts_list()[t].cpu().numpy(),
+                        triangle_indices=left_hand_meshes.faces_list()[t].cpu().numpy(),
+                        vertex_colors=[0.3, 0.8, 0.3],
+                    )
+                )
+            if right_hand_meshes is not None:
+                rr.log(
+                    f"{pref}/right_hand_mesh",
+                    rr.Mesh3D(
+                        vertex_positions=right_hand_meshes.verts_list()[t].cpu().numpy(),
+                        triangle_indices=right_hand_meshes.faces_list()[t].cpu().numpy(),
+                        vertex_colors=[0.3, 0.3, 0.8],
+                    )
+                )
+        return
+
+
 
     def log_training_step(
         self,
@@ -182,13 +261,12 @@ class RerunVisualizer:
         rr.set_time_sequence("training_step", step_num)
 
         # Extract positions
-        if left_hand.shape[-1] == 21 * 3:
+        if left_hand is not None and left_hand.shape[-1] == 21 * 3:
             left_hand = left_hand.reshape(1, -1, 21, 3)
             right_hand = right_hand.reshape(1, -1, 21, 3)
 
         left_pos = left_hand[0, :, 0, :3].cpu().numpy()  # [T, 3]
         right_pos = right_hand[0, :, 0, :3].cpu().numpy()
-        object_pos_gt = object_gt[0, :, :3].cpu().numpy()
 
         # Apply valid length
         valid_len = seq_len.item() if seq_len is not None else len(left_pos)
@@ -196,6 +274,8 @@ class RerunVisualizer:
 
         left_pos = left_pos[:valid_len]
         right_pos = right_pos[:valid_len]
+
+        object_pos_gt = object_gt[0, :, :3].cpu().numpy()
         object_pos_gt = object_pos_gt[:valid_len]
 
         # Log trajectories

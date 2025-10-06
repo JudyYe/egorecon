@@ -276,126 +276,6 @@ class HandToObjectDataset(Dataset):
         self.windows = filtered_windows
         print(f"{origin_size} -> {len(self.windows)} dynamic windows")
 
-    def _create_windows(self):
-        windows = []
-        cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}_{self.noise_scheme}.pkl")
-        if osp.exists(cache_name) and use_cache:
-            print('loading window cache from ', cache_name)
-            self.windows = pickle.load(open(cache_name, 'rb'))
-            return self.windows
-        print('creating window cache and save to ', cache_name)
-        
-        for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
-            for obj_id, obj_data in demo_data["objects"].items():
-
-                object_traj = obj_data["wTo"]  # (T, 4, 4)
-                camera_traj = demo_data["wTc"]  # (T, 4, 4)
-
-                # Find the overlapping time range for all trajectories
-                left_hand = demo_data["left_hand"]["theta"]
-                right_hand = demo_data["right_hand"]["theta"]
-                min_len = min(len(left_hand), len(right_hand), len(object_traj))
-
-                if min_len < self.window_size:
-                    print(
-                        f"Warning: Trajectory too short for demo {demo_id}, obj {obj_id}: {min_len}"
-                    )
-                    continue
-
-                # Trim all trajectories to same length
-                # left_hand_trimmed = left_hand[:min_len]
-                # right_hand_trimmed = right_hand[:min_len]
-                # object_traj_trimmed = object_traj[:min_len]
-                # camera_traj_trimmed = camera_traj[:min_len]
-                # Create sliding windows
-                for start_idx in range(
-                    0, min_len - self.window_size + 1, self.window_size // 2
-                ):
-                    end_idx = start_idx + self.window_size
-
-                    if "wTo_valid" in demo_data["objects"][obj_id]:
-                        object_valid = demo_data["objects"][obj_id]["wTo_valid"][
-                            start_idx:end_idx
-                        ]
-                    else:
-                        object_valid = np.ones(self.window_size).astype(bool)
-                        print("No object valid mask found?????? " , self.data_path)
-
-                    if not np.all(object_valid):
-                        # TODO: use strict checking for now
-                        continue 
-                    wTo = object_traj[start_idx:end_idx]
-                    wTo_rot = wTo[..., :3, :3]
-                    wTo_pos = wTo[..., :3, 3]
-                    wTo_rot6d = geom_utils.matrix_to_rotation_6d(to_tensor(wTo_rot)).detach().numpy()
-                    wTo = np.concatenate([wTo_pos, wTo_rot6d], axis=1)
-                    canoTo = wTo
-
-                    wTc = camera_traj[start_idx:end_idx]
-                    canoTc = wTc
-
-                    cano_left_mano_params_dict = {
-                        "global_orient": left_hand[start_idx:end_idx][:, 0:3],
-                        "transl": left_hand[start_idx:end_idx][:, 3:6],
-                        "betas": demo_data["left_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": left_hand[start_idx:end_idx][:, 6:],
-                    }
-
-                    cano_right_mano_params_dict = {
-                        "global_orient": right_hand[start_idx:end_idx][:, 0:3],
-                        "transl": right_hand[start_idx:end_idx][:, 3:6],
-                        "betas": demo_data["right_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": right_hand[start_idx:end_idx][:, 6:],
-                    }
-
-                    smpl_out_left = self.sided_mano_models["left"](**{k: torch.FloatTensor(v) for k, v in cano_left_mano_params_dict.items()})
-                    smpl_out_right = self.sided_mano_models["right"](**{k: torch.FloatTensor(v) for k, v in cano_right_mano_params_dict.items()})
-                    cano_left_positions = smpl_out_left.joints
-                    cano_right_positions = smpl_out_right.joints
-
-                    window_data = {
-                        "demo_id": demo_id,
-                        "object_id": obj_id,
-                        "start_idx": start_idx,
-                        "end_idx": end_idx,
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # "shelf_valid": shelf_valid,
-                        # "object_shelf": cano_object_shelf_data,
-                        "object_valid": object_valid,
-                        "object": canoTo, # cano_object_data,
-                        "wTc": canoTc,
-                        "intr": demo_data["intrinsic"],
-                        "left_hand": cano_left_positions.reshape(-1, 21 * 3),
-                        "right_hand": cano_right_positions.reshape(-1, 21 * 3),
-                        "left_hand_params": cano_left_mano_params_dict,
-                        "right_hand_params": cano_right_mano_params_dict,
-                        # "left_hand_joints": cano_left_positions,
-                        # "right_hand_joints": cano_right_positions,
-                        # 'wTc':
-                        # 'wTo':
-                        # 'wTo_shelf':
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'left_hand_theta': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'object':cano_object_data,
-                    }
-
-                    is_motion = self._is_motion_window(canoTo)
-                    window_data["is_motion"] = is_motion
-
-                    if self.noise_scheme == "real":
-                        shelf_valid = demo_data["objects"][obj_id]["shelf_valid"][
-                            start_idx:end_idx
-                        ]
-                        window_data["shelf_valid"] = shelf_valid
-                        window_data["object_shelf"] = cano_object_shelf_data
-                    windows.append(window_data)        
-        os.makedirs(osp.dirname(cache_name), exist_ok=True)
-        pickle.dump(windows, open(cache_name, 'wb'))
-        return windows
-
     def _create_windows_legecy(self):
         """Create sliding windows from trajectory data."""
         windows = []
@@ -441,7 +321,7 @@ class HandToObjectDataset(Dataset):
                         ]
                     else:
                         object_valid = np.ones(self.window_size).astype(bool)
-                        print("No object valid mask found?????? " , self.data_path)
+                        print("No object valid mask found!!!! " , self.data_path, demo_data["objects"][obj_id].keys())
 
                     if not np.all(object_valid):
                         # TODO: use strict checking for now
@@ -1217,7 +1097,7 @@ def est_noise(opt):
         exp_name="vis_traj",
         save_dir="outputs/debug_vis",
         mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
+        object_mesh_dir=opt.paths.object_mesh_dir,
     )
 
     mano_model_folder = "assets/mano"
@@ -1368,7 +1248,7 @@ def vis_clip(opt):
         exp_name="vis_traj",
         save_dir="outputs/debug_vis",
         mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
+        object_mesh_dir=opt.paths.object_mesh_dir,
     )
 
     mano_model_folder = "assets/mano"
@@ -1381,7 +1261,7 @@ def vis_clip(opt):
             is_train=False,
             data_path=opt.traindata.data_path,
             window_size=opt.model.window,
-            single_demo="P0001_624f2ba9",
+            # single_demo="P0001_624f2ba9",
             # single_object="225397651484143",
             sampling_strategy="random",
             split=opt.datasets.split,
@@ -1418,8 +1298,11 @@ def vis_clip(opt):
         color_list = ['red']
         image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, batch['object_id'], step=b, pref="debug_vis_clip", save_to_file=False)
         video_list.append(image_list)
+
+        if b >= 10:
+            break
     video_list = torch.cat(video_list, axis=0)
-    image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_vis_clip/video_{cnt}", fps=30, ext=".mp4")
+    image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_vis_{opt.traindata.name}/video_{cnt}", fps=30, ext=".mp4")
     print('saved video', f"outputs/debug_vis_clip/video_{cnt}.mp4")
         
 
@@ -1445,7 +1328,7 @@ def vis_traj(cano=False):
         exp_name="vis_traj",
         save_dir="outputs/debug_vis",
         mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
+        object_mesh_dir=opt.paths.object_mesh_dir,
     )
 
     mano_model_folder = "assets/mano"
@@ -1593,9 +1476,9 @@ use_cache = False
 if __name__ == "__main__":
     
     # vis_traj()
-    # vis_clip()
+    vis_clip()
 
-    est_noise()
+    # est_noise()
 
     
     # compute_norm_stats()

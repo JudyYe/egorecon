@@ -1,3 +1,4 @@
+import json
 import os
 import os.path as osp
 import pickle
@@ -28,19 +29,33 @@ class Pt3dVisualizer:
         self.enable_visualization = enable_visualization
         self.mano_models_dir = Path(mano_models_dir)
         self.object_mesh_dir = Path(object_mesh_dir)
-        self.object_cache = {}
+        self.object_cache = self.setup_template(self.object_mesh_dir)
 
-        self.setup_template()
-
-    def setup_template(self, lib="hot3d"):
+    @staticmethod
+    def setup_template(object_mesh_dir, lib="hotclip"):
+        object_cache = {}
         if lib == "hot3d":
-            glob_file = glob(osp.join(self.object_mesh_dir, "*.glb"))
-            print("glob_file", glob_file, "object_mesh_dir", self.object_mesh_dir)
+            glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
+            print("glob_file", glob_file, "object_mesh_dir", object_mesh_dir)
             for mesh_file in glob_file:
                 uid = osp.basename(mesh_file).split(".")[0]
-                self.object_cache[uid] = mesh_utils.load_mesh(mesh_file)
+                object_cache[uid] = mesh_utils.load_mesh(mesh_file)
+        elif lib == "hotclip":
+            # make it compatible with hot3d
+            glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
+
+            model_info = json.load(open(osp.join(object_mesh_dir, "models_info.json")))
+            obj2uid = {}
+            for obj_id, obj_info in model_info.items():
+                obj2uid[int(obj_id)] = obj_info["original_id"]
+            for mesh_file in glob_file:
+                obj_id = int(osp.basename(mesh_file).split(".")[0].split("_")[-1])
+                object_cache[f"{obj_id:06d}"] = mesh_utils.load_mesh(mesh_file)
+                object_cache[obj2uid[obj_id]] = object_cache[f"{obj_id:06d}"]
         else:
             raise ValueError(f"Invalid library: {lib}")
+        return object_cache
+
 
     def log_training_step(
         self,
@@ -93,6 +108,7 @@ class Pt3dVisualizer:
         scene_points = torch.cat(scene_points, 0)[None]
 
         nTw = mesh_utils.get_nTw(scene_points, new_scale=1.2)
+        print('nTw', nTw.shape)
 
         wScene = []
         if left_hand_meshes is not None:

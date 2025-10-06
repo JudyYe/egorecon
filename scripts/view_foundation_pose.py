@@ -1,3 +1,17 @@
+# data format: 
+# "objects": ['uid1', 'uid2', ...], 
+# "left_hand_theta": [T, 3+3+15], 3aa+3tsl+pcax15
+# "left_hand_shape": [T, 10],
+# "right_hand_theta": [T, 3+3+15],
+# "right_hand_shape": [T, 10],
+# "wTc": [T, 4, 4],
+# intrinsic: [3, 3],
+# "uid{i}_cTo_shelf": [T, 4, 4],
+# "uid{i}_shelf_valid": [T, ],
+# "uid{i}_wTo": [T, 4, 4],
+# "uid{i}_gt_valid": [T, ],
+
+
 
 
 # hand: {side}_theta: (3aa+3tsl+pcax15)
@@ -485,6 +499,17 @@ class HOT3DLoader:
             self.image_stream_id
         )
         intrinsics = self.get_calibration(rgb_calibration)
+
+        intr_notrot = self.get_calibration(rgb_calibration, should_rotate_image=False)
+
+        deviceTcamera_notrot = intr_notrot.get_transform_device_camera()  
+        deviceTcamera = intrinsics.get_transform_device_camera()
+
+        camera_notrotTcamera = deviceTcamera_notrot.inverse().to_matrix() @ deviceTcamera.to_matrix()
+        print('camera_notrotTcamera', camera_notrotTcamera)
+
+        assert False
+
         
         deviceTcamera = intrinsics.get_transform_device_camera()
         focal_length = float(intrinsics.get_focal_lengths()[0])
@@ -933,7 +958,6 @@ def vis_meta(seq="P0001_624f2ba9", num=-1, pred='fp', **kwargs):
     intrinsic_file = osp.join(root_dir, "pred_pose", seq, "intrinsic.pkl")
     meta = pickle.load(open(meta_file, "rb"))
     intrinsic = pickle.load(open(intrinsic_file, "rb"))
-
     if pred == 'fp':
         pred_list = glob(osp.join('outputs/', seq, "*/pose.pkl"))
         name2pred = {}
@@ -1844,7 +1868,7 @@ if __name__ == "__main__":
     name2uid = {v: k for k, v in uid2name.items()}
 
     # Fire(batch_save_one)
-    # Fire(save_one)
+    Fire(save_one)
     # Fire(get_all_masks)
     
     # alpha = 1 # 0.6  # this works for cube
@@ -1852,7 +1876,7 @@ if __name__ == "__main__":
     # Fire(run_mono_depth)
     # Fire(esitimate_alpha)
 
-    Fire(vis_meta)
+    # Fire(vis_meta)
     
     # Fire(make_a_mini_dataset)
 
