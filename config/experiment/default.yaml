@@ -19,7 +19,7 @@ train:
 
 condition: 
   noisy_obj: true
-  bps: false
+  bps: 0
 
 dyn_only: false
 

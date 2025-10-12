@@ -1,3 +1,7 @@
+import os
+import os.path as osp
+from bps_torch.bps import bps_torch
+from bps_torch.tools import sample_sphere_uniform
 import pickle
 import math
 from inspect import isfunction
@@ -10,6 +14,7 @@ from tqdm.auto import tqdm
 
 from .transformer_module import Decoder
 from jutils import geom_utils, mesh_utils
+import pytorch3d.ops as pt3d_ops
 
 def exists(x):
     return x is not None
@@ -210,6 +215,11 @@ class CondGaussianDiffusion(nn.Module):
     ):
         super().__init__()
 
+        self.hand_sensor_encoder = nn.Sequential(
+            nn.Linear(in_features=21*3*2, out_features=512),
+            nn.ReLU(),
+            nn.Linear(in_features=512, out_features=21*3*2),
+        )
         self.bps_encoder = nn.Sequential(
             nn.Linear(in_features=1024*3, out_features=512),
             nn.ReLU(),
@@ -310,6 +320,9 @@ class CondGaussianDiffusion(nn.Module):
             ** -p2_loss_weight_gamma,
         )
 
+        self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
+        self.prep_bps_data()
+        
     def set_metadata(self, stats):
         mean = stats["object_mean"]
         std = stats["object_std"]
@@ -518,13 +531,13 @@ class CondGaussianDiffusion(nn.Module):
         return x  # BS X T X D
 
     @torch.no_grad()
-    def sample_raw(self, x_start, hand_condition, padding_mask=None, bps_cond=None, **kwargs):
-        motion = self.sample(x_start, hand_condition, padding_mask=padding_mask, bps_cond=bps_cond, **kwargs)
+    def sample_raw(self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None, **kwargs):
+        motion = self.sample(x_start, hand_condition, padding_mask=padding_mask, newPoints=newPoints, hand_raw=hand_raw, **kwargs)
         motion_raw = self.denormalize_data(motion)
         return motion_raw, {"motion": motion}
 
     @torch.no_grad()
-    def sample(self, x_start, hand_condition, cond_mask=None, padding_mask=None, guide=False, bps_cond=None, **kwargs):
+    def sample(self, x_start, hand_condition, cond_mask=None, padding_mask=None, guide=False, newPoints=None, hand_raw=None, **kwargs):
         """
         Sample object trajectory conditioned on hand poses.
 
@@ -536,17 +549,19 @@ class CondGaussianDiffusion(nn.Module):
         """
         # self.denoise_fn.eval()
         self.eval()
+        cond = self.get_cond(hand_condition, x_start, newPoints, hand_raw)
 
-        # (BPS representation) Encode object geometry to low dimensional vectors. 
-        if self.opt.condition.bps:
-            # x_cond = torch.cat((bps_cond[:, :, :3], self.bps_encoder(bps_cond[:, :, 3:])), dim=-1) # BS X T X (3+256) 
-            BS = bps_cond.shape[0]
-            x_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
-            cond = torch.cat([hand_condition, x_cond], dim=-2)
-        else:
-            bs = x_start.shape[0]
-            bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        # # (BPS representation) Encode object geometry to low dimensional vectors. 
+        # if self.opt.condition.bps:
+        #     x_cond = self.encode_bps_feature(newPoints)
+
+        #     # BS = bps_cond.shape[0]
+        #     # x_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
+        #     cond = torch.cat([hand_condition, x_cond], dim=-2)
+        # else:
+        #     bs = x_start.shape[0]
+        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
 
         sample_res = self.p_sample_loop(
             x_start.shape, 
@@ -595,7 +610,7 @@ class CondGaussianDiffusion(nn.Module):
         noise = default(noise, lambda: torch.randn_like(x_start))
 
         x = self.q_sample(x_start=x_start, t=t, noise=noise)  # noisy object trajectory
-
+        
         model_out = self.denoise_fn(x, t, x_cond, padding_mask)
 
         if self.objective == "pred_noise":
@@ -619,7 +634,7 @@ class CondGaussianDiffusion(nn.Module):
 
         return loss.mean()
 
-    def forward(self, x_start, hand_condition, padding_mask=None, bps_cond=None):
+    def forward(self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None):
         """
         Forward pass for training.
 
@@ -634,14 +649,108 @@ class CondGaussianDiffusion(nn.Module):
 
 
         # (BPS representation) Encode object geometry to low dimensional vectors. 
-        if self.opt.condition.bps:
-            BS = bps_cond.shape[0]      
-            bps_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
-        else:
-            bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        # if self.opt.condition.bps:
+        #     # BS = bps_cond.shape[0]      
+        #     # bps_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
+        #     bps_cond = self.encode_bps_feature(newPoints)
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        # else:
+        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
     
-        curr_loss = self.p_losses(x_start, cond, t, padding_mask=padding_mask)
+        noise = torch.randn_like(x_start)
+        xt = self.q_sample(x_start=x_start, t=t, noise=noise)
+
+        cond = self.get_cond(hand_condition, xt, newPoints, hand_raw)
+        curr_loss = self.p_losses(x_start, cond, t, noise=noise, padding_mask=padding_mask)
 
         return curr_loss
+
+    def get_cond(self, hand_condition, xt, newPoints, wHands):
+        # print("TODO: designate another token")
+        if self.opt.condition.bps == 2:
+            wTo_pred = self.denormalize_data(xt)
+            hand = self.encode_hand_sensor_feature(wHands, wTo_pred, newPoints)  # (B, T, J*3*2)
+            bps_cond = self.encode_bps_feature(newPoints)
+            hand_condition = torch.cat([hand_condition, hand], dim=-1)
+            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        
+        elif self.opt.condition.bps == 1:
+            bps_cond = self.encode_bps_feature(newPoints)
+            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        else:
+            bs = hand_condition.shape[0]
+            bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
+            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+
+        return cond
+
+    def encode_bps(self, newPoints):
+        newCom = newPoints.mean(dim=1) # (1, 3)
+        obj_verts = newPoints
+        obj_trans = newCom
+        obj_bps = self.obj_bps.to(newPoints)
+        bps_object_geo = self.bps_torch.encode(x=obj_verts, \
+                    feature_type=['deltas'], \
+                    custom_basis=obj_bps.repeat(obj_trans.shape[0], \
+                    1, 1)+obj_trans[:, None, :])['deltas'] # T X N X 3 
+        return bps_object_geo
+    
+    def encode_bps_feature(self, newPoints):
+        bs = newPoints.shape[0]
+        bps_object_geo = self.encode_bps(newPoints)
+        bps_feature = self.bps_encoder(bps_object_geo.reshape(-1, 1024*3)).reshape(bs, 1, -1)
+        return bps_feature
+
+    def encode_hand_sensor(self, wHands, wTo, oPoints):
+        """
+
+        :param wHands: (B, T, J, 3)
+        :param wTo: (B, T, 3+6)
+        :param oPoints: (B, P, 3)
+        :return: (B, T, J*3)
+        """
+        B, T, J_3 = wHands.shape
+        J = J_3 // 3
+        # print("J", J, "J_3", J_3)
+
+        P = oPoints.shape[1]
+        wTo = geom_utils.se3_to_matrix_v2(wTo)  # (B, T, 4, 4)
+        wTo = wTo.reshape(B*T, 4, 4)
+        oPoints = oPoints[:, None].repeat(1, T, 1, 1).reshape(B*T, P, 3)
+        wPoints = mesh_utils.apply_transform(oPoints, wTo)  # (B*T, P, 3)
+
+        dist, idx, wNn = pt3d_ops.knn_points(wHands.reshape(B*T, J, 3), wPoints, return_nn=True)
+        # print("wNn", wNn.shape, "wHands", wHands.shape)
+        wNn = wNn.reshape(B, T, J, 3)
+
+        coord = wNn - wHands.reshape(B, T, J, 3)
+        return coord.reshape(B, T, J*3)
+
+    def encode_hand_sensor_feature(self, wHands, wTo, oPoints):
+        # 
+        bs = wHands.shape[0]
+        T = wHands.shape[1]  
+        coord = self.encode_hand_sensor(wHands, wTo, oPoints)
+        hand_sensor_feature = self.hand_sensor_encoder(coord)
+
+        return hand_sensor_feature
+
+    def prep_bps_data(self):
+        n_obj = 1024
+        r_obj = 1.0 
+        if not os.path.exists(self.bps_path):
+            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(1, -1, 3)
+            
+            bps = {
+                'obj': bps_obj.cpu(),
+            }
+            print("Generate new bps data to:{0}".format(self.bps_path))
+            os.makedirs(osp.dirname(self.bps_path), exist_ok=True)
+            torch.save(bps, self.bps_path)
+        
+        self.bps = torch.load(self.bps_path)
+        self.bps_torch = bps_torch()
+        # self.obj_bps = self.bps['obj']
+        self.register_buffer("obj_bps", self.bps['obj'])
+                

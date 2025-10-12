@@ -1,3 +1,4 @@
+import pickle
 from collections import defaultdict
 from jutils import mesh_utils, geom_utils
 from pytorch3d.structures import Meshes
@@ -5,8 +6,6 @@ import os
 import os.path as osp
 import random
 from pathlib import Path
-from bps_torch.bps import bps_torch
-from bps_torch.tools import sample_sphere_uniform
 
 import hydra
 import numpy as np
@@ -140,6 +139,7 @@ class Trainer(object):
             save_dir=opt.exp_dir,
             enable_visualization=True,
             mano_models_dir=opt.paths.mano_dir,
+            object_mesh_dir=opt.paths.object_mesh_dir,
         )
         self.viz_off = Pt3dVisualizer(
             exp_name=opt.expname,
@@ -147,28 +147,6 @@ class Trainer(object):
             mano_models_dir=opt.paths.mano_dir,
             object_mesh_dir=opt.paths.object_mesh_dir,
         )
-
-        self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
-        self.prep_bps_data()
-        self.obj_bps = self.obj_bps.to(device)
-
-    def prep_bps_data(self):
-        n_obj = 1024
-        r_obj = 1.0 
-        if not os.path.exists(self.bps_path):
-            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(1, -1, 3)
-            
-            bps = {
-                'obj': bps_obj.cpu(),
-            }
-            print("Generate new bps data to:{0}".format(self.bps_path))
-            os.makedirs(osp.dirname(self.bps_path), exist_ok=True)
-            torch.save(bps, self.bps_path)
-        
-        self.bps = torch.load(self.bps_path)
-        self.bps_torch = bps_torch()
-        self.obj_bps = self.bps['obj']
-        
 
 
     def prep_dataloader(self, window_size):
@@ -346,14 +324,10 @@ class Trainer(object):
                 ) < actual_seq_len[:, None].repeat(1, self.window + 2)
                 padding_mask = tmp_mask[:, None, :]
 
-                sample["object_bps_new"] = self.encode_bps(sample["newPoints"])
-
-                # valid_mask = sample['object_valid']
-                # print('padding mask: ', padding_mask.shape, 'valid mask: ', valid_mask.shape)
 
                 # with autocast(device_type='cuda', enabled=self.amp):
                 with autocast(enabled=self.amp):
-                    loss_diffusion = self.model(object_motion, cond, padding_mask, bps_cond=sample["object_bps_new"])
+                    loss_diffusion = self.model(object_motion, cond, padding_mask, newPoints=sample["newPoints"], hand_raw=sample["hand_raw"])
 
                     loss = loss_diffusion
 
@@ -441,17 +415,6 @@ class Trainer(object):
                 for s in range(3):
                     self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/{b}_sample_{s}_", just_vis=True, sample_guide=False)
 
-    def encode_bps(self, newPoints):
-        newCom = newPoints.mean(dim=1) # (1, 3)
-        obj_verts = newPoints
-        obj_trans = newCom
-        obj_bps = self.obj_bps.to(newPoints)
-        bps_object_geo = self.bps_torch.encode(x=obj_verts, \
-                    feature_type=['deltas'], \
-                    custom_basis=obj_bps.repeat(obj_trans.shape[0], \
-                    1, 1)+obj_trans[:, None, :])['deltas'] # T X N X 3 
-        return bps_object_geo
-
     def accumulate_metrics(self, metrics, all_metrics, pref):
         for metric_name, metric_dict in metrics.items():
             if metric_name not in all_metrics:
@@ -484,13 +447,11 @@ class Trainer(object):
         object_motion = val_data_dict["target"]
         cond = val_data_dict["condition"]
 
-        val_data_dict["object_bps_new"] = self.encode_bps(val_data_dict["newPoints"])
-
         # with autocast(device_type='cuda', enabled=self.amp):
         with autocast(enabled=self.amp):
             val_loss_diffusion = self.model(
                 object_motion, cond, padding_mask=padding_mask,
-                bps_cond=val_data_dict["object_bps_new"],
+                newPoints=val_data_dict["newPoints"], hand_raw=val_data_dict["hand_raw"]
             )
 
         val_loss = val_loss_diffusion
@@ -514,10 +475,10 @@ class Trainer(object):
         cond = sample["condition"][:bs_for_vis]
         seq_len = torch.tensor([cond.shape[1]])
         object_motion = sample["target"][:bs_for_vis]
-        sample["object_bps_new"] = self.encode_bps(sample["newPoints"])
 
         object_pred_raw, _ = diffusion_model.sample_raw(
-            torch.randn_like(object_motion), cond, padding_mask=padding_mask, bps_cond=sample["object_bps_new"][:bs_for_vis]
+            torch.randn_like(object_motion), cond, padding_mask=padding_mask, newPoints=sample["newPoints"][:bs_for_vis],
+            hand_raw=sample["hand_raw"][:bs_for_vis]
         )
         metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
 
@@ -525,7 +486,7 @@ class Trainer(object):
         if sample_guide:
             guided_object_pred_raw, _ = diffusion_model.sample_raw(
                 torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
-                bps_cond=sample["object_bps_new"][:bs_for_vis]
+                newPoints=sample["newPoints"][:bs_for_vis], hand_raw=sample["hand_raw"][:bs_for_vis]
             )
             metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
             metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
@@ -664,13 +625,13 @@ class Trainer(object):
         }
         if self.opt.condition.noisy_obj:
             kwargs["object_noisy"] = object_noisy
-        self.visualizer.log_training_step(
-            step,
-            left_hand,
-            right_hand,
-            object_gt,
-            **kwargs
-        )
+        # self.visualizer.log_training_step(
+        #     step,
+        #     left_hand,
+        #     right_hand,
+        #     object_gt,
+        #     **kwargs
+        # )
         left_hand_verts, left_hand_faces = self.hand_wrapper.joint2verts_faces(left_hand[0])
         right_hand_verts, right_hand_faces = self.hand_wrapper.joint2verts_faces(right_hand[0])
 
@@ -715,6 +676,10 @@ def run_train(opt, device):
     cond_dim = 2 * 21 * 3 
     if opt.condition.noisy_obj:
         cond_dim += 9  # Input dimension (2 hands × pose_dim each)
+    if opt.condition.bps == 2:
+        cond_dim += 2 * 21 * 3
+    else:
+        pass
 
     diffusion_model = CondGaussianDiffusion(
         opt,

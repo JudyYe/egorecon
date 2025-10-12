@@ -18,4 +18,4 @@ folder: ${exp_dir}/submitit_train_logs/
 slurm_job_name: ${expname}
 # constraint: 
 
-exclude: 
+exclude: move1

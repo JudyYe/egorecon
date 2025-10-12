@@ -270,7 +270,7 @@ class RerunVisualizer:
 
         # Apply valid length
         valid_len = seq_len.item() if seq_len is not None else len(left_pos)
-        valid_len = min(valid_len, len(left_pos), len(right_pos), len(object_pos_gt))
+        valid_len = min(valid_len, len(left_pos), len(right_pos), )
 
         left_pos = left_pos[:valid_len]
         right_pos = right_pos[:valid_len]

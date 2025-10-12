@@ -8,6 +8,29 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
+
+7it / s  -> 5it? 
+
+
+-
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=clip_bps123/bps\${condition.bps}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \
+  dyn_only=true \
+  condition.bps=0,1,2 condition.noisy_obj=false  \
+  traindata=hotclip_train \
+  general.rerun=true general.wandb=true \
+  +engine=move
+
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=dev/tmp \
+  experiment=obj_only \
+  dyn_only=true \
+  condition.bps=true condition.noisy_obj=false  \
+  traindata=hot3d_mini datasets.split=mini \
+  datasets.augument.motion_threshold=0.1 \
+
+-
 python -m egorecon.training.trainer_proof_of_idea  -m  \
   expname=geom_clip/bps\${condition.bps}_noisy_obj\${condition.noisy_obj}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \
   dyn_only=true \
