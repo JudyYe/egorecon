@@ -405,15 +405,16 @@ class Trainer(object):
     def test(self):
         self.ema.ema_model.eval()
         with torch.no_grad():
-            for b, val_data_dict in enumerate(self.dl):
-                val_data_dict = model_utils.to_cuda(val_data_dict)
-                for s in range(2):
-                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_", just_vis=True, sample_guide=False)
 
             for b, val_data_dict in enumerate(self.val_dl):
                 val_data_dict = model_utils.to_cuda(val_data_dict)
                 for s in range(3):
-                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/{b}_sample_{s}_", just_vis=True, sample_guide=False)
+                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/{b}_sample_{s}_", just_vis=True, sample_guide=True)
+
+            for b, val_data_dict in enumerate(self.dl):
+                val_data_dict = model_utils.to_cuda(val_data_dict)
+                for s in range(2):
+                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_", just_vis=True, sample_guide=True)
 
     def accumulate_metrics(self, metrics, all_metrics, pref):
         for metric_name, metric_dict in metrics.items():

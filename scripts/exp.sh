@@ -11,6 +11,18 @@ spoon: 225397651484143
 
 7it / s  -> 5it? 
 
+
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=geom/bps\${condition.bps}_noisy_obj\${condition.noisy_obj} \
+  experiment=obj_only \
+  dyn_only=true \
+  condition.bps=true condition.noisy_obj=false  \
+  test=true \
+  ckpt=outputs/geom/bpsTrue_noisy_objFalse/weights/model-5.pt \
+  general.rerun=True general.wandb=false \
+  guide.hint=com \
+  
+
 python -m egorecon.manip.model.guidance_optimizer_jax
 -
 python -m egorecon.training.trainer_proof_of_idea  -m  \

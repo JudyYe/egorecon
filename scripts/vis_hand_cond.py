@@ -5,6 +5,7 @@ import torch
 import pickle
 from jutils import geom_utils, mesh_utils, plot_utils, image_utils
 from pytorch3d.structures import Meshes
+from egorecon.manip.model.guidance_optimizer_jax import project_jax
 
 def vis_hand_cond():
     with open("outputs/debug/hand.pkl", 'rb') as f:
@@ -109,6 +110,7 @@ def vis_hand_cond_one(wHands, wTo, oPoints, coord, pref):
     print('image_list', image_list.shape)
     image_utils.save_gif(image_list.reshape(time_len * B, 1, H, W, C), f"outputs/debug/vis_hand_cond_{pref}", ext='.mp4')
     
+
 
 
 if __name__ == "__main__":
