@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fire import Fire
 import os
 
 # Need to play nice with PyTorch!
@@ -74,6 +75,7 @@ def do_guidance_optimization(
     if 'x2d' in obs:
         x2d_jax = cast(jax.Array, obs['x2d'].numpy(force=True))
     
+    print('before vmap', x_traj_jax.shape, gt_traj_jax.shape, oPoints_jax.shape, wTc_jax.shape, intr_jax.shape, x2d_jax.shape)
     # Optimize using vmapped function
     optimized_traj, debug_info = _optimize_vmapped(
         x_traj=x_traj_jax,
@@ -137,12 +139,12 @@ def _optimize_vmapped(
             _optimize,
             guidance_params=guidance_params,
             verbose=verbose,
-            oPoints=oPoints,
-            wTc=wTc,
-            intr=intr,
-            x2d=x2d,
+            # oPoints=oPoints,
+            # wTc=wTc,
+            # intr=intr,
+            # x2d=x2d,
         )
-    )(x_traj=x_traj, gt_traj=gt_traj)
+    )(x_traj=x_traj, gt_traj=gt_traj, oPoints=oPoints, wTc=wTc, intr=intr, x2d=x2d)
 
 
 # Modes for guidance
@@ -222,6 +224,11 @@ def _optimize(
     timesteps = x_traj.shape[0]
     assert x_traj.shape == (timesteps, 7)
     assert gt_traj.shape == (timesteps, 7)
+    assert intr.shape == (3, 3)
+    assert oPoints.shape == (5000, 3)
+    assert x2d.shape == (120, 5000, 2)
+    assert wTc.shape == (120, 7)
+    print('oPoints', oPoints.shape, wTc.shape, intr.shape, x2d.shape)
     
     # We'll populate a list of factors (cost terms)
     factors = list[jaxls.Cost]()
@@ -279,21 +286,28 @@ def _optimize(
     # Reprojection cost (optional) - project object points and compare with 2D observations
     if guidance_params.use_reproj:
         assert oPoints is not None and wTc is not None and intr is not None and x2d is not None
+        print('before @', x2d.shape, wTc.shape, oPoints.shape, intr.shape)
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps)),
-            oPoints, wTc, intr, x2d)
+            x2d, wTc,  oPoints[None], intr[None])
         def reprojection_cost(
             vals: jaxls.VarValues,
             var_traj: _SE3TrajectoryVar,
-            oPoints: jax.Array,
-            wTc: jax.Array,
-            intr: jax.Array,
             x2d: jax.Array,
+            wTc: jax.Array,
+            oPoints: jax.Array,
+            intr: jax.Array,
         ) -> jax.Array:
             """Reprojection cost: project object points and compare with 2D observations."""
             current_traj = vals[var_traj]  # (7, ) - wxyz_xyz format
 
+            # inside (7,) (5000, 2) (7,) (5000, 3) (3, 3)
+            print('inside', current_traj.shape, x2d.shape, wTc.shape, oPoints.shape, intr.shape)
+
             # wTc = wTc[]
+            # TODO get wTc for each frame in jax (120, ...) --> (...)
+            # wTc = ... # 
+            # x2d = ... # 
             
             # Project object points using current trajectory
             projected_2d = project_jax(oPoints, current_traj, wTc, intr)  # (T, P, 2)
@@ -366,34 +380,30 @@ def project_jax(oPoints, wTo, wTc, intr):
         Projected 2D points (P, 2)
     """
     P = oPoints.shape[0]
-    T = wTo.shape[0]
     
     # Convert to SE3 objects for easier manipulation
-    wTo_se3 = jaxlie.SE3(wTo)  # (T,)
-    wTc_se3 = jaxlie.SE3(wTc)  # (T,)
+    wTo_se3 = jaxlie.SE3(wTo)  # 
+    wTc_se3 = jaxlie.SE3(wTc)  # 
     
     # Compute cTo = cTw @ wTo where cTw = wTc.inverse()
-    cTw_se3 = wTc_se3.inverse()  # (T,)
-    cTo_se3 = cTw_se3 @ wTo_se3  # (T,)
-    cTo_homo = cTo_se3.as_matrix()  # (T, 4, 4)
+    cTw_se3 = wTc_se3.inverse()  # 
+    cTo_se3 = cTw_se3 @ wTo_se3  # 
+    # cTo_homo = cTo_se3.as_matrix()  # (4, 4)
     
     # Transform object points to camera frame
-    oPoints_homo = jnp.concatenate([oPoints, jnp.ones((P, 1))], axis=1)  # (P, 4)
-    oPoints_homo = oPoints_homo[None, :, :].repeat(T, axis=0)  # (T, P, 4)
+    # oPoints_homo = jnp.concatenate([oPoints, jnp.ones((P, 1))], axis=1)  # (P, 4)
+    # oPoints_homo = oPoints_homo[None, :, :].repeat(T, axis=0)  # (T, P, 4)
     
-    cPoints_homo = cTo_homo[:, None, :, :] @ oPoints_homo[:, :, :, None]  # (T, P, 4, 1)
-    cPoints_homo = cPoints_homo[:, :, :, 0]  # (T, P, 4)
-    cPoints = cPoints_homo[:, :, :3]  # (T, P, 3)
+    cPoints = cTo_se3 @ oPoints  # (P, 3)
     
     # Project to image plane
-    intr_exp = intr[None, :, :].repeat(T, axis=0)  # (T, 3, 3)
-    iPoints_homo = cPoints @ intr_exp.transpose(0, 2, 1)  # (T, P, 3)
-    iPoints = iPoints_homo[:, :, :2] / iPoints_homo[:, :, 2:3]  # (T, P, 2)
+    iPoints_homo = cPoints @ intr.T
+    iPoints = iPoints_homo[:, :2] / iPoints_homo[:, 2:3]  # (P, 2)
     
     return iPoints
 
 
-def test_optimization():
+def test_optimization(mode="reproj_corrsp"):
     """Test function to demonstrate the optimizer."""
     import pickle
 
@@ -406,6 +416,10 @@ def test_optimization():
     print("Testing SE3 trajectory optimization...")
     
     # Set up observations and trajectory to optimize
+    wTc = geom_utils.se3_to_matrix_v2(data['batch']['wTc'])
+    intr = data['batch']['intr']
+    print('wTc', 'intr', wTc.shape, intr.shape)
+
     x2d = project(data['batch']['newPoints'], data['gt'], data['batch']['wTc'], data['batch']['intr'])
 
     obs = {
@@ -415,7 +429,7 @@ def test_optimization():
         'intr': data['batch']['intr'],  # (BS, 3, 3)
         'x2d': x2d,
     }
-    guidance_mode = "reproj_corrsp"  # Test reprojection mode
+    guidance_mode = mode # "reproj_corrsp"  # Test reprojection mode
 
     guidance_verbose = True
     traj = (data['x'])  # (BS, T, 7) wxyz_xyz format - PARAMETERS TO OPTIMIZE
@@ -457,11 +471,11 @@ def test_optimization():
     gt_se3 = jaxlie.SE3(obs['x'][0])
     pred_se3 = jaxlie.SE3(x_0_pred[0])
     
-    original_distance = (gt_se3.inverse() @ traj_se3).log()
-    optimized_distance = (gt_se3.inverse() @ pred_se3).log()
+    # original_distance = (gt_se3.inverse() @ traj_se3).log()
+    # optimized_distance = (gt_se3.inverse() @ pred_se3).log()
     
-    print(f"Original trajectory distance: {jnp.linalg.norm(original_distance)}")
-    print(f"Optimized trajectory distance: {jnp.linalg.norm(optimized_distance)}")
+    # print(f"Original trajectory distance: {jnp.linalg.norm(original_distance)}")
+    # print(f"Optimized trajectory distance: {jnp.linalg.norm(optimized_distance)}")
 
 
     pt3d_viz = Pt3dVisualizer(
@@ -496,7 +510,9 @@ def test_optimization():
         traj_list,
         ['gt', 'original', 'optimized'],
         uid=newPoints_meshes,
-        pref='debug'
+        pref='debug',
+        wTc_list=wTc[0],
+        focal=intr[0],
     )
 
 def se3_to_wxyz_xyz(se3):
@@ -508,4 +524,4 @@ def se3_to_wxyz_xyz(se3):
 
 
 if __name__ == "__main__":
-    test_optimization()
+    Fire(test_optimization)

@@ -170,10 +170,23 @@ class RerunVisualizer:
         )
         return transform_matrix @ position
 
-    def log_dynamic_step(self, left_hand_meshes, right_hand_meshes, wTo_list, label_list, uid, step=0, pref='training/', save_to_file=True, device='cuda:0'):
+    def log_dynamic_step(self, left_hand_meshes, right_hand_meshes, wTo_list, label_list, uid, step=0, pref='training/', save_to_file=True, device='cuda:0',
+    wTc_list=None, focal=None):
         T = len(wTo_list[0])
         for t in range(T):
             rr.set_time_sequence("frame", t)
+            if wTc_list is not None:
+                wTc = wTc_list[t].cpu().numpy()
+                
+                fx = focal[0, 0].item()
+                px, py = focal[0, 2].item(), focal[1, 2].item()
+                rr.log("world/camera", rr.Pinhole(
+                    width=px * 2, height=py * 2, focal_length=float(fx)))
+                rr.log("world/camera", rr.Transform3D(
+                    translation=wTc[:3, 3],
+                    rotation=rr.Quaternion(xyzw=Rotation.from_matrix(wTc[:3, :3]).as_quat())
+                ))
+
             if t == 0:
                 for wTo, label in zip(wTo_list, label_list):
                     if isinstance(uid, str):

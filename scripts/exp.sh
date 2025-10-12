@@ -11,7 +11,7 @@ spoon: 225397651484143
 
 7it / s  -> 5it? 
 
-
+python -m egorecon.manip.model.guidance_optimizer_jax
 -
 python -m egorecon.training.trainer_proof_of_idea  -m  \
   expname=clip_bps123/bps\${condition.bps}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \

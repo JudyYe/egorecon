@@ -203,7 +203,7 @@ class JaxGuidanceParams:
                     hand_quats=False,
                     hand_quat_priors=False,
                     hamer_reproj=False,
-                    hamer_wrist_pose=False,``
+                    hamer_wrist_pose=False,
                     aria_wrists=False,
                     max_iters=5,
                 ),
@@ -496,6 +496,8 @@ def _optimize(
     ):
         hamer_left = hamer_detections["detections_left_concat"]
         hamer_right = hamer_detections["detections_right_concat"]
+        print('hamer right', hamer_right['indices'], hamer_right['keypoints_3d'].shape)
+        
 
         # HaMeR reprojection.
         mano_from_openpose_indices = _get_mano_from_openpose_indices(include_tips=False)
