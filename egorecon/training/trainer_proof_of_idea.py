@@ -27,6 +27,7 @@ from ..manip.model.transformer_hand_to_object_diffusion_model import (
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..utils.motion_repr import HandWrapper
+from ..manip.model.guidance_optimizer_jax import do_guidance_optimization, se3_to_wxyz_xyz, wxyz_xyz_to_se3
 
 from move_utils.slurm_utils import slurm_engine
 
@@ -181,7 +182,7 @@ class Trainer(object):
             data.DataLoader(
                 self.ds,
                 batch_size=self.batch_size,
-                shuffle=True,
+                shuffle=not opt.test,
                 pin_memory=True,
                 num_workers=4,
             )
@@ -416,17 +417,58 @@ class Trainer(object):
             for b, val_data_dict in enumerate(self.val_dl):
                 val_data_dict = model_utils.to_cuda(val_data_dict)
 
+                # baseline
+                bs_for_vis = 1
+
+                x = val_data_dict["traj_noisy_raw"]
+                obs = self.model.get_obs(guide=True, batch=val_data_dict, shape=x.shape)
+
+                # x_opt = self.model.guide_jax(x, model_kwargs={'obs': obs})
+                x_opt, _ = do_guidance_optimization(
+                    traj=se3_to_wxyz_xyz(x),
+                    obs=obs,
+                    guidance_mode=self.opt.guide.hint,
+                    phase="post",
+                    verbose=True,
+                    # verbose=False,
+                )
+
+
+                points = val_data_dict["newPoints"][:bs_for_vis]
+                points = plot_utils.pc_to_cubic_meshes(points)
+
+                hand_poses_raw = val_data_dict["hand_raw"][
+                    :bs_for_vis
+                ]  # [1, T, 2*D] - left + right hand
+                object_motion_raw = val_data_dict["target_raw"][:bs_for_vis]
+                left_hand_raw, right_hand_raw = torch.split(hand_poses_raw, 21 * 3, dim=-1)
+                print('x_opt', x_opt.shape, x.shape, object_motion_raw.shape, left_hand_raw.shape, right_hand_raw.shape)
+                fname = self.gen_vis_res(
+                    self.step,
+                    left_hand_raw,
+                    right_hand_raw,
+                    object_motion_raw,
+                    object_noisy=x[:bs_for_vis],
+                    object_pred=x_opt[:bs_for_vis],
+                    object_id=points,  # val_data_dict["object_id"][bs_for_vis-1],
+                    seq_len=x_opt.shape[1],
+                    pref=f"{self.opt.test_folder}/{b}_sample_fp_",
+                )                
+
+
                 for s in range(3):
                     _, (pred, _) = self.validation_step(
                         val_data_dict,
                         pref=f"{self.opt.test_folder}/{b}_sample_{s}_",
                         just_vis=True,
-                        sample_guide=False,
+                        sample_guide=True,
                         rtn_sample=True,
                     )
+
                     batch = val_data_dict
                     fname = "outputs/tmp.pkl"
                     if not osp.exists(fname):
+                        print('save tmp')
                         x = batch["target"]
                         wTo_pred_se3 = self.model.denormalize_data(pred)  # (B, T, 3+6)
                         wTo_gt = batch["target_raw"]
@@ -439,7 +481,10 @@ class Trainer(object):
                                 },
                                 f,
                             )
+        
             for b, val_data_dict in enumerate(self.dl):
+                if b >= 10:
+                    break
                 val_data_dict = model_utils.to_cuda(val_data_dict)
                 for s in range(2):
                     self.validation_step(
@@ -536,6 +581,21 @@ class Trainer(object):
         # add guide
         guided_object_pred_raw = None
         if sample_guide:
+            # directly guide object_pred_raw
+            obs = diffusion_model.get_obs(guide=True, batch=sample, shape=object_pred_raw.shape)
+            post_object_pred_raw, _ = do_guidance_optimization(
+                traj=se3_to_wxyz_xyz(object_pred_raw),
+                obs=obs,
+                guidance_mode=self.opt.guide.hint,
+                phase="post",
+                verbose=True,
+            )
+            post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
+            metrics_post = self.eval_step(
+                post_object_pred_raw, object_motion_raw, val_data_dict["object_id"]
+            )
+            metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
+        
             guided_object_pred_raw, _ = diffusion_model.sample_raw(
                 torch.randn_like(object_motion),
                 cond,
@@ -549,6 +609,7 @@ class Trainer(object):
                 guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"]
             )
             metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
+
 
         if self.step % self.vis_every == 0 or just_vis:
             bs_for_vis = 1
@@ -574,6 +635,16 @@ class Trainer(object):
                 )
 
             if sample_guide:
+                _ = self.gen_vis_res(
+                    self.step,
+                    left_hand_raw[:bs_for_vis],
+                    right_hand_raw[:bs_for_vis],
+                    object_motion_raw[:bs_for_vis],
+                    object_pred=post_object_pred_raw[:bs_for_vis],
+                    object_id=points,
+                    seq_len=seq_len,
+                    pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis - 1]}_post",
+                )
                 fname = self.gen_vis_res(
                     self.step,
                     left_hand_raw[:bs_for_vis],
@@ -584,6 +655,7 @@ class Trainer(object):
                     seq_len=seq_len,
                     pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis - 1]}_guided",
                 )
+
             if self.use_wandb:
                 wandb.log(
                     {f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)},

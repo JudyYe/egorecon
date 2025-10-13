@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fire import Fire
 import os
+import pickle
 
 # Need to play nice with PyTorch!
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -68,8 +69,8 @@ def do_guidance_optimization(
     intr_jax = None
     x2d_jax = None
 
-    if "oPoints" in obs:
-        oPoints_jax = cast(jax.Array, obs["oPoints"].numpy(force=True))
+    if "newPoints" in obs:
+        oPoints_jax = cast(jax.Array, obs["newPoints"].numpy(force=True))
     if "wTc" in obs:
         wTc_jax = cast(jax.Array, obs["wTc"].numpy(force=True))
     if "intr" in obs:
@@ -77,15 +78,7 @@ def do_guidance_optimization(
     if "x2d" in obs:
         x2d_jax = cast(jax.Array, obs["x2d"].numpy(force=True))
 
-    print(
-        "before vmap",
-        x_traj_jax.shape,
-        gt_traj_jax.shape,
-        oPoints_jax.shape,
-        wTc_jax.shape,
-        intr_jax.shape,
-        x2d_jax.shape,
-    )
+
     # Optimize using vmapped function
     optimized_traj, debug_info = _optimize_vmapped(
         x_traj=x_traj_jax,
@@ -168,6 +161,7 @@ GuidanceMode = Literal[
     "simple_l2",  # Simple L2 distance to target
     "with_smoothness",  # L2 + smoothness
     "reproj_corrsp",  # Reprojection loss with points in correspondence
+    "reproj_cd",  # Reprojection loss with points in correspondence
 ]
 
 
@@ -184,6 +178,18 @@ class JaxGuidanceParams:
     # Reprojection cost weights
     reproj_weight: float = 1.0
     use_reproj: jdc.Static[bool] = False
+    use_reproj_cd: jdc.Static[bool] = False
+
+    # smoothness weights
+    tsl_weight: float = 1.0
+    quat_weight: float = 1.0
+
+    body_quat_vel_smoothness_weight: float = 5.0
+    body_quat_smoothness_weight: float = 1.0
+    body_quat_delta_smoothness_weight: float = 10.0
+
+    hand_quat_smoothness_weight = 1.0
+
 
     # Optimization parameters
     lambda_initial: float = 0.1  # Increased for better convergence
@@ -214,7 +220,15 @@ class JaxGuidanceParams:
                 use_l2=False,
                 use_reproj=True,
                 reproj_weight=1.0,
-                max_iters=50
+                max_iters=5 if phase == "inner" else 50
+            )
+        elif mode == "reproj_cd":
+            return JaxGuidanceParams(
+                use_l2=False,
+                use_reproj=False,
+                use_reproj_cd=True,
+                reproj_weight=1.0,
+                max_iters=25 if phase == "inner" else 50
             )
         else:
             assert_never(mode)
@@ -246,9 +260,18 @@ def _optimize(
     assert gt_traj.shape == (timesteps, 7)
     assert intr.shape == (3, 3)
     assert oPoints.shape == (5000, 3)
-    assert x2d.shape == (120, 5000, 2)
+    # assert x2d.shape == (120, 5000, 2)
+    assert x2d.shape[0] == 120
+    assert x2d.shape[2] == 2 
     assert wTc.shape == (120, 7)
-    print("oPoints", oPoints.shape, wTc.shape, intr.shape, x2d.shape)
+
+    def dist_residual(weight, delta: jaxlie.SE3):
+        res = delta.log()
+        quat, tsl = res[:4], res[4:]
+        res = weight * jnp.concatenate([quat * guidance_params.quat_weight, tsl * guidance_params.tsl_weight], axis=0)
+        return res.flatten()
+
+    init_quats = x_traj
 
     # We'll populate a list of factors (cost terms)
     factors = list[jaxls.Cost]()
@@ -290,26 +313,82 @@ def _optimize(
                 * (tangent_distance * tangent_distance).flatten()
             )
 
-    # Temporal smoothness cost (optional) - more efficient vectorized version
-    if guidance_params.use_smoothness:
 
-        @cost_with_args(var_traj)
-        def smoothness_cost(
-            vals: jaxls.VarValues,
-            *args,
-        ) -> jax.Array:
-            """Temporal smoothness cost between consecutive frames - vectorized."""
-            current_traj = vals[var_traj]  # (T, 7) - wxyz_xyz format
+    # smoothness on 
+    @cost_with_args(
+        _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+        _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+    )
+    def delta_smoothness_cost(
+        vals: jaxls.VarValues,
+        current: _SE3TrajectoryVar,
+        next: _SE3TrajectoryVar,
+    ) -> jax.Array:
+        # don't be too far away from the initial pose
+        curdelt = jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(
+            init_quats[current.id]
+        )
+        nexdelt = jaxlie.SE3(vals[next]).inverse() @ jaxlie.SE3(
+            init_quats[next.id] 
+        )
 
-            # Convert to SE3 and compute relative transformations
-            current_se3 = jaxlie.SE3(current_traj)
+        dist1 = dist_residual(guidance_params.body_quat_delta_smoothness_weight, curdelt.inverse() @ nexdelt)
+        dist2 = dist_residual(guidance_params.body_quat_smoothness_weight, jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
 
-            # Compute relative transformations between consecutive frames
-            relative_se3 = current_se3[1:].inverse() @ current_se3[:-1]
-            tangent_distance = relative_se3.log()  # (T-1, 6)
+        return jnp.concatenate([dist1, dist2])
+        # return jnp.concatenate(
+        #     [
+        #         guidance_params.body_quat_delta_smoothness_weight
+        #         * (curdelt.inverse() @ nexdelt).log().flatten(),
+        #         guidance_params.body_quat_smoothness_weight
+        #         * (jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
+        #         .log()
+        #         .flatten(),
+        #     ]
+        # )
 
-            return guidance_params.smoothness_weight * tangent_distance.flatten()
+    # smoothness on velocity
+    @cost_with_args(
+        _SE3TrajectoryVar(jnp.arange(timesteps - 2)),
+        _SE3TrajectoryVar(jnp.arange(1, timesteps - 1)),
+        _SE3TrajectoryVar(jnp.arange(2, timesteps)),
+    )
+    def vel_smoothness_cost(
+        vals: jaxls.VarValues,
+        t0: _SE3TrajectoryVar,
+        t1: _SE3TrajectoryVar,
+        t2: _SE3TrajectoryVar,
+    ) -> jax.Array:
+        curdelt = jaxlie.SE3(vals[t0]).inverse() @ jaxlie.SE3(vals[t1])
+        nexdelt = jaxlie.SE3(vals[t1]).inverse() @ jaxlie.SE3(vals[t2])
+        # return (
+        #     guidance_params.body_quat_vel_smoothness_weight
+        #     * (curdelt.inverse() @ nexdelt).log().flatten()
+        # )
+        return dist_residual(guidance_params.body_quat_vel_smoothness_weight, curdelt.inverse() @ nexdelt)
 
+
+    # # HaMeR local quaternion smoothness.
+    # @(
+    #     cost_with_args(
+    #         _SE3TrajectoryVar(jnp.arange(timesteps * 2 - 2)),
+    #         _SE3TrajectoryVar(jnp.arange(2, timesteps * 2)),
+    #     )
+    # )
+    # def hand_smoothness(
+    #     vals: jaxls.VarValues,
+    #     hand_pose: _SE3TrajectoryVar,
+    #     hand_pose_next: _SE3TrajectoryVar,
+    # ) -> jax.Array:
+    #     return (
+    #         guidance_params.hand_quat_smoothness_weight
+    #         * (
+    #             jaxlie.SE3(vals[hand_pose]).inverse()
+    #             @ jaxlie.SE3(vals[hand_pose_next])
+    #         )
+    #         .log()
+    #         .flatten()
+    #         )
     # Reprojection cost (optional) - project object points and compare with 2D observations
     if guidance_params.use_reproj:
         assert (
@@ -318,7 +397,6 @@ def _optimize(
             and intr is not None
             and x2d is not None
         )
-        print("before @", x2d.shape, wTc.shape, oPoints.shape, intr.shape)
 
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps)),
@@ -344,9 +422,50 @@ def _optimize(
 
             # Compute L2 distance between projected and observed 2D points
             diff = projected_2d - x2d  # (P, 2)
-            return guidance_params.reproj_weight * (diff * diff).flatten()
+            return guidance_params.reproj_weight * diff.flatten()
 
-    # Set up the optimization problem
+    if guidance_params.use_reproj_cd:
+        assert (
+            oPoints is not None
+            and wTc is not None
+            and intr is not None
+            and x2d is not None
+        )
+
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            x2d,
+            wTc,
+            oPoints[None],
+            intr[None],
+        )
+        def reprojection_cost_cd(
+            vals: jaxls.VarValues,
+            var_traj: _SE3TrajectoryVar,
+            x2d: jax.Array,
+            wTc: jax.Array,
+            oPoints: jax.Array,
+            intr: jax.Array,
+        ) -> jax.Array:
+            """Reprojection cost: project object points and compare with 2D observations.
+            but x2d is not in correspondence, you need to find the closest point in x2d to the projected point.
+            """
+            current_traj = vals[var_traj]  # (7, ) - wxyz_xyz format
+
+            # inside (7,) (5000, 2) (7,) (5000, 3) (3, 3)
+            # Project object points using current trajectory
+            projected_2d = project_jax(oPoints, current_traj, wTc, intr, ndc=True)
+            dist, nn_idx, x2d_nn = knn_jax(projected_2d, x2d, k=1)
+            dist2, nn_idx2, oPoints_nn = knn_jax(x2d, projected_2d, k=1)
+
+            dist1 = projected_2d - x2d_nn.squeeze(1)
+            dist2 = x2d - oPoints_nn.squeeze(1)
+
+            diff = jnp.concatenate([dist1, dist2], axis=0)  # residual
+
+            return guidance_params.reproj_weight * diff.flatten()
+        
+            # Set up the optimization problem
     graph = jaxls.LeastSquaresProblem(costs=factors, variables=[var_traj]).analyze()
 
     # Solve using Levenberg-Marquardt
@@ -398,11 +517,40 @@ def project(oPoints, wTo, wTc, intr, ndc=False, H=None, W=None):
             H = intr[..., 0, 2] * 2
         if W is None:
             W = intr[..., 1, 2] * 2
-        print(intr.shape, H.shape, iPoints.shape)
         iPoints[..., 0] = iPoints[..., 0] / W.reshape(B, 1, 1) * 2 - 1
         iPoints[..., 1] = iPoints[..., 1] / H.reshape(B, 1, 1) * 2 - 1
     return iPoints
 
+
+def knn_jax(xPoints, yPoints, k=1):
+    """JAX version of k-nearest neighbor.
+    Args:
+        xPoints: Points to find nearest neighbors for (P, D)
+        yPoints: Points to find nearest neighbors from (Q, D)
+        k: Number of nearest neighbors to find
+    Returns:
+        dist: Distance to nearest neighbors (P, k)
+        nn_idx: Index of nearest neighbors (P, k)
+        yPoints_nn: Nearest neighbors (P, k, D)
+    """
+    # Compute pairwise squared distances: (P, Q)
+    # xPoints: (P, D), yPoints: (Q, D)
+    # distances[i, j] = ||xPoints[i] - yPoints[j]||^2
+    distances = jnp.sum((xPoints[:, None, :] - yPoints[None, :, :])**2, axis=-1)  # (P, Q)
+    
+    # Find k nearest neighbors using top_k (more efficient than argsort)
+    # Note: top_k returns largest values, so we need to negate distances to get smallest
+    if k == 1:
+        nn_idx = jnp.argmin(distances, axis=1, keepdims=True)  # (P, 1)
+        dist = jnp.min(distances, axis=1, keepdims=True)  # (P, 1)
+    else:
+        dist, nn_idx = jax.lax.top_k(-distances, k)  # (P, k)
+        dist = -dist  # Convert back to positive distances
+    
+    # Get the actual nearest neighbor points
+    yPoints_nn = yPoints[nn_idx]  # (P, k, D)
+    
+    return dist, nn_idx, yPoints_nn
 
 def project_jax(oPoints, wTo, wTc, intr, ndc=False, H=None, W=None):
     """JAX version of projection function for optimization.
@@ -451,9 +599,9 @@ def project_jax(oPoints, wTo, wTc, intr, ndc=False, H=None, W=None):
     return iPoints
 
 
-def test_optimization(mode="reproj_corrsp"):
+
+def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/debug_guidance'):
     """Test function to demonstrate the optimizer."""
-    import pickle
 
     # Load test data
     fname = "outputs/tmp.pkl"
@@ -466,7 +614,6 @@ def test_optimization(mode="reproj_corrsp"):
     # Set up observations and trajectory to optimize
     wTc = geom_utils.se3_to_matrix_v2(data["batch"]["wTc"])
     intr = data["batch"]["intr"]
-    print("wTc", "intr", wTc.shape, intr.shape, data["batch"]["target_raw"].shape, data["gt"].shape)
 
     x2d = project(
         data["batch"]["newPoints"],
@@ -474,7 +621,26 @@ def test_optimization(mode="reproj_corrsp"):
         data["batch"]["wTc"],
         data["batch"]["intr"],
         ndc=True,
-    )
+    )  # (BS, T, P, 2)
+    # randomly select k points from x2d  # pytorch
+    if mode == "reproj_cd":
+        # kP = 1000
+        # # x2d randomly select kP points using PyTorch
+        # # x2d shape: (BS, T, P, 2)
+        # BS, T, P, D = x2d.shape
+        # idx = torch.randperm(P)[:kP]
+        # x2d = x2d[:, :, idx, :]
+        # print('x2d', x2d.shape)
+        kP = 1000
+        ind_list = []
+        T = x2d.shape[1]
+        b = x2d.shape[0]
+        for t in range(T):
+            inds = torch.randperm(x2d.shape[2])[:kP]
+            ind_list.append(inds)
+        ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
+        ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
+        x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
 
 
     obs = {
@@ -482,35 +648,20 @@ def test_optimization(mode="reproj_corrsp"):
         #     data["gt"]
         # ),  # (BS, T, 7) wxyz_xyz format - OBSERVATIONS/TARGETS
         "x": se3_to_wxyz_xyz(data["batch"]["target_raw"]),
-        "oPoints": data["batch"]["newPoints"],  # (BS, P, 3)
+        "newPoints": data["batch"]["newPoints"],  # (BS, P, 3)
         "wTc": se3_to_wxyz_xyz(data["batch"]["wTc"]),  # (BS, T, 7) wxyz_xyz format
         "intr": data["batch"]["intr"],  # (BS, 3, 3)
-        "x2d": x2d,
+        "x2d": x2d,  # (BS, T, P, 2?)
     }
     guidance_mode = mode  # "reproj_corrsp"  # Test reprojection mode
 
-    # # Convert to JAX arrays for testing
-    # oPoints_jax = cast(jax.Array, data["batch"]["newPoints"][0].numpy(force=True))  # (P, 3)
-    # wTc_jax = cast(jax.Array, obs["wTc"][0].numpy(force=True))  # (T, 7)
-    # wTo_jax = cast(jax.Array, obs["x"][0].numpy(force=True))  # (T, 7)
-    # intr_jax = cast(jax.Array, intr[0].numpy(force=True))  # (3, 3)
-    
-    # print('oPoints', oPoints_jax.shape, wTc_jax.shape, wTo_jax.shape, intr_jax.shape)
-    
-    # # Use vmap to project across all timesteps
-    # iPoints = jax.vmap(
-    #     partial(project_jax, oPoints=oPoints_jax, intr=intr_jax)
-    # )(wTo=wTo_jax, wTc=wTc_jax)
-
-    # print("iPoints", iPoints.shape, type(iPoints))
-
-    # print(x2d[0], iPoints)
-
     guidance_verbose = True
-    traj = data["x"]  # (BS, T, 7) wxyz_xyz format - PARAMETERS TO OPTIMIZE
+    if test_shelf:
+        traj = data['batch']['traj_noisy_raw']
+    else:
+        traj = data["x"]  # (BS, T, 7) wxyz_xyz format - PARAMETERS TO OPTIMIZE
 
 
-    # vis(traj_list, color_list, "outputs/debug_guidance/vis.rrd")
 
     # Run optimization
     x_0_pred, _ = do_guidance_optimization(
@@ -520,6 +671,7 @@ def test_optimization(mode="reproj_corrsp"):
         phase="inner",
         verbose=guidance_verbose,
     )
+
 
     print(f"Original trajectory shape: {traj.shape}")
     print(f"Ground truth shape: {obs['x'].shape}")
@@ -546,30 +698,27 @@ def test_optimization(mode="reproj_corrsp"):
     right_hand_mesh = plot_utils.pc_to_cubic_meshes(right_hands[0], eps=0.02)
     right_hand_mesh.textures = mesh_utils.pad_texture(right_hand_mesh, 'blue')
 
-        
-    # pt3d_viz = Pt3dVisualizer(
-    #     exp_name="vis_traj",
-    #     save_dir="outputs/debug_guidance",
-    #     mano_models_dir="assets/mano",
-    #     object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
-    # )
+    pt3d_viz = Pt3dVisualizer(
+        exp_name="vis_traj",
+        save_dir=save_dir,
+        mano_models_dir="assets/mano",
+        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
+    )
 
-    # pt3d_viz.log_training_step(
-    #     left_hand_mesh,
-    #     right_hand_mesh,
-    #     # traj_list,
-    #     # color_list,
-    #     [obs["x"][0]],
-    #     ["red"],
-    #     uid="000033",
-    #     pref="debug",
-    # )
-
-
+    pt3d_viz.log_training_step(
+        left_hand_mesh,
+        right_hand_mesh,
+        # traj_list,
+        # color_list,
+        [obs["x"][0]],
+        ["red"],
+        uid="000033",
+        pref="debug",
+    )
 
     viz = RerunVisualizer(
         exp_name="vis_traj",
-        save_dir="outputs/debug_guidance",
+        save_dir=save_dir,
         mano_models_dir="assets/mano",
         object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
     )

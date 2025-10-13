@@ -32,8 +32,12 @@ train: True
 test: False
 test_folder: eval
 
+post_guidance: true
+
 # simply provide checkpoint path to resume training
 ckpt: null
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: null
+
+ddim: false

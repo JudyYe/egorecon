@@ -17,8 +17,8 @@ python -m egorecon.training.trainer_proof_of_idea  -m  \
   dyn_only=true \
   condition.bps=2 condition.noisy_obj=false  \
   traindata=hotclip_train \
-  test=true guide.hint=com \
-  ckpt=\${exp_dir}/weights/model-19.pt
+  test=true guide.hint=reproj_corrsp \
+  ckpt=\${exp_dir}/weights/model-19.pt 
 
   general.rerun=true general.wandb=true \
 
@@ -33,7 +33,7 @@ python -m egorecon.training.trainer_proof_of_idea  -m  \
   guide.hint=com \
 
 
-python -m egorecon.manip.model.guidance_optimizer_jax
+python -m egorecon.manip.model.guidance_optimizer_jax --mode reproj_cd
 -
 python -m egorecon.training.trainer_proof_of_idea  -m  \
   expname=clip_bps123/bps\${condition.bps}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \
