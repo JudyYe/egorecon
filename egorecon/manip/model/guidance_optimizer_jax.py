@@ -466,11 +466,11 @@ def test_optimization(mode="reproj_corrsp"):
     # Set up observations and trajectory to optimize
     wTc = geom_utils.se3_to_matrix_v2(data["batch"]["wTc"])
     intr = data["batch"]["intr"]
-    print("wTc", "intr", wTc.shape, intr.shape)
+    print("wTc", "intr", wTc.shape, intr.shape, data["batch"]["target_raw"].shape, data["gt"].shape)
 
     x2d = project(
         data["batch"]["newPoints"],
-        data["gt"],
+        data["batch"]["target_raw"],
         data["batch"]["wTc"],
         data["batch"]["intr"],
         ndc=True,
@@ -478,9 +478,10 @@ def test_optimization(mode="reproj_corrsp"):
 
 
     obs = {
-        "x": se3_to_wxyz_xyz(
-            data["gt"]
-        ),  # (BS, T, 7) wxyz_xyz format - OBSERVATIONS/TARGETS
+        # "x": se3_to_wxyz_xyz(
+        #     data["gt"]
+        # ),  # (BS, T, 7) wxyz_xyz format - OBSERVATIONS/TARGETS
+        "x": se3_to_wxyz_xyz(data["batch"]["target_raw"]),
         "oPoints": data["batch"]["newPoints"],  # (BS, P, 3)
         "wTc": se3_to_wxyz_xyz(data["batch"]["wTc"]),  # (BS, T, 7) wxyz_xyz format
         "intr": data["batch"]["intr"],  # (BS, 3, 3)
@@ -508,11 +509,6 @@ def test_optimization(mode="reproj_corrsp"):
     guidance_verbose = True
     traj = data["x"]  # (BS, T, 7) wxyz_xyz format - PARAMETERS TO OPTIMIZE
 
-    # Visualize results with proper RGB colors
-    traj_list = [
-        traj[0],  # Original trajectory
-        obs["x"][0],  # Ground truth
-    ]
 
     # vis(traj_list, color_list, "outputs/debug_guidance/vis.rrd")
 
@@ -532,43 +528,11 @@ def test_optimization(mode="reproj_corrsp"):
 
     # Visualize results with proper RGB colors
     traj_list = [
-        obs["x"][0],  # Ground truth
+        wxyz_xyz_to_se3(obs["x"][0]),  # Ground truth
         traj[0],  # Original trajectory
-        x_0_pred[0],  # Optimized trajectory
+        wxyz_xyz_to_se3(x_0_pred[0]),
     ]
     # color_list = [ 'red', 'yellow', 'blue' ]  # Not used in this version
-
-    # vis(traj_list, color_list, "outputs/debug_guidance/vis_optimized.rrd")
-
-    # Compute SE3 distance using tangent space
-    traj_se3 = jaxlie.SE3(traj[0])
-    gt_se3 = jaxlie.SE3(obs["x"][0])
-    pred_se3 = jaxlie.SE3(x_0_pred[0])
-
-    # original_distance = (gt_se3.inverse() @ traj_se3).log()
-    # optimized_distance = (gt_se3.inverse() @ pred_se3).log()
-
-    # print(f"Original trajectory distance: {jnp.linalg.norm(original_distance)}")
-    # print(f"Optimized trajectory distance: {jnp.linalg.norm(optimized_distance)}")
-
-    pt3d_viz = Pt3dVisualizer(
-        exp_name="vis_traj",
-        save_dir="outputs/debug_guidance",
-        mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
-    )
-
-    pt3d_viz.log_training_step(
-        None,
-        None,
-        # traj_list,
-        # color_list,
-        [obs["x"][0]],
-        ["red"],
-        uid="000033",
-        pref="debug",
-    )
-
 
     B, T, J_3 = data["batch"]["hand_raw"].shape
     J = J_3 // 3  // 2
@@ -583,6 +547,25 @@ def test_optimization(mode="reproj_corrsp"):
     right_hand_mesh.textures = mesh_utils.pad_texture(right_hand_mesh, 'blue')
 
         
+    # pt3d_viz = Pt3dVisualizer(
+    #     exp_name="vis_traj",
+    #     save_dir="outputs/debug_guidance",
+    #     mano_models_dir="assets/mano",
+    #     object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
+    # )
+
+    # pt3d_viz.log_training_step(
+    #     left_hand_mesh,
+    #     right_hand_mesh,
+    #     # traj_list,
+    #     # color_list,
+    #     [obs["x"][0]],
+    #     ["red"],
+    #     uid="000033",
+    #     pref="debug",
+    # )
+
+
 
     viz = RerunVisualizer(
         exp_name="vis_traj",
@@ -611,6 +594,11 @@ def se3_to_wxyz_xyz(se3):
 
     return torch.cat([wxyz, tsl], dim=-1)
 
+def wxyz_xyz_to_se3(wxyz_xyz):
+    wxyz, tsl = torch.split(wxyz_xyz, [4, 3], dim=-1)
+    mat = geom_utils.rot_cvt.quaternion_to_matrix(wxyz)
+    return geom_utils.matrix_to_se3_v2(geom_utils.rt_to_homo(mat, tsl))
+     
 
 if __name__ == "__main__":
     Fire(test_optimization)

@@ -428,17 +428,18 @@ class CondGaussianDiffusion(nn.Module):
 
         for _ in range(n_guide_steps):
             loss, grad = self.gradients(x, batch)
-            if t[0] == 0:
-                fname = 'outputs/tmp.pkl'
-                wTo_pred_se3 = self.denormalize_data(x)  # (B, T, 3+6)
-                wTo_gt = batch['target_raw']
-                with open(fname, 'wb') as f:
-                    pickle.dump({
-                        "x": wTo_pred_se3,
-                        'gt': wTo_gt,
-                        'batch': batch,
-                    }, f)
-                assert False
+            # if t[0] == 0:
+                # fname = 'outputs/tmp.pkl'
+                # if not osp.exists(fname):
+                #     wTo_pred_se3 = self.denormalize_data(x)  # (B, T, 3+6)
+                #     wTo_gt = batch['target_raw']
+                #     with open(fname, 'wb') as f:
+                #         pickle.dump({
+                #             "x": wTo_pred_se3,
+                #             'gt': wTo_gt,
+                #             'batch': batch,
+                #         }, f)
+                    # assert False
             # print('grad', scale, grad * scale, x)
             print('loss', loss, 'scale', scale, t[0])
 

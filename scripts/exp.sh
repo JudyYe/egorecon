@@ -1,9 +1,10 @@
+?? why vis in guidance is wrong? 
 [x] only dynamic object 
 [x] only hand conditioned 
-[] data cano??? data is somehow wrong? 
+[x] data cano??? data is somehow wrong? 
 [] guidance 
-[] noise eval
-[] metadata
+[x] noise eval
+[x] metadata
 
 bowl: 194930206998778
 spoon: 225397651484143
@@ -11,6 +12,15 @@ spoon: 225397651484143
 
 7it / s  -> 5it? 
 
+python -m egorecon.training.trainer_proof_of_idea  -m  \
+  expname=clip_bps123/bps\${condition.bps}_motion\${dyn_only}_\${datasets.augument.motion_threshold} \
+  dyn_only=true \
+  condition.bps=2 condition.noisy_obj=false  \
+  traindata=hotclip_train \
+  test=true guide.hint=com \
+  ckpt=\${exp_dir}/weights/model-19.pt
+
+  general.rerun=true general.wandb=true \
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \
   expname=geom/bps\${condition.bps}_noisy_obj\${condition.noisy_obj} \
@@ -21,7 +31,7 @@ python -m egorecon.training.trainer_proof_of_idea  -m  \
   ckpt=outputs/geom/bpsTrue_noisy_objFalse/weights/model-5.pt \
   general.rerun=True general.wandb=false \
   guide.hint=com \
-  
+
 
 python -m egorecon.manip.model.guidance_optimizer_jax
 -

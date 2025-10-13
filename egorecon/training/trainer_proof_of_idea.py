@@ -37,7 +37,6 @@ def cycle(dl):
             yield data
 
 
-
 class Trainer(object):
     def __init__(
         self,
@@ -148,7 +147,6 @@ class Trainer(object):
             object_mesh_dir=opt.paths.object_mesh_dir,
         )
 
-
     def prep_dataloader(self, window_size):
         opt = self.opt
         if not opt.test:
@@ -188,6 +186,7 @@ class Trainer(object):
                 num_workers=4,
             )
         )
+
     def prep_val_dataset(self, opt):
         val_dataset = HandToObjectDataset(
             is_train=False,
@@ -201,7 +200,7 @@ class Trainer(object):
             noise_scheme="real",
             opt=opt,
             one_window=True,
-            t0 = 300,
+            t0=300,
             data_cfg=opt.testdata,
         )
         val_dataset.set_metadata()
@@ -213,7 +212,6 @@ class Trainer(object):
             pin_memory=True,
             num_workers=1,
         )
-
 
     def save(self, milestone):
         data = {
@@ -324,10 +322,15 @@ class Trainer(object):
                 ) < actual_seq_len[:, None].repeat(1, self.window + 2)
                 padding_mask = tmp_mask[:, None, :]
 
-
                 # with autocast(device_type='cuda', enabled=self.amp):
                 with autocast(enabled=self.amp):
-                    loss_diffusion = self.model(object_motion, cond, padding_mask, newPoints=sample["newPoints"], hand_raw=sample["hand_raw"])
+                    loss_diffusion = self.model(
+                        object_motion,
+                        cond,
+                        padding_mask,
+                        newPoints=sample["newPoints"],
+                        hand_raw=sample["hand_raw"],
+                    )
 
                     loss = loss_diffusion
 
@@ -384,17 +387,22 @@ class Trainer(object):
                         val_data_dict = model_utils.to_cuda(val_data_dict)
 
                         metrics_train = self.validation_step(sample, pref=f"train/")
-                        self.accumulate_metrics(metrics_train, all_metrics, pref='train/')
+                        self.accumulate_metrics(
+                            metrics_train, all_metrics, pref="train/"
+                        )
 
                         metrics_val = self.validation_step(val_data_dict, pref=f"val/")
-                        self.accumulate_metrics(metrics_val, all_metrics, pref='val/') 
-                
-                self.log_metrics_to_wandb(all_metrics, self.step, )
+                        self.accumulate_metrics(metrics_val, all_metrics, pref="val/")
+
+                self.log_metrics_to_wandb(
+                    all_metrics,
+                    self.step,
+                )
 
             if self.step % self.save_and_sample_every == 0:
                 milestone = self.step // self.save_and_sample_every
                 self.save(milestone)
-       
+
             self.step += 1
 
         print("training complete")
@@ -405,16 +413,41 @@ class Trainer(object):
     def test(self):
         self.ema.ema_model.eval()
         with torch.no_grad():
-
             for b, val_data_dict in enumerate(self.val_dl):
                 val_data_dict = model_utils.to_cuda(val_data_dict)
-                for s in range(3):
-                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/{b}_sample_{s}_", just_vis=True, sample_guide=True)
 
+                for s in range(3):
+                    _, (pred, _) = self.validation_step(
+                        val_data_dict,
+                        pref=f"{self.opt.test_folder}/{b}_sample_{s}_",
+                        just_vis=True,
+                        sample_guide=False,
+                        rtn_sample=True,
+                    )
+                    batch = val_data_dict
+                    fname = "outputs/tmp.pkl"
+                    if not osp.exists(fname):
+                        x = batch["target"]
+                        wTo_pred_se3 = self.model.denormalize_data(pred)  # (B, T, 3+6)
+                        wTo_gt = batch["target_raw"]
+                        with open(fname, "wb") as f:
+                            pickle.dump(
+                                {
+                                    "x": wTo_pred_se3,
+                                    "gt": wTo_gt,
+                                    "batch": batch,
+                                },
+                                f,
+                            )
             for b, val_data_dict in enumerate(self.dl):
                 val_data_dict = model_utils.to_cuda(val_data_dict)
                 for s in range(2):
-                    self.validation_step(val_data_dict, pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_", just_vis=True, sample_guide=True)
+                    self.validation_step(
+                        val_data_dict,
+                        pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_",
+                        just_vis=True,
+                        sample_guide=False,
+                    )
 
     def accumulate_metrics(self, metrics, all_metrics, pref):
         for metric_name, metric_dict in metrics.items():
@@ -423,7 +456,7 @@ class Trainer(object):
             for uid, uid_values in metric_dict.items():
                 all_metrics[metric_name][uid].extend(uid_values)
 
-    def log_metrics_to_wandb(self, metrics, step, pref=''):
+    def log_metrics_to_wandb(self, metrics, step, pref=""):
         wandb_log = {}
         for metric_name, metric_dict in metrics.items():
             total_values = []
@@ -431,11 +464,20 @@ class Trainer(object):
                 wandb_log[f"{pref}_{metric_name}/uid_{uid}"] = np.mean(uid_values)
                 total_values.extend(uid_values)
             wandb_log[f"{pref}{metric_name}/avg"] = np.mean(total_values)
-            wandb_log[f"{pref}{metric_name}/distribution"] = wandb.Histogram(total_values)
+            wandb_log[f"{pref}{metric_name}/distribution"] = wandb.Histogram(
+                total_values
+            )
         if self.use_wandb:
             wandb.log(wandb_log, step=self.step)
 
-    def validation_step(self, val_data_dict, pref="val/", just_vis=False, sample_guide=False):
+    def validation_step(
+        self,
+        val_data_dict,
+        pref="val/",
+        just_vis=False,
+        sample_guide=False,
+        rtn_sample=False,
+    ):
         cond = val_data_dict["condition"]
         device = cond.device
         seq_len = torch.tensor([cond.shape[1]]).to(device)
@@ -451,8 +493,11 @@ class Trainer(object):
         # with autocast(device_type='cuda', enabled=self.amp):
         with autocast(enabled=self.amp):
             val_loss_diffusion = self.model(
-                object_motion, cond, padding_mask=padding_mask,
-                newPoints=val_data_dict["newPoints"], hand_raw=val_data_dict["hand_raw"]
+                object_motion,
+                cond,
+                padding_mask=padding_mask,
+                newPoints=val_data_dict["newPoints"],
+                hand_raw=val_data_dict["hand_raw"],
             )
 
         val_loss = val_loss_diffusion
@@ -478,18 +523,31 @@ class Trainer(object):
         object_motion = sample["target"][:bs_for_vis]
 
         object_pred_raw, _ = diffusion_model.sample_raw(
-            torch.randn_like(object_motion), cond, padding_mask=padding_mask, newPoints=sample["newPoints"][:bs_for_vis],
-            hand_raw=sample["hand_raw"][:bs_for_vis]
+            torch.randn_like(object_motion),
+            cond,
+            padding_mask=padding_mask,
+            newPoints=sample["newPoints"][:bs_for_vis],
+            hand_raw=sample["hand_raw"][:bs_for_vis],
         )
-        metrics = self.eval_step(object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+        metrics = self.eval_step(
+            object_pred_raw, object_motion_raw, val_data_dict["object_id"]
+        )
 
         # add guide
+        guided_object_pred_raw = None
         if sample_guide:
             guided_object_pred_raw, _ = diffusion_model.sample_raw(
-                torch.randn_like(object_motion), cond, padding_mask=padding_mask, guide=True, obs=sample,
-                newPoints=sample["newPoints"][:bs_for_vis], hand_raw=sample["hand_raw"][:bs_for_vis]
+                torch.randn_like(object_motion),
+                cond,
+                padding_mask=padding_mask,
+                guide=True,
+                obs=sample,
+                newPoints=sample["newPoints"][:bs_for_vis],
+                hand_raw=sample["hand_raw"][:bs_for_vis],
             )
-            metrics_guided = self.eval_step(guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"])
+            metrics_guided = self.eval_step(
+                guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"]
+            )
             metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
 
         if self.step % self.vis_every == 0 or just_vis:
@@ -498,7 +556,6 @@ class Trainer(object):
             points = val_data_dict["newPoints"][:bs_for_vis]
             points = plot_utils.pc_to_cubic_meshes(points)
 
-
             fname = self.gen_vis_res(
                 self.step,
                 left_hand_raw[:bs_for_vis],
@@ -506,14 +563,16 @@ class Trainer(object):
                 object_motion_raw[:bs_for_vis],
                 object_noisy=sample["traj_noisy_raw"][:bs_for_vis],
                 object_pred=object_pred_raw[:bs_for_vis],
-                object_id=points, # val_data_dict["object_id"][bs_for_vis-1],
+                object_id=points,  # val_data_dict["object_id"][bs_for_vis-1],
                 seq_len=seq_len,
-                pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}",
+                pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis - 1]}",
             )
             if self.use_wandb:
-                object_id = val_data_dict["object_id"][bs_for_vis-1]
-                wandb.log({f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step)
-            
+                object_id = val_data_dict["object_id"][bs_for_vis - 1]
+                wandb.log(
+                    {f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step
+                )
+
             if sample_guide:
                 fname = self.gen_vis_res(
                     self.step,
@@ -523,12 +582,17 @@ class Trainer(object):
                     object_pred=guided_object_pred_raw[:bs_for_vis],
                     object_id=points,
                     seq_len=seq_len,
-                    pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis-1]}_guided",
+                    pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis - 1]}_guided",
                 )
             if self.use_wandb:
-                wandb.log({f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)}, step=self.step)
+                wandb.log(
+                    {f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)},
+                    step=self.step,
+                )
+        if rtn_sample:
+            return metrics, (object_pred_raw, guided_object_pred_raw)
         return metrics
-    
+
     def eval_step(self, pred_moton, gt_motion, object_id_list, scale=0.05):
         """_summary_
 
@@ -551,7 +615,9 @@ class Trainer(object):
         tsl_error = torch.norm(pred_tsl - gt_tsl, dim=-1).mean(dim=-1)  # (B,)
 
         # Prepare canonical axes: (4, 3): origin and 3 axes
-        axes = torch.eye(3, device=pred_moton.device)  * scale # (3, 3)  this is like cube size 5cm
+        axes = (
+            torch.eye(3, device=pred_moton.device) * scale
+        )  # (3, 3)  this is like cube size 5cm
         origin = torch.zeros(1, 3, device=pred_moton.device)
         cano_points = torch.cat([origin, axes], dim=0)  # (4, 3)
 
@@ -560,51 +626,81 @@ class Trainer(object):
         cano_points = cano_points[None, None, ...].expand(B, T, 4, 3)  # (B, T, 4, 3)
 
         # Get rotation matrices
-        pred_rotmat = geom_utils.rotation_6d_to_matrix(pred_rot6d.reshape(-1, 6)).reshape(B, T, 3, 3)
-        gt_rotmat = geom_utils.rotation_6d_to_matrix(gt_rot6d.reshape(-1, 6)).reshape(B, T, 3, 3)
+        pred_rotmat = geom_utils.rotation_6d_to_matrix(
+            pred_rot6d.reshape(-1, 6)
+        ).reshape(B, T, 3, 3)
+        gt_rotmat = geom_utils.rotation_6d_to_matrix(gt_rot6d.reshape(-1, 6)).reshape(
+            B, T, 3, 3
+        )
 
         # Transform canonical points (only rotate, no translation)
-        pred_points = torch.matmul(cano_points, pred_rotmat.transpose(-2, -1))  # (B, T, 4, 3)
-        gt_points = torch.matmul(cano_points, gt_rotmat.transpose(-2, -1))      # (B, T, 4, 3)
+        pred_points = torch.matmul(
+            cano_points, pred_rotmat.transpose(-2, -1)
+        )  # (B, T, 4, 3)
+        gt_points = torch.matmul(
+            cano_points, gt_rotmat.transpose(-2, -1)
+        )  # (B, T, 4, 3)
 
         # Compute mean L2 error over the 4 points, per frame, then mean over time
-        rot_error = torch.norm(pred_points - gt_points, dim=-1).mean(dim=-1).mean(dim=-1)  # (B,)
+        rot_error = (
+            torch.norm(pred_points - gt_points, dim=-1).mean(dim=-1).mean(dim=-1)
+        )  # (B,)
 
         # Total error: sum or mean of both
         # Compute total_error as the mean error of the cano_points after applying both rotation and translation,
         # using homogeneous coordinates for clarity.
 
         # Prepare canonical points in homogeneous coordinates: (4, 4)
-        cano_points_homo = torch.cat([cano_points, torch.ones_like(cano_points[..., :1])], dim=-1)  # (B, T, 4, 4)
+        cano_points_homo = torch.cat(
+            [cano_points, torch.ones_like(cano_points[..., :1])], dim=-1
+        )  # (B, T, 4, 4)
 
         # Build homogeneous transformation matrices for pred and gt: (B, T, 4, 4)
-        pred_rotmat_homo = torch.eye(4, device=pred_moton.device).unsqueeze(0).unsqueeze(0).repeat(B, T, 1, 1)
+        pred_rotmat_homo = (
+            torch.eye(4, device=pred_moton.device)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .repeat(B, T, 1, 1)
+        )
         pred_rotmat_homo[..., :3, :3] = pred_rotmat
         pred_rotmat_homo[..., :3, 3] = pred_tsl
 
-        gt_rotmat_homo = torch.eye(4, device=gt_motion.device).unsqueeze(0).unsqueeze(0).repeat(B, T, 1, 1)
+        gt_rotmat_homo = (
+            torch.eye(4, device=gt_motion.device)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .repeat(B, T, 1, 1)
+        )
         gt_rotmat_homo[..., :3, :3] = gt_rotmat
         gt_rotmat_homo[..., :3, 3] = gt_tsl
 
         # Transform canonical points
-        pred_points_full = (cano_points_homo @ pred_rotmat_homo.transpose(-2, -1))[..., :3]  # (B, T, 4, 3)
-        gt_points_full = (cano_points_homo @ gt_rotmat_homo.transpose(-2, -1))[..., :3]      # (B, T, 4, 3)
+        pred_points_full = (cano_points_homo @ pred_rotmat_homo.transpose(-2, -1))[
+            ..., :3
+        ]  # (B, T, 4, 3)
+        gt_points_full = (cano_points_homo @ gt_rotmat_homo.transpose(-2, -1))[
+            ..., :3
+        ]  # (B, T, 4, 3)
 
         # Compute mean L2 error over the 4 points, per frame, then mean over time
-        total_error = torch.norm(pred_points_full - gt_points_full, dim=-1).mean(dim=-1).mean(dim=-1)  # (B,)
+        total_error = (
+            torch.norm(pred_points_full - gt_points_full, dim=-1)
+            .mean(dim=-1)
+            .mean(dim=-1)
+        )  # (B,)
 
         metrics = {
-            'tsl_error': defaultdict(list),
-            'rot_error': defaultdict(list),
-            'total_error': defaultdict(list),
+            "tsl_error": defaultdict(list),
+            "rot_error": defaultdict(list),
+            "total_error": defaultdict(list),
         }
         for b, object_id in enumerate(object_id_list):
-            metrics['tsl_error'][object_id].append(tsl_error[b].item())
-            metrics['rot_error'][object_id].append(rot_error[b].item())
-            metrics['total_error'][object_id].append(total_error[b].item())
+            metrics["tsl_error"][object_id].append(tsl_error[b].item())
+            metrics["rot_error"][object_id].append(rot_error[b].item())
+            metrics["total_error"][object_id].append(total_error[b].item())
 
         return metrics
-    
+
     @torch.no_grad()
     def gen_vis_res(
         self,
@@ -618,7 +714,6 @@ class Trainer(object):
         pref="training/",
         object_id=None,
     ):
-
         kwargs = {
             "object_pred": object_pred,
             "seq_len": seq_len,
@@ -633,20 +728,27 @@ class Trainer(object):
         #     object_gt,
         #     **kwargs
         # )
-        left_hand_verts, left_hand_faces = self.hand_wrapper.joint2verts_faces(left_hand[0])
-        right_hand_verts, right_hand_faces = self.hand_wrapper.joint2verts_faces(right_hand[0])
+        left_hand_verts, left_hand_faces = self.hand_wrapper.joint2verts_faces(
+            left_hand[0]
+        )
+        right_hand_verts, right_hand_faces = self.hand_wrapper.joint2verts_faces(
+            right_hand[0]
+        )
 
-        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
-        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'blue')
-        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
-        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
-
+        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(
+            device
+        )
+        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, "blue")
+        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(
+            device
+        )
+        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, "blue")
 
         wTo_list = [object_gt[0], object_pred[0]]
-        color_list = ['red', 'yellow']
+        color_list = ["red", "yellow"]
         if self.opt.condition.noisy_obj:
             wTo_list.append(object_noisy[0])
-            color_list.append('purple')
+            color_list.append("purple")
 
         return self.viz_off.log_training_step(
             left_hand_meshes,
@@ -657,8 +759,6 @@ class Trainer(object):
             step=step,
             pref=pref,
         )
-
-
 
 
 def run_train(opt, device):
@@ -674,7 +774,7 @@ def run_train(opt, device):
     repr_dim = 24 * 3 + 22 * 6
 
     repr_dim = 9  # Output dimension (3D translation + 6D rotation)
-    cond_dim = 2 * 21 * 3 
+    cond_dim = 2 * 21 * 3
     if opt.condition.noisy_obj:
         cond_dim += 9  # Input dimension (2 hands × pose_dim each)
     if opt.condition.bps == 2:
@@ -694,7 +794,7 @@ def run_train(opt, device):
     )
     if opt.ckpt:
         ckpt = torch.load(opt.ckpt)
-        model_utils.load_my_state_dict(diffusion_model, ckpt['model'])
+        model_utils.load_my_state_dict(diffusion_model, ckpt["model"])
 
     diffusion_model.to(device)
 
@@ -721,8 +821,6 @@ def run_train(opt, device):
     torch.cuda.empty_cache()
 
 
-
-
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()
 def main(opt):
@@ -731,6 +829,7 @@ def main(opt):
     # else:
     run_train(opt, device)
     return
+
 
 device = torch.device(f"cuda:0")
 if __name__ == "__main__":

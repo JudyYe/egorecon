@@ -209,6 +209,7 @@ class RerunVisualizer:
             
             for wTo, label in zip(wTo_list, label_list):
                 wTo_tsl, wTo_6d = wTo[t, :3], wTo[t, ..., 3:]
+                assert wTo_6d.shape[-1] == 6, f"wTo shape: {wTo.shape}, label"
                 wTo_mat = geom_utils.rotation_6d_to_matrix(wTo_6d)
                 wTo = geom_utils.rt_to_homo(wTo_mat, wTo_tsl)
                 wTo = wTo.cpu().numpy()
