@@ -195,7 +195,7 @@ class JaxGuidanceParams:
     @staticmethod
     def defaults(
         mode: GuidanceMode,
-        phase: Literal["inner", "post"],
+        phase: Literal["inner", "post", "fp"],
     ) -> JaxGuidanceParams:
         if mode == "no_hands":
             return {

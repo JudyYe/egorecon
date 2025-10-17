@@ -894,6 +894,9 @@ class HandToObjectDataset(Dataset):
 
             "newTo": window["newTo"],
             "newPoints": window["newPoints"][0],
+
+            "start_idx": window["start_idx"],
+            "end_idx": window["end_idx"],
         }
     
     def transform_wTo_traj(self, wTo, newTo):
@@ -1047,12 +1050,12 @@ def vis_cano(opt):
     from jutils import geom_utils, image_utils, mesh_utils, model_utils, plot_utils
     from pytorch3d.structures import Meshes, Pointclouds
     from egorecon.utils.motion_repr import HandWrapper
-    pt3d_viz = Pt3dVisualizer(
-        exp_name="vis_traj",
-        save_dir="outputs/debug_vis",
-        mano_models_dir="assets/mano",
-        object_mesh_dir="data/HOT3D/assets",
-    )
+    # pt3d_viz = Pt3dVisualizer(
+    #     exp_name="vis_traj",
+    #     save_dir="outputs/debug_vis",
+    #     mano_models_dir="assets/mano",
+    #     object_mesh_dir="data/HOT3D/assets",
+    # )
 
     mano_model_folder = "assets/mano"
     device = 'cuda:0'
@@ -1066,7 +1069,7 @@ def vis_cano(opt):
             sampling_strategy="random",
             split=opt.datasets.split,
             split_seed=42,  # Ensure reproducible splits
-            noise_scheme="real",
+            noise_scheme="syn",
             split_file=opt.traindata.split_file,
             **opt.datasets.augument,
             opt=opt,
@@ -1078,6 +1081,11 @@ def vis_cano(opt):
     
     dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
     for b, batch in enumerate(dataloader):
+        start_idx = batch['start_idx']
+        end_idx = batch['end_idx']
+
+        print('start_idx', start_idx, end_idx, batch['object_id'])
+        continue
         batch = model_utils.to_cuda(batch, device)
 
         left_hand_param, left_hand_shape = sided_mano_model.dict2para(batch['left_hand_params'], side='left')

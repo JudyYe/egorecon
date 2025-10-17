@@ -428,14 +428,14 @@ class Trainer(object):
                     traj=se3_to_wxyz_xyz(x),
                     obs=obs,
                     guidance_mode=self.opt.guide.hint,
-                    phase="post",
+                    phase="fp",
                     verbose=True,
                     # verbose=False,
                 )
 
 
                 points = val_data_dict["newPoints"][:bs_for_vis]
-                points = plot_utils.pc_to_cubic_meshes(points)
+                points = plot_utils.pc_to_cubic_meshes(points[:,:vis_P])
 
                 hand_poses_raw = val_data_dict["hand_raw"][
                     :bs_for_vis
@@ -491,7 +491,7 @@ class Trainer(object):
                         val_data_dict,
                         pref=f"{self.opt.test_folder}/train_{b}_sample_{s}_",
                         just_vis=True,
-                        sample_guide=False,
+                        sample_guide=True,
                     )
 
     def accumulate_metrics(self, metrics, all_metrics, pref):
@@ -615,7 +615,7 @@ class Trainer(object):
             bs_for_vis = 1
             # if 'newPoints' in sample:
             points = val_data_dict["newPoints"][:bs_for_vis]
-            points = plot_utils.pc_to_cubic_meshes(points)
+            points = plot_utils.pc_to_cubic_meshes(points[:, :vis_P])
 
             fname = self.gen_vis_res(
                 self.step,
@@ -902,7 +902,7 @@ def main(opt):
     run_train(opt, device)
     return
 
-
+vis_P = 500
 device = torch.device(f"cuda:0")
 if __name__ == "__main__":
     main()

@@ -35,6 +35,7 @@ def do_guidance_optimization(
     guidance_mode: GuidanceMode,
     phase: Literal["inner", "post"],
     verbose: bool,
+    guidance_params: JaxGuidanceParams=None,
 ) -> tuple[Tensor, dict]:
     """Run an optimizer to optimize SE3 trajectory.
 
@@ -48,7 +49,8 @@ def do_guidance_optimization(
     Returns:
         Tuple of (optimized_trajectory, debug_info)
     """
-    guidance_params = JaxGuidanceParams.defaults(guidance_mode, phase)
+    if guidance_params is None:
+        guidance_params = JaxGuidanceParams.defaults(guidance_mode, phase)
 
     # Extract trajectory and observations
     x_traj = traj  # Shape: (B, T, 7) - wxyz_xyz format [qw, qx, qy, qz, x, y, z] - PARAMETERS TO OPTIMIZE
@@ -78,6 +80,8 @@ def do_guidance_optimization(
     if "x2d" in obs:
         x2d_jax = cast(jax.Array, obs["x2d"].numpy(force=True))
 
+    if "joints_traj" in obs:
+        joints_traj_jax = cast(jax.Array, obs["joints_traj"].numpy(force=True))
 
     # Optimize using vmapped function
     optimized_traj, debug_info = _optimize_vmapped(
@@ -89,6 +93,7 @@ def do_guidance_optimization(
         wTc=wTc_jax,
         intr=intr_jax,
         x2d=x2d_jax,
+        joints_traj=joints_traj_jax,
     )
 
     # Convert back to torch tensor
@@ -123,6 +128,7 @@ def _optimize_vmapped(
     wTc: jax.Array = None,
     intr: jax.Array = None,
     x2d: jax.Array = None,
+    joints_traj: jax.Array = None,
 ) -> tuple[jax.Array, dict]:
     """Vectorized optimization over batch dimension using JAX vmap.
 
@@ -153,7 +159,7 @@ def _optimize_vmapped(
             # intr=intr,
             # x2d=x2d,
         )
-    )(x_traj=x_traj, gt_traj=gt_traj, oPoints=oPoints, wTc=wTc, intr=intr, x2d=x2d)
+    )(x_traj=x_traj, gt_traj=gt_traj, oPoints=oPoints, wTc=wTc, intr=intr, x2d=x2d, joints_traj=joints_traj)
 
 
 # Modes for guidance
@@ -169,7 +175,7 @@ GuidanceMode = Literal[
 class JaxGuidanceParams:
     # L2 cost weights
     l2_weight: float = 1.0
-    use_l2: jdc.Static[bool] = True
+    use_l2: jdc.Static[bool] = False
 
     # Smoothness weights
     smoothness_weight: float = 0.1
@@ -179,6 +185,10 @@ class JaxGuidanceParams:
     reproj_weight: float = 1.0
     use_reproj: jdc.Static[bool] = False
     use_reproj_cd: jdc.Static[bool] = False
+
+    use_abs_contact: jdc.Static[bool] = False
+    use_rel_contact: jdc.Static[bool] = False
+    contact_weight: float = 1.0
 
     # smoothness weights
     tsl_weight: float = 1.0
@@ -190,6 +200,8 @@ class JaxGuidanceParams:
 
     hand_quat_smoothness_weight = 1.0
 
+    contact_th: float = 0.03
+
 
     # Optimization parameters
     lambda_initial: float = 0.1  # Increased for better convergence
@@ -198,7 +210,7 @@ class JaxGuidanceParams:
     @staticmethod
     def defaults(
         mode: GuidanceMode,
-        phase: Literal["inner", "post"],
+        phase: Literal["inner", "post", "fp"],
     ) -> JaxGuidanceParams:
         if mode == "simple_l2":
             return JaxGuidanceParams(
@@ -223,12 +235,19 @@ class JaxGuidanceParams:
                 max_iters=5 if phase == "inner" else 50
             )
         elif mode == "reproj_cd":
+            if phase == "fp":
+                max_iters = 200
+            elif phase == "inner":
+                max_iters = 25
+            elif phase == "post":
+                max_iters = 50
             return JaxGuidanceParams(
                 use_l2=False,
                 use_reproj=False,
                 use_reproj_cd=True,
+                use_contact=True,
                 reproj_weight=1.0,
-                max_iters=25 if phase == "inner" else 50
+                max_iters=max_iters,
             )
         else:
             assert_never(mode)
@@ -243,6 +262,7 @@ def _optimize(
     wTc: jax.Array = None,
     intr: jax.Array = None,
     x2d: jax.Array = None,
+    joints_traj: jax.Array = None,
 ) -> jax.Array:
     """Apply constraints using Levenberg-Marquardt optimizer. Returns updated SE3 trajectory.
 
@@ -251,7 +271,7 @@ def _optimize(
         gt_traj: Ground truth SE3 trajectory (T, 7) - wxyz_xyz format [qw, qx, qy, qz, x, y, z] - OBSERVATIONS
         guidance_params: Guidance parameters
         verbose: Whether to print optimization progress
-
+        joints_traj: Joints trajectory (T, 21, 3) - JOINT INDICES
     Returns:
         Optimized SE3 trajectory (T, 7)
     """
@@ -314,58 +334,59 @@ def _optimize(
             )
 
 
-    # smoothness on 
-    @cost_with_args(
-        _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
-        _SE3TrajectoryVar(jnp.arange(1, timesteps)),
-    )
-    def delta_smoothness_cost(
-        vals: jaxls.VarValues,
-        current: _SE3TrajectoryVar,
-        next: _SE3TrajectoryVar,
-    ) -> jax.Array:
-        # don't be too far away from the initial pose
-        curdelt = jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(
-            init_quats[current.id]
+    if guidance_params.use_smoothness:
+        # smoothness on 
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+            _SE3TrajectoryVar(jnp.arange(1, timesteps)),
         )
-        nexdelt = jaxlie.SE3(vals[next]).inverse() @ jaxlie.SE3(
-            init_quats[next.id] 
+        def delta_smoothness_cost(
+            vals: jaxls.VarValues,
+            current: _SE3TrajectoryVar,
+            next: _SE3TrajectoryVar,
+        ) -> jax.Array:
+            # don't be too far away from the initial pose
+            curdelt = jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(
+                init_quats[current.id]
+            )
+            nexdelt = jaxlie.SE3(vals[next]).inverse() @ jaxlie.SE3(
+                init_quats[next.id] 
+            )
+
+            dist1 = dist_residual(guidance_params.body_quat_delta_smoothness_weight, curdelt.inverse() @ nexdelt)
+            dist2 = dist_residual(guidance_params.body_quat_smoothness_weight, jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
+
+            return jnp.concatenate([dist1, dist2])
+            # return jnp.concatenate(
+            #     [
+            #         guidance_params.body_quat_delta_smoothness_weight
+            #         * (curdelt.inverse() @ nexdelt).log().flatten(),
+            #         guidance_params.body_quat_smoothness_weight
+            #         * (jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
+            #         .log()
+            #         .flatten(),
+            #     ]
+            # )
+
+        # smoothness on velocity
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps - 2)),
+            _SE3TrajectoryVar(jnp.arange(1, timesteps - 1)),
+            _SE3TrajectoryVar(jnp.arange(2, timesteps)),
         )
-
-        dist1 = dist_residual(guidance_params.body_quat_delta_smoothness_weight, curdelt.inverse() @ nexdelt)
-        dist2 = dist_residual(guidance_params.body_quat_smoothness_weight, jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
-
-        return jnp.concatenate([dist1, dist2])
-        # return jnp.concatenate(
-        #     [
-        #         guidance_params.body_quat_delta_smoothness_weight
-        #         * (curdelt.inverse() @ nexdelt).log().flatten(),
-        #         guidance_params.body_quat_smoothness_weight
-        #         * (jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
-        #         .log()
-        #         .flatten(),
-        #     ]
-        # )
-
-    # smoothness on velocity
-    @cost_with_args(
-        _SE3TrajectoryVar(jnp.arange(timesteps - 2)),
-        _SE3TrajectoryVar(jnp.arange(1, timesteps - 1)),
-        _SE3TrajectoryVar(jnp.arange(2, timesteps)),
-    )
-    def vel_smoothness_cost(
-        vals: jaxls.VarValues,
-        t0: _SE3TrajectoryVar,
-        t1: _SE3TrajectoryVar,
-        t2: _SE3TrajectoryVar,
-    ) -> jax.Array:
-        curdelt = jaxlie.SE3(vals[t0]).inverse() @ jaxlie.SE3(vals[t1])
-        nexdelt = jaxlie.SE3(vals[t1]).inverse() @ jaxlie.SE3(vals[t2])
-        # return (
-        #     guidance_params.body_quat_vel_smoothness_weight
-        #     * (curdelt.inverse() @ nexdelt).log().flatten()
-        # )
-        return dist_residual(guidance_params.body_quat_vel_smoothness_weight, curdelt.inverse() @ nexdelt)
+        def vel_smoothness_cost(
+            vals: jaxls.VarValues,
+            t0: _SE3TrajectoryVar,
+            t1: _SE3TrajectoryVar,
+            t2: _SE3TrajectoryVar,
+        ) -> jax.Array:
+            curdelt = jaxlie.SE3(vals[t0]).inverse() @ jaxlie.SE3(vals[t1])
+            nexdelt = jaxlie.SE3(vals[t1]).inverse() @ jaxlie.SE3(vals[t2])
+            # return (
+            #     guidance_params.body_quat_vel_smoothness_weight
+            #     * (curdelt.inverse() @ nexdelt).log().flatten()
+            # )
+            return dist_residual(guidance_params.body_quat_vel_smoothness_weight, curdelt.inverse() @ nexdelt)
 
 
     # # HaMeR local quaternion smoothness.
@@ -423,7 +444,107 @@ def _optimize(
             # Compute L2 distance between projected and observed 2D points
             diff = projected_2d - x2d  # (P, 2)
             return guidance_params.reproj_weight * diff.flatten()
+    
+    if guidance_params.use_abs_contact:
+        # find the first frame where contact is true
+        # current_contact = 
 
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            joints_traj,
+            oPoints[None],
+        )
+        def abs_contact_cost(
+            vals: jaxls.VarValues,
+            cur: _SE3TrajectoryVar,  
+            joints_traj: jax.Array,  # (J = 42, 3)
+            oPoints: jax.Array,
+        ) -> jax.Array:
+
+            current_traj = jaxlie.SE3(vals[cur])
+            current_points = current_traj @ oPoints
+            joints_traj = joints_traj.reshape(-1, 3)
+            J = joints_traj.shape[0]
+
+            dist = jnp.linalg.norm(current_points[:, None] - joints_traj[None, :, :], axis=-1)  # (P, J)
+            dist = dist.reshape(-1, 2, J//2)
+            contact_cost = dist.min(axis=0)  * guidance_params.contact_weight  # (2, J//2)
+            # contact_cost = -jax.lax.top_k(-contact_cost, k=5, axis=-1)[0]
+            # contact_cost = contact_cost.min(axis=-1, keepdims=True)
+            print(contact_cost.shape)
+
+            # is_contact = jnp.min(dist, axis=-1) < guidance_params.contact_th
+            is_contact = jnp.array([0, 1])
+            non_contact_cost = jnp.ones((2,1)) * 0 * guidance_params.contact_weight  # (2,)
+
+            cost = jnp.where(is_contact.reshape(2, 1), contact_cost, non_contact_cost)
+            return cost.flatten()
+    
+    if guidance_params.use_rel_contact:
+        # approximate contact label
+        # smoothness on 
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+            _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+            joints_traj[:-1],
+            joints_traj[1:],
+            oPoints[None],
+        )
+        def relative_contact_cost(
+            vals: jaxls.VarValues,
+            current: _SE3TrajectoryVar,  
+            next: _SE3TrajectoryVar,
+            joints_traj_current: jax.Array,  # (J = 42, 3)
+            joints_traj_next: jax.Array,
+            oPoints: jax.Array,
+        ) -> jax.Array:
+            current_traj = jaxlie.SE3(vals[current])
+            # current_traj = jaxlie.SE3(x_traj[k_start])
+            next_traj = jaxlie.SE3(vals[next]) 
+            
+            current_points = current_traj @ oPoints
+            next_points = next_traj @ oPoints  # (P, 3)
+            joints_traj_current = joints_traj_current.reshape(-1, 3)
+            joints_traj_next = joints_traj_next.reshape(-1, 3)
+
+            left_cur, right_cur = joints_traj_current[:21], joints_traj_current[21:]
+            left_next, right_next = joints_traj_next[:21], joints_traj_next[21:]
+            
+            J = joints_traj_current.shape[0]
+
+            # minimal pairwise distance 
+            dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_current[None, :, :], axis=-1)  # (P, J)
+            dist_next = jnp.linalg.norm(next_points[:, None] - joints_traj_next[None, :, :], axis=-1)  # (P, J)
+            contact_cur = jnp.min(jnp.min(dist_cur.reshape(-1,  2, J//2), axis=0), axis=-1)  # (2,)
+            contact_next = jnp.min(jnp.min(dist_next.reshape(-1,  2, J//2), axis=0), axis=-1)  # (2,)  # P, J//2, 2? 2, J?? 
+
+            th = guidance_params.contact_th
+
+            # is_contact = (contact_cur < th) & (contact_next < th)  # (2,)
+            # array((0, 1))
+            is_contact = jnp.array([0, 1])
+
+            # p_near is the nearest point on the object to the current each joint
+            p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
+            p_near = current_points[p_near_ind] - joints_traj_current # (J, 3)  # relative position to the joint
+            p_near_next = next_points[p_near_ind] - joints_traj_next # (J, 3)  # relative position to the joint
+
+            current_rot = current_traj.rotation()
+            next_rot = next_traj.rotation()
+
+            # prox_next = joints_traj_next + next_rot @ current_rot.inverse() @ p_near  # (J, 3)  # relative position to the joint
+            # jax.fdebug.print('prox_next', prox_next.shape)
+            res = p_near_next - next_rot @ current_rot.inverse() @ p_near
+
+            dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
+            
+            contact_cost = guidance_params.contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
+
+            no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.contact_weight  # (2, J//2)
+            cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
+
+            return cost.flatten()
+                
     if guidance_params.use_reproj_cd:
         assert (
             oPoints is not None
@@ -652,6 +773,7 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         "wTc": se3_to_wxyz_xyz(data["batch"]["wTc"]),  # (BS, T, 7) wxyz_xyz format
         "intr": data["batch"]["intr"],  # (BS, 3, 3)
         "x2d": x2d,  # (BS, T, P, 2?)
+        "joints_traj": data["batch"]["hand_raw"],
     }
     guidance_mode = mode  # "reproj_corrsp"  # Test reprojection mode
 
@@ -662,6 +784,15 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         traj = data["x"]  # (BS, T, 7) wxyz_xyz format - PARAMETERS TO OPTIMIZE
 
 
+    guidance_params = JaxGuidanceParams(
+        use_abs_contact=True,
+        use_rel_contact=True,
+        contact_weight=10,
+        use_reproj_cd=True,
+        contact_th=0.5,
+        max_iters=100,
+        use_smoothness=True,
+    )
 
     # Run optimization
     x_0_pred, _ = do_guidance_optimization(
@@ -670,7 +801,9 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         guidance_mode=guidance_mode,
         phase="inner",
         verbose=guidance_verbose,
+        guidance_params=guidance_params,
     )
+
 
 
     print(f"Original trajectory shape: {traj.shape}")
@@ -684,7 +817,7 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         traj[0],  # Original trajectory
         wxyz_xyz_to_se3(x_0_pred[0]),
     ]
-    # color_list = [ 'red', 'yellow', 'blue' ]  # Not used in this version
+    color_list = [ 'red', 'yellow', 'blue' ]  # Not used in this version
 
     B, T, J_3 = data["batch"]["hand_raw"].shape
     J = J_3 // 3  // 2
@@ -705,14 +838,15 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
     )
 
+    newPoints_meshes = plot_utils.pc_to_cubic_meshes(data["batch"]["newPoints"][:, :1000])
     pt3d_viz.log_training_step(
         left_hand_mesh,
         right_hand_mesh,
-        # traj_list,
-        # color_list,
-        [obs["x"][0]],
-        ["red"],
-        uid="000033",
+        traj_list,
+        color_list,
+        # [obs["x"][0], ],
+        # ["red"],
+        uid=newPoints_meshes,
         pref="debug",
     )
 
@@ -723,7 +857,6 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         object_mesh_dir="data/HOT3D-CLIP/object_models_eval/",
     )
 
-    newPoints_meshes = plot_utils.pc_to_cubic_meshes(data["batch"]["newPoints"])
     viz.log_dynamic_step(
         left_hand_mesh,
         right_hand_mesh,

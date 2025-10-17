@@ -1,3 +1,13 @@
+[] set up quant
+[] faster vis
+[] save rr too?
+[] GT obs
+[] long seq
+[] template-free cond?  
+[] check for FP again
+
+
+
 ?? why vis in guidance is wrong? 
 [x] only dynamic object 
 [x] only hand conditioned 
@@ -9,7 +19,7 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
-
+python -m egorecon.manip.model.guidance_optimizer_jax
 7it / s  -> 5it? 
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \
@@ -17,8 +27,9 @@ python -m egorecon.training.trainer_proof_of_idea  -m  \
   dyn_only=true \
   condition.bps=2 condition.noisy_obj=false  \
   traindata=hotclip_train \
-  test=true guide.hint=reproj_corrsp \
-  ckpt=\${exp_dir}/weights/model-19.pt 
+  test=true guide.hint=reproj_cd ddim=True \
+  ckpt=\${exp_dir}/weights/model-19.pt \
+  test_folder=eval_\${guide.hint}_ddim\${ddim}
 
   general.rerun=true general.wandb=true \
 
