@@ -55,7 +55,7 @@ def load_pickle(path):
             all_processed_data[seq] = processed_data
 
     elif path.endswith(".npz"):
-        # legacy for mini
+        # Legacy support for mini dataset
         data = np.load(path, allow_pickle=True)
         seq_index = osp.basename(path).split(".")[0]
 
@@ -270,23 +270,16 @@ class HandToObjectDataset(Dataset):
 
         self.obj_bps = self.bps['obj']
 
-        # load object geometry
+        # Load object geometry
         self.object_library = Pt3dVisualizer.setup_template(self.opt.paths.object_mesh_dir)
         for uid, mesh in self.object_library.items():
             self.object_library[uid] = sample_points_from_meshes(mesh, 50000)
         
-        # self.object_library = {}
-        # glob_file = glob(osp.join(self.opt.paths.object_mesh_dir, "*.glb"))
-        # print("glob_file", glob_file, "object_mesh_dir", self.opt.paths.object_mesh_dir)
-        # for mesh_file in glob_file:
-        #     uid = osp.basename(mesh_file).split(".")[0]
-            # self.object_library[uid] = sample_points_from_meshes(mesh_utils.load_mesh(mesh_file), 50000)
 
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
         filtered_data = {}
         if self.split == "mini":
-            # seq = 'P0001_624f2ba9'
             seq = list(self.processed_data.keys())[0]
             seq_list = [seq]
         else:
@@ -294,7 +287,6 @@ class HandToObjectDataset(Dataset):
         
         for seq in seq_list:
             filtered_data[seq] = {}
-            # '194930206998778',
             if single_object:
                 # 225397651484143 : bowl
                 obj_list = single_object.split("+")
@@ -359,7 +351,7 @@ class HandToObjectDataset(Dataset):
                 object_traj = obj_data["wTo"]  # (T, 4, 4)
                 camera_traj = demo_data["wTc"]  # (T, 4, 4)
 
-                # Find the overlapping time range for all trajectories
+                # Find overlapping time range for all trajectories
                 left_hand = demo_data["left_hand"]["theta"]
                 right_hand = demo_data["right_hand"]["theta"]
                 min_len = min(len(left_hand), len(right_hand), len(object_traj))
@@ -370,7 +362,7 @@ class HandToObjectDataset(Dataset):
                     )
                     continue
 
-                # Trim all trajectories to same length
+                # Trim trajectories to same length
                 left_hand_trimmed = left_hand[:min_len]
                 right_hand_trimmed = right_hand[:min_len]
                 object_traj_trimmed = object_traj[:min_len]
@@ -388,26 +380,16 @@ class HandToObjectDataset(Dataset):
                         ]
                     else:
                         object_valid = np.ones(self.window_size).astype(bool)
-                        print("No object valid mask found?????? " , self.data_path)
+                        print("Warning: No object valid mask found for", self.data_path)
 
                     if not np.all(object_valid):
-                        # TODO: use strict checking for now
+                        # Skip windows with invalid object data
                         continue 
                     left_wrist_aa = left_hand_trimmed[start_idx:end_idx][:, 0:3]
                     left_wrist_pos = left_hand_trimmed[start_idx:end_idx][:, 3:6]
 
-                    left_wrist_r = R.from_rotvec(left_wrist_aa)
-                    left_wrist_quat = left_wrist_r.as_quat()[
-                        :, [3, 0, 1, 2]
-                    ]  # Returns [x, y, z, w] -> wxyz
-
                     right_wrist_aa = right_hand_trimmed[start_idx:end_idx][:, 0:3]
                     right_wrist_pos = right_hand_trimmed[start_idx:end_idx][:, 3:6]
-
-                    right_wrist_r = R.from_rotvec(right_wrist_aa)
-                    right_wrist_quat = right_wrist_r.as_quat()[
-                        :, [3, 0, 1, 2]
-                    ]  # Returns [x, y, z, w] -> wxyz
 
                     object_pos = object_traj_trimmed[start_idx:end_idx][:, :3, 3]
                     object_rot_mat = object_traj_trimmed[start_idx:end_idx][:, :3, :3]
@@ -423,8 +405,7 @@ class HandToObjectDataset(Dataset):
                         :, [3, 0, 1, 2]
                     ]  # Returns [x, y, z, w] -> wxyz
 
-                    # ######### 1. Canonicalize the data using the camera frame  ##########
-                    # put them to 1st camera frame
+                    # Canonicalize the data using the camera frame
                     (
                         cano_camera_pos,
                         cano_camera_quat,
@@ -456,32 +437,8 @@ class HandToObjectDataset(Dataset):
                             )
                         )
 
-                    # _, _, cano_left_wrist_pos, cano_left_wrist_quat, _ = (
-                    #     rotate_at_frame_w_obj(
-                    #         camera_pos[np.newaxis, :, np.newaxis, :],
-                    #         camera_quat[np.newaxis, :, np.newaxis, :],
-                    #         left_wrist_pos[np.newaxis],
-                    #         left_wrist_quat[np.newaxis],
-                    #     )
-                    # )
-
-                    # _, _, cano_right_wrist_pos, cano_right_wrist_quat, _ = (
-                    #     rotate_at_frame_w_obj(
-                    #         camera_pos[np.newaxis, :, np.newaxis, :],
-                    #         camera_quat[np.newaxis, :, np.newaxis, :],
-                    #         right_wrist_pos[np.newaxis],
-                    #         right_wrist_quat[np.newaxis],
-                    #     )
-                    # )
-
-                    # cano_left_wrist_pos = cano_left_wrist_pos[0]  # T X 3
-                    # cano_left_wrist_quat = cano_left_wrist_quat[0]  # T X 4
-
                     cano_object_pos = cano_object_pos[0]  # T X 3
                     cano_object_quat = cano_object_quat[0]  # T X 4
-
-                    # cano_right_wrist_pos = cano_right_wrist_pos[0]  # T X 3
-                    # cano_right_wrist_quat = cano_right_wrist_quat[0]  # T X 4
 
                     if self.noise_scheme == "real":
                         cano_object_shelf_pos = cano_object_shelf_pos[0]  # T X 3
@@ -490,21 +447,13 @@ class HandToObjectDataset(Dataset):
                     cano_camera_pos = cano_camera_pos[0, :, 0, :]  # T X 3
                     cano_camera_quat = cano_camera_quat[0, :, 0, :]  # T X 4
 
-                    # Translate everything such that the left_wrist initial position is at the origin.
-                    # left_wrist2origin_trans = cano_left_wrist_pos[0:1, :].copy()
-                    # cano_left_wrist_pos -= left_wrist2origin_trans
-                    # cano_right_wrist_pos -= left_wrist2origin_trans
-                    # cano_object_pos -= left_wrist2origin_trans
-
-                    # Translate everything such that the camear initial position is at the origin.
+                    # Translate everything such that the camera initial position is at the origin.
                     camera2origin_trans = cano_camera_pos[0:1, :].copy()
                     canoTw = np.eye(4)
                     canoTw[:3, :3] = canoTw_rot
                     canoTw[:3, 3] = -camera2origin_trans
 
                     cano_camera_pos -= camera2origin_trans
-                    # cano_left_wrist_pos -= camera2origin_trans
-                    # cano_right_wrist_pos -= camera2origin_trans
                     cano_object_pos -= camera2origin_trans
 
                     mano_params_dict = {
@@ -584,14 +533,6 @@ class HandToObjectDataset(Dataset):
                         "right_hand_params": cano_right_mano_params_dict,
                         "left_hand_joints": cano_left_positions,
                         "right_hand_joints": cano_right_positions,
-                        # 'wTc':
-                        # 'wTo':
-                        # 'wTo_shelf':
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'left_hand_theta': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # 'object':cano_object_data,
                     }
 
                     if self.noise_scheme == "real":
@@ -603,12 +544,10 @@ class HandToObjectDataset(Dataset):
 
                     # Check if this is a motion window
                     is_motion = self._is_motion_window(cano_object_data)
-                    # is_motion = True
                     window_data["is_motion"] = is_motion
                     
                     # Calculate mean velocity for the object trajectory
                     if len(cano_object_data) > 1:
-                        # Calculate velocity as displacement between consecutive frames
                         velocities = np.linalg.norm(np.diff(cano_object_data[:, :3], axis=0), axis=1)
                         mean_velocity = np.mean(velocities)
                     else:
@@ -618,8 +557,6 @@ class HandToObjectDataset(Dataset):
                     if self.window_check(window_data):
                         windows.append(window_data)
 
-        # Apply sampling strategy
-        # windows = self._apply_sampling_strategy(windows)
         
         os.makedirs(osp.dirname(cache_name), exist_ok=True)
         pickle.dump(windows, open(cache_name, 'wb'))
@@ -627,10 +564,9 @@ class HandToObjectDataset(Dataset):
         return windows
 
     def window_check(self, window_data):
-        # if one of objecdt_valid is not valid, return False
+        """Check if window has valid object data."""
         if not np.any(window_data["object_valid"]):
             return False
-
         return True
 
     def _is_motion_window(self, object_traj, motion_threshold=0.05):
@@ -759,8 +695,9 @@ class HandToObjectDataset(Dataset):
         meta_file = self.data_cfg.meta_file
         if not osp.exists(meta_file):
             print(f'compute metadata....  and save to {meta_file}')
-            compute_norm_stats(self.opt)
-        print(f'using loadded metadata from {meta_file}')
+            # TODO: Implement compute_norm_stats function
+            raise NotImplementedError("compute_norm_stats function not implemented")
+        print(f'using loaded metadata from {meta_file}')
         self.stats = pickle.load(open(meta_file, 'rb'))    
 
     def _setup_full_trajectory_data_from_windows(self):
@@ -839,18 +776,15 @@ class HandToObjectDataset(Dataset):
         idx = idx % len(self.windows)
         window = self.windows[idx]
 
-        ######### 2. add synthetic noise / use off-the-shelf noise to the data ##########
-        # get noisy data
+        # Add synthetic noise to the data
         window_noisy = self.add_noise_data(window)
         
-
-        ######### 3. add geometry, add random canonical augmentation ##########
+        # Add geometry and random canonical augmentation
         if aug_cano:
             window, newoTo = self.augment_cano_object(window)
             window_noisy['object'] = self.transform_wTo_traj(window_noisy['object'], newoTo)
 
-
-        ######### 4. Convert to tensors ##########
+        # Convert to tensors
         left_hand = to_tensor(window["left_hand"])  # [T, D]
         right_hand = to_tensor(window["right_hand"])  # [T, D]
         object_traj = to_tensor(window["object"])  # [T, D]
@@ -869,7 +803,7 @@ class HandToObjectDataset(Dataset):
         condition = torch.cat(
                 [left_hand_norm, right_hand_norm], dim=-1
         )
-        # Concatenate hand inputs for conditioning
+        # Add noisy object trajectory to conditioning if specified
         if self.opt.condition.noisy_obj:
             condition = torch.cat([condition, traj_noisy_norm], dim=-1)
 
@@ -889,9 +823,6 @@ class HandToObjectDataset(Dataset):
             "object_valid": window["object_valid"],
             "intr":  to_tensor(window["intr"]),
             "wTc": to_tensor(window["wTc"]),
-            
-            # "object_bps_new": window["object_bps_new"][0],
-
             "newTo": window["newTo"],
             "newPoints": window["newPoints"][0],
 
@@ -908,10 +839,17 @@ class HandToObjectDataset(Dataset):
         return wTnew        
 
     def augment_cano_object(self, window, newTo=None):
-        """Load object geometry, use a random orientation as canonical pose, 
-        then, get its bps in canonical pose, and also change wTo to the new wTo
-
-        :param window: _description_
+        """Augment object with random canonical orientation.
+        
+        Load object geometry, apply random orientation as canonical pose,
+        and transform the object trajectory accordingly.
+        
+        Args:
+            window: Window data containing object information
+            newTo: Optional transformation matrix. If None, generates random rotation.
+            
+        Returns:
+            tuple: (updated_window, newTo)
         """
         if newTo is None:
             newTo = geom_utils.random_rotations(1, )  # (1, 3, 3)
@@ -919,20 +857,15 @@ class HandToObjectDataset(Dataset):
         
         window['object'] = self.transform_wTo_traj(window['object'], newTo)
 
-        # load_goemetry 
+        # Load object geometry
         oPoints = self.object_library[window['object_id']]
-        newPoints = mesh_utils.apply_transform(oPoints, newTo)  # (1, P, 3)  torch        
-        # newCom = newPoints.mean(dim=1) # (1, 3)
-
-        # # compute bps
-        # bps = self.compute_object_geo_bps(newPoints, newCom)
-        # bps = torch.zeros((1, 1024, 3))
-
-        # randomly sample nP points for vis
+        newPoints = mesh_utils.apply_transform(oPoints, newTo)  # (1, P, 3)
+        
+        # Randomly sample points for visualization
         nP = min(5000, newPoints.shape[1])
         index = torch.randint(0, newPoints.shape[1], (nP, ))
         newPoints = newPoints[:, index, :]
-        # window['object_bps_new'] = bps
+        
         window['newTo'] = newTo
         window['newPoints'] = newPoints
         
@@ -940,18 +873,18 @@ class HandToObjectDataset(Dataset):
 
 
     def add_noise_data(self, can_window_dict):
-        # just for 6d pose for now
+        """Add noise to the data for training."""
         if self.noise_scheme == "real":
             can_window_dict_noisy = deepcopy(can_window_dict)
             can_window_dict_noisy["object"] = can_window_dict["object_shelf"]  # [T, D]
-            # add mask
+            # Apply mask
             mask = can_window_dict_noisy["shelf_valid"]  # [T, ]
             can_window_dict_noisy["object"] = (
                 can_window_dict_noisy["object"] * mask[:, None]
             )
             return can_window_dict_noisy
 
-        ######################################## add noise to  params
+        # Add noise to parameters
 
         can_window_dict_noisy = {}
         for param_name in [
@@ -975,7 +908,7 @@ class HandToObjectDataset(Dataset):
                 size=rot_euler.shape,
             )
 
-            # add a constatn random translation noise to object traj
+            # Add constant random translation noise to object trajectory
             if self.use_constant_noise:
                 transl_noise = np.random.normal(
                     loc=0.0,
@@ -1043,90 +976,16 @@ def create_hand_to_object_dataset(
     )
 
 
-@hydra.main(config_path="../../../config", config_name="train", version_base=None)
-@torch.no_grad()
-def vis_cano(opt):
-    from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-    from jutils import geom_utils, image_utils, mesh_utils, model_utils, plot_utils
-    from pytorch3d.structures import Meshes, Pointclouds
-    from egorecon.utils.motion_repr import HandWrapper
-    # pt3d_viz = Pt3dVisualizer(
-    #     exp_name="vis_traj",
-    #     save_dir="outputs/debug_vis",
-    #     mano_models_dir="assets/mano",
-    #     object_mesh_dir="data/HOT3D/assets",
-    # )
 
-    mano_model_folder = "assets/mano"
-    device = 'cuda:0'
-
-    train_dataset = HandToObjectDataset(
-            is_train=False,
-            data_path=opt.traindata.data_path,
-            window_size=opt.model.window,
-            single_demo="P0001_624f2ba9",
-            # single_object="225397651484143",
-            sampling_strategy="random",
-            split=opt.datasets.split,
-            split_seed=42,  # Ensure reproducible splits
-            noise_scheme="syn",
-            split_file=opt.traindata.split_file,
-            **opt.datasets.augument,
-            opt=opt,
-            data_cfg=opt.traindata,
-        )
-    train_dataset.set_metadata()
-    sided_mano_model = HandWrapper(mano_model_folder).to(device)
-
-    
-    dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
-    for b, batch in enumerate(dataloader):
-        start_idx = batch['start_idx']
-        end_idx = batch['end_idx']
-
-        print('start_idx', start_idx, end_idx, batch['object_id'])
-        continue
-        batch = model_utils.to_cuda(batch, device)
-
-        left_hand_param, left_hand_shape = sided_mano_model.dict2para(batch['left_hand_params'], side='left')
-        right_hand_param, right_hand_shape = sided_mano_model.dict2para(batch['right_hand_params'], side='right')
-        
-        newPoints = batch['newPoints']
-        bps = batch['object_bps_new']
-        print('bps', bps.shape)
-        red = torch.zeros_like(newPoints)
-        red[:, :, 0] = 1
-        new_pc = Pointclouds(points=newPoints, features=red)
-
-        image_list = mesh_utils.render_geom_rot_v2(new_pc, )
-        image_utils.save_gif(image_list, f"outputs/debug_cano/newPoints_{b}_cano", fps=30, ext=".mp4")
-
-        wTo = batch['target_raw']
-        left_hand_verts, left_hand_faces, left_hand_joints = sided_mano_model.hand_para2verts_faces_joints(left_hand_param.float(), left_hand_shape.float(), side='left')
-        right_hand_verts, right_hand_faces, right_hand_joints = sided_mano_model.hand_para2verts_faces_joints(right_hand_param.float(), right_hand_shape.float(), side='right')
-        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
-        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'white')
-        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
-        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
-
-        newMesh = plot_utils.pc_to_cubic_meshes(newPoints)
-        # newMesh.textures = mesh_utils.pad_texture(newMesh, 'red')
-        wTo_list = [wTo]
-        color_list = ['red']
-
-        image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, newMesh, step=b, pref="debug_vis_cano", save_to_file=False, )
-        image_utils.save_gif(image_list, f"outputs/debug_cano/newPoints_{b}", fps=30, ext=".mp4")
-
-
-
+# Global configuration variables
 th = 0.05
 use_cache = False
 aug_cano = True
+
 if __name__ == "__main__":
     
     # vis_traj()
     # vis_clip()
-    vis_cano()
 
     
     # compute_norm_stats()

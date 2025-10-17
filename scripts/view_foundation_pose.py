@@ -500,15 +500,15 @@ class HOT3DLoader:
         )
         intrinsics = self.get_calibration(rgb_calibration)
 
-        intr_notrot = self.get_calibration(rgb_calibration, should_rotate_image=False)
+        # intr_notrot = self.get_calibration(rgb_calibration, should_rotate_image=False)
 
-        deviceTcamera_notrot = intr_notrot.get_transform_device_camera()  
-        deviceTcamera = intrinsics.get_transform_device_camera()
+        # deviceTcamera_notrot = intr_notrot.get_transform_device_camera()  
+        # deviceTcamera = intrinsics.get_transform_device_camera()
 
-        camera_notrotTcamera = deviceTcamera_notrot.inverse().to_matrix() @ deviceTcamera.to_matrix()
-        print('camera_notrotTcamera', camera_notrotTcamera)
+        # camera_notrotTcamera = deviceTcamera_notrot.inverse().to_matrix() @ deviceTcamera.to_matrix()
+        # print('camera_notrotTcamera', camera_notrotTcamera)
 
-        assert False
+        # assert False
 
         
         deviceTcamera = intrinsics.get_transform_device_camera()
@@ -1867,8 +1867,8 @@ if __name__ == "__main__":
     uid2name = {int(k): v['instance_name'] for k, v in library.items()}
     name2uid = {v: k for k, v in uid2name.items()}
 
-    # Fire(batch_save_one)
-    Fire(save_one)
+    Fire(batch_save_one)
+    # Fire(save_one)
     # Fire(get_all_masks)
     
     # alpha = 1 # 0.6  # this works for cube
