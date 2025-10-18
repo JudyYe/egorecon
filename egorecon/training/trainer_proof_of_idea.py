@@ -17,17 +17,20 @@ from jutils import model_utils, plot_utils
 from omegaconf import OmegaConf
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
-from torch.utils import data
 from tqdm import tqdm
 
-from ..manip.data.hand_to_object_dataset_w_geometry import HandToObjectDataset
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
 )
+from ..manip.data import build_dataloader
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..utils.motion_repr import HandWrapper
-from ..manip.model.guidance_optimizer_jax import do_guidance_optimization, se3_to_wxyz_xyz, wxyz_xyz_to_se3
+from ..manip.model.guidance_optimizer_jax import (
+    do_guidance_optimization,
+    se3_to_wxyz_xyz,
+    wxyz_xyz_to_se3,
+)
 
 from move_utils.slurm_utils import slurm_engine
 
@@ -161,58 +164,28 @@ class Trainer(object):
             # self.model.set_metadata(self.val_ds.stats)
 
     def prep_train_dataset(self, opt):
-        train_dataset = HandToObjectDataset(
+        dl, ds = build_dataloader(
+            opt.traindata.name,
+            opt,
             is_train=True,
-            data_path=opt.traindata.data_path,
-            window_size=opt.model.window,
-            single_demo=opt.traindata.demo_id,
-            single_object=opt.traindata.target_object_id,
-            sampling_strategy="random",
-            split=opt.datasets.split,
-            split_seed=42,  # Ensure reproducible splits
-            noise_scheme="syn",
-            split_file=opt.traindata.split_file,
-            **opt.datasets.augument,
-            opt=opt,
-            data_cfg=opt.traindata,
+            shuffle=not opt.test,
+            batch_size=self.batch_size,
+            num_workers=10,
         )
-        train_dataset.set_metadata()
-        self.ds = train_dataset
-        self.dl = cycle(
-            data.DataLoader(
-                self.ds,
-                batch_size=self.batch_size,
-                shuffle=not opt.test,
-                pin_memory=True,
-                num_workers=4,
-            )
-        )
+        self.dl = cycle(dl)
+        self.ds = ds
 
     def prep_val_dataset(self, opt):
-        val_dataset = HandToObjectDataset(
+        dl, ds = build_dataloader(
+            opt.testdata.name,
+            opt,
             is_train=False,
-            data_path=opt.testdata.data_path,
-            window_size=opt.model.window,
-            single_demo=opt.testdata.demo_id,
-            single_object=opt.testdata.target_object_id,
-            sampling_strategy="random",
-            split="mini",
-            split_seed=42,  # Use same seed for consistent splits
-            noise_scheme="real",
-            opt=opt,
-            one_window=True,
-            t0=300,
-            data_cfg=opt.testdata,
-        )
-        val_dataset.set_metadata()
-        self.val_ds = val_dataset
-        self.val_dl = data.DataLoader(
-            self.val_ds,
-            batch_size=1,
             shuffle=False,
-            pin_memory=True,
+            batch_size=1,
             num_workers=1,
         )
+        self.val_dl = cycle(dl)
+        self.val_ds = ds
 
     def save(self, milestone):
         data = {
@@ -433,16 +406,24 @@ class Trainer(object):
                     # verbose=False,
                 )
 
-
                 points = val_data_dict["newPoints"][:bs_for_vis]
-                points = plot_utils.pc_to_cubic_meshes(points[:,:vis_P])
+                points = plot_utils.pc_to_cubic_meshes(points[:, :vis_P])
 
                 hand_poses_raw = val_data_dict["hand_raw"][
                     :bs_for_vis
                 ]  # [1, T, 2*D] - left + right hand
                 object_motion_raw = val_data_dict["target_raw"][:bs_for_vis]
-                left_hand_raw, right_hand_raw = torch.split(hand_poses_raw, 21 * 3, dim=-1)
-                print('x_opt', x_opt.shape, x.shape, object_motion_raw.shape, left_hand_raw.shape, right_hand_raw.shape)
+                left_hand_raw, right_hand_raw = torch.split(
+                    hand_poses_raw, 21 * 3, dim=-1
+                )
+                print(
+                    "x_opt",
+                    x_opt.shape,
+                    x.shape,
+                    object_motion_raw.shape,
+                    left_hand_raw.shape,
+                    right_hand_raw.shape,
+                )
                 fname = self.gen_vis_res(
                     self.step,
                     left_hand_raw,
@@ -453,8 +434,7 @@ class Trainer(object):
                     object_id=points,  # val_data_dict["object_id"][bs_for_vis-1],
                     seq_len=x_opt.shape[1],
                     pref=f"{self.opt.test_folder}/{b}_sample_fp_",
-                )                
-
+                )
 
                 for s in range(3):
                     _, (pred, _) = self.validation_step(
@@ -468,7 +448,7 @@ class Trainer(object):
                     batch = val_data_dict
                     fname = "outputs/tmp.pkl"
                     if not osp.exists(fname):
-                        print('save tmp')
+                        print("save tmp")
                         x = batch["target"]
                         wTo_pred_se3 = self.model.denormalize_data(pred)  # (B, T, 3+6)
                         wTo_gt = batch["target_raw"]
@@ -481,7 +461,7 @@ class Trainer(object):
                                 },
                                 f,
                             )
-        
+
             for b, val_data_dict in enumerate(self.dl):
                 if b >= 10:
                     break
@@ -582,7 +562,9 @@ class Trainer(object):
         guided_object_pred_raw = None
         if sample_guide:
             # directly guide object_pred_raw
-            obs = diffusion_model.get_obs(guide=True, batch=sample, shape=object_pred_raw.shape)
+            obs = diffusion_model.get_obs(
+                guide=True, batch=sample, shape=object_pred_raw.shape
+            )
             post_object_pred_raw, _ = do_guidance_optimization(
                 traj=se3_to_wxyz_xyz(object_pred_raw),
                 obs=obs,
@@ -595,7 +577,7 @@ class Trainer(object):
                 post_object_pred_raw, object_motion_raw, val_data_dict["object_id"]
             )
             metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
-        
+
             guided_object_pred_raw, _ = diffusion_model.sample_raw(
                 torch.randn_like(object_motion),
                 cond,
@@ -609,7 +591,6 @@ class Trainer(object):
                 guided_object_pred_raw, object_motion_raw, val_data_dict["object_id"]
             )
             metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
-
 
         if self.step % self.vis_every == 0 or just_vis:
             bs_for_vis = 1
@@ -901,6 +882,7 @@ def main(opt):
     # else:
     run_train(opt, device)
     return
+
 
 vis_P = 500
 device = torch.device(f"cuda:0")
