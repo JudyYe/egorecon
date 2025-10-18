@@ -8,9 +8,9 @@ defaults:
   # - testdata
   - paths: move.yaml
   - hydra: default.yaml
-  - experiment: obj_only
-  - traindata: hot3d_train.yaml
-  - testdata: hot3d_mini.yaml
+  - experiment: hoi
+  - traindata: hotclip_train.yaml
+  - testdata: hotclip_mini.yaml
 
 
 # This is just a placeholder to create the 'traindata' config node.
