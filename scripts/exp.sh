@@ -1,5 +1,7 @@
-[] change model
-[] norm in data
+[] change model | TODO
+[x] norm in data, data done
+
+[] get a mini hot3d clip? 
 [] vis: contact, vis? 
 [] add motion rep
 

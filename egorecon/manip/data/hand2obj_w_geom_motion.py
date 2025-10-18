@@ -16,10 +16,12 @@ from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 from jutils import geom_utils, mesh_utils
 from ...utils.motion_repr import cano_seq_mano, HandWrapper
-from ...utils.rotation_utils import (matrix_to_rotation_6d_numpy,
-                                     quaternion_to_matrix_numpy,
-                                     rotation_6d_to_matrix_numpy,
-                                     mat_to_9d_numpy)
+from ...utils.rotation_utils import (
+    matrix_to_rotation_6d_numpy,
+    quaternion_to_matrix_numpy,
+    rotation_6d_to_matrix_numpy,
+    mat_to_9d_numpy,
+)
 from ..lafan1.utils import rotate_at_frame_w_obj
 from ...visualization.pt3d_visualizer import Pt3dVisualizer
 
@@ -32,16 +34,17 @@ def rotate(points, R):
     shape = list(points.shape)
     points = to_tensor(points)
     R = to_tensor(R)
-    if len(shape)>3:
+    if len(shape) > 3:
         points = points.squeeze()
-    if len(shape)<3:
+    if len(shape) < 3:
         points = points.unsqueeze(dim=1)
     if R.shape[0] > shape[0]:
         shape[0] = R.shape[0]
-    r_points = torch.matmul(points, R.transpose(1,2))
+    r_points = torch.matmul(points, R.transpose(1, 2))
     return r_points.reshape(shape)
 
-def load_pickle(path):
+
+def load_pickle(path, num=-1):
     """Load and return the object stored in a pickle file."""
     # with open(path, "rb") as f:
     #     return pickle.load(f)
@@ -50,9 +53,15 @@ def load_pickle(path):
             all_seq = pickle.load(f)
 
         all_processed_data = {}
-        for seq, data in all_seq.items():
-            processed_data = decode_npz(data)
-            all_processed_data[seq] = processed_data
+        if 'right_hand' in all_seq:
+            # don't need to process
+            all_processed_data = all_seq
+        else:
+            for i, (seq, data) in enumerate(all_seq.items()):
+                if num > 0 and i >= num:
+                    break
+                processed_data = decode_npz(data)
+                all_processed_data[seq] = processed_data
 
     elif path.endswith(".npz"):
         # Legacy support for mini dataset
@@ -154,7 +163,6 @@ class HandToObjectDataset(Dataset):
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
         data_cfg=None,
-
         **kwargs,
     ):
         self.is_train = is_train
@@ -176,17 +184,17 @@ class HandToObjectDataset(Dataset):
         self.data_cfg = data_cfg
         self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
 
-        self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
+        self.bps_path = osp.join(opt.paths.data_dir, "bps/bps.pt")
         # bps_dir = osp.join(opt.paths.data_dir, 'bps')
 
         # dest_obj_bps_npy_folder = os.path.join(bps_dir, "object_bps_npy_files_joints24")
         # dest_obj_bps_npy_folder_for_test = os.path.join(bps_dir, "object_bps_npy_files_for_eval_joints24")
 
         # if self.is_train:
-        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder 
+        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder
         # else:
-        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder_for_test 
-      
+        #     self.dest_obj_bps_npy_folder = dest_obj_bps_npy_folder_for_test
+
         self.prep_bps_data()
 
         self.mano_model_path = opt.paths.mano_dir
@@ -212,9 +220,7 @@ class HandToObjectDataset(Dataset):
 
         self.pose_dim = 9
 
-        self.processed_data = self._filter_data(
-            single_demo, single_object
-        )
+        self.processed_data = self._filter_data(single_demo, single_object)
         print(
             f"Filtered to demo: {single_demo} object: {single_object}, total: {len(self.processed_data)} demonstrations for overfitting"
         )
@@ -250,38 +256,43 @@ class HandToObjectDataset(Dataset):
 
     def compute_object_geo_bps(self, obj_verts, obj_trans):
         # obj_verts: T X Nv X 3, obj_trans: T X 3
-        bps_object_geo = self.bps_torch.encode(x=obj_verts, \
-                    feature_type=['deltas'], \
-                    custom_basis=self.obj_bps.repeat(obj_trans.shape[0], \
-                    1, 1)+obj_trans[:, None, :])['deltas'] # T X N X 3 
+        bps_object_geo = self.bps_torch.encode(
+            x=obj_verts,
+            feature_type=["deltas"],
+            custom_basis=self.obj_bps.repeat(obj_trans.shape[0], 1, 1)
+            + obj_trans[:, None, :],
+        )["deltas"]  # T X N X 3
 
         return bps_object_geo
 
     def prep_bps_data(self):
         n_obj = 1024
-        r_obj = 1.0 
+        r_obj = 1.0
         if not os.path.exists(self.bps_path):
-            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(1, -1, 3)
-            
+            bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(
+                1, -1, 3
+            )
+
             bps = {
-                'obj': bps_obj.cpu(),
+                "obj": bps_obj.cpu(),
                 # 'sbj': bps_sbj.cpu(),
             }
             print("Generate new bps data to:{0}".format(self.bps_path))
             os.makedirs(osp.dirname(self.bps_path), exist_ok=True)
             torch.save(bps, self.bps_path)
-        
+
         self.bps = torch.load(self.bps_path)
         self.bps_torch = bps_torch()
 
-        self.obj_bps = self.bps['obj']
+        self.obj_bps = self.bps["obj"]
 
         # Load object geometry
         self.object_library = {}
-        self.object_library_mesh = Pt3dVisualizer.setup_template(self.opt.paths.object_mesh_dir)
+        self.object_library_mesh = Pt3dVisualizer.setup_template(
+            self.opt.paths.object_mesh_dir
+        )
         for uid, mesh in self.object_library_mesh.items():
             self.object_library[uid] = sample_points_from_meshes(mesh, 50000)
-        
 
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
@@ -291,7 +302,7 @@ class HandToObjectDataset(Dataset):
             seq_list = [seq]
         else:
             seq_list = json.load(open(self.split_file))[self.split]
-        
+
         for seq in seq_list:
             filtered_data[seq] = {}
             if single_object:
@@ -300,6 +311,7 @@ class HandToObjectDataset(Dataset):
             else:
                 obj_list = list(self.processed_data[seq]["objects"].keys())
 
+            logging.warning("Well let's remove this in the end!!")
             if self.one_window:
                 t0 = self.t0
                 t1 = t0 + 120
@@ -338,23 +350,32 @@ class HandToObjectDataset(Dataset):
     def _filter_windows(self, threshold=0.05):
         """Filter windows to only include dynamic windows."""
         origin_size = len(self.windows)
-        filtered_windows = [window for window in self.windows if window["is_motion"] > threshold]
+        filtered_windows = [
+            window for window in self.windows if window["is_motion"] > threshold
+        ]
         self.windows = filtered_windows
         print(f"{origin_size} -> {len(self.windows)} dynamic windows")
 
     def _create_windows(self):
-        cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}_{self.noise_scheme}_{self.opt.coord}.npz")
+        cache_name = osp.join(
+            self.opt.paths.data_dir,
+            "cache",
+            f"{self.data_cfg.name}_{self.split}_{self.opt.coord}.npz",
+        )
+
 
         if osp.exists(cache_name):
-            print('loading window cache from ', cache_name)
-            self.windows = pickle.load(open(cache_name, 'rb'))
+            print("loading window cache from ", cache_name)
+            self.windows = pickle.load(open(cache_name, "rb"))
             return self.windows
 
-        print('creating window cache and save to ', cache_name)
+        print("creating window cache and save to ", cache_name)
         windows = []
-        for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
+        for demo_id, demo_data in tqdm(
+            self.processed_data.items(), desc="Creating windows"
+        ):
             for obj_id, obj_data in demo_data["objects"].items():
-                obj_traj = obj_data['wTo']
+                obj_traj = obj_data["wTo"]
                 T = len(obj_traj)
 
                 for start_idx in range(
@@ -365,24 +386,34 @@ class HandToObjectDataset(Dataset):
                         obj_valid = obj_data["wTo_valid"][start_idx:end_idx]
                     else:
                         obj_valid = np.ones(self.window_size).astype(bool)
-                        logging.warning(f"No object valid mask found for {demo_id}, {obj_id}")
+                        logging.warning(
+                            f"No object valid mask found for {demo_id}, {obj_id}"
+                        )
 
                     if not np.all(obj_valid):
                         continue
 
                     left_wrist = demo_data["left_hand"]["theta"][start_idx:end_idx]
-                    left_wrist_aa, left_wrist_pos, left_wrist_hA = np.split(left_wrist, [3, 6], axis=-1)
+                    left_wrist_aa, left_wrist_pos, left_wrist_hA = np.split(
+                        left_wrist, [3, 6], axis=-1
+                    )
                     right_wrist = demo_data["right_hand"]["theta"][start_idx:end_idx]
-                    right_wrist_aa, right_wrist_pos, right_wrist_hA = np.split(right_wrist, [3, 6], axis=-1)
+                    right_wrist_aa, right_wrist_pos, right_wrist_hA = np.split(
+                        right_wrist, [3, 6], axis=-1
+                    )
 
                     object_pos = obj_traj[start_idx:end_idx][:, :3, 3]
                     object_rot_mat = obj_traj[start_idx:end_idx][:, :3, :3]
-                    object_quat = R.from_matrix(object_rot_mat).as_quat()[:, [3, 0, 1, 2]]  # wxyz
+                    object_quat = R.from_matrix(object_rot_mat).as_quat()[
+                        :, [3, 0, 1, 2]
+                    ]  # wxyz
 
-                    if self.opt.coord == 'camera':
+                    if self.opt.coord == "camera":
                         camera_pos = demo_data["wTc"][start_idx:end_idx][:, :3, 3]
                         camera_rot = demo_data["wTc"][start_idx:end_idx][:, :3, :3]
-                        camera_quat = R.from_matrix(camera_rot).as_quat()[:, [3, 0, 1, 2]]  # wxyz
+                        camera_quat = R.from_matrix(camera_rot).as_quat()[
+                            :, [3, 0, 1, 2]
+                        ]  # wxyz
                         # Canonicalize the data using the camera frame
                         (
                             cano_camera_pos,
@@ -395,24 +426,30 @@ class HandToObjectDataset(Dataset):
                             camera_quat[np.newaxis, :, np.newaxis, :],
                             object_pos[np.newaxis],
                             object_quat[np.newaxis],
-                        )                        
+                        )
                         cano_camera_pos = cano_camera_pos.reshape(-1, 3)
                         canoTw = np.eye(4)
                         canoTw[:3, :3] = canoTw_rot
                         canoTw[:3, 3] = -cano_camera_pos[0:1, :].copy()
-                    elif self.opt.coord == 'right_wrist':
-                        # 1st frame of right wrist 
+                    elif self.opt.coord == "right_wrist":
+                        # 1st frame of right wrist
                         mano_params_dict = {
                             "global_orient": right_wrist_aa,
                             "transl": right_wrist_pos,
-                            "betas": demo_data["right_hand"]["shape"][start_idx:end_idx],
+                            "betas": demo_data["right_hand"]["shape"][
+                                start_idx:end_idx
+                            ],
                             "hand_pose": right_wrist_hA,
                         }
-                        cano_right_positions, cano_right_mano_params_dict, canoTw = cano_seq_mano(
-                            None, None, mano_params_dict, 
-                            mano_model=self.sided_mano_models["right"],
-                            device="cpu",
-                            return_transf_mat=True,
+                        cano_right_positions, cano_right_mano_params_dict, canoTw = (
+                            cano_seq_mano(
+                                None,
+                                None,
+                                mano_params_dict,
+                                mano_model=self.sided_mano_models["right"],
+                                device="cpu",
+                                return_transf_mat=True,
+                            )
                         )
                     else:
                         raise ValueError(f"Invalid coordinate system: {self.opt.coord}")
@@ -449,14 +486,13 @@ class HandToObjectDataset(Dataset):
                         device="cpu",
                     )  # joints position
 
-
                     # canonicalize object
                     wTo = obj_traj[start_idx:end_idx]  # (T, 4, 4)
-                    wTo = canoTw[None] @ wTo  
+                    wTo = canoTw[None] @ wTo
 
                     # canonicalize camera
                     wTc = demo_data["wTc"][start_idx:end_idx]  # (T, 4, 4)
-                    wTc = canoTw[None] @ wTc  
+                    wTc = canoTw[None] @ wTc
 
                     # create 9D representation for object
                     cano_object_data = mat_to_9d_numpy(wTo)
@@ -493,7 +529,10 @@ class HandToObjectDataset(Dataset):
 
                     if self.window_check(window_data):
                         windows.append(window_data)
-
+        
+        os.makedirs(osp.dirname(cache_name), exist_ok=True)
+        with open(cache_name, "wb") as f:
+            pickle.dump(windows, f)
         return windows
 
     def window_check(self, window_data):
@@ -510,34 +549,42 @@ class HandToObjectDataset(Dataset):
         # Extract position and rotation from trajectory
         positions = object_traj[:, :3]  # [T, 3]
         rotations = object_traj[:, 3:]  # [T, 6]
-        
+
         # Convert 6D rotation to rotation matrices
         rot_matrices = rotation_6d_to_matrix_numpy(rotations)  # [T, 3, 3]
-        
+
         # Define object keypoints: origin (0,0,0) and x,y,z axes with 0.01m length
-        keypoints_local = np.array([
-            [0.0, 0.0, 0.0],  # origin
-            [0.01, 0.0, 0.0], # x-axis
-            [0.0, 0.01, 0.0], # y-axis
-            [0.0, 0.0, 0.01]  # z-axis
-        ])  # [4, 3]
-        
+        keypoints_local = np.array(
+            [
+                [0.0, 0.0, 0.0],  # origin
+                [0.01, 0.0, 0.0],  # x-axis
+                [0.0, 0.01, 0.0],  # y-axis
+                [0.0, 0.0, 0.01],  # z-axis
+            ]
+        )  # [4, 3]
+
         # Transform keypoints to world coordinates for all frames at once
         # keypoints_local: [4, 3], rot_matrices: [T, 3, 3], positions: [T, 3]
         # Use batch matrix multiplication: [T, 3, 3] @ [3, 4] -> [T, 3, 4]
-        keypoints_world = np.einsum('tij,jk->tik', rot_matrices, keypoints_local.T)  # [T, 3, 4]
+        keypoints_world = np.einsum(
+            "tij,jk->tik", rot_matrices, keypoints_local.T
+        )  # [T, 3, 4]
         # Transpose to [T, 4, 3] and add translation
-        keypoints_world = keypoints_world.transpose(0, 2, 1) + positions[:, np.newaxis, :]  # [T, 4, 3]
-        
+        keypoints_world = (
+            keypoints_world.transpose(0, 2, 1) + positions[:, np.newaxis, :]
+        )  # [T, 4, 3]
+
         # Calculate accumulated motion for all keypoints at once
         # Calculate displacement between consecutive frames for all keypoints
         # keypoints_world: [T, 4, 3] -> diff: [T-1, 4, 3]
-        displacements = np.linalg.norm(np.diff(keypoints_world, axis=0), axis=2)  # [T-1, 4]
+        displacements = np.linalg.norm(
+            np.diff(keypoints_world, axis=0), axis=2
+        )  # [T-1, 4]
         displacements = displacements.mean(axis=-1)
-        
+
         # Sum displacements across time for each keypoint, then sum across all keypoints
         total_motion = np.sum(displacements)  # Scalar
-        
+
         # Check if total motion exceeds threshold
         return total_motion
 
@@ -548,43 +595,55 @@ class HandToObjectDataset(Dataset):
         :return: [NUM_WINDOWS] - boolean array indicating motion for each window
         """
         num_windows, T, D = object_data.shape
-        
+
         # Extract position and rotation from trajectory
         positions = object_data[:, :, :3]  # [NUM_WINDOWS, T, 3]
         rotations = object_data[:, :, 3:]  # [NUM_WINDOWS, T, 6]
-        
+
         # Convert 6D rotation to rotation matrices for all windows
         # Reshape to [NUM_WINDOWS * T, 6] for batch conversion
         rotations_flat = rotations.reshape(-1, 6)  # [NUM_WINDOWS * T, 6]
-        rot_matrices_flat = rotation_6d_to_matrix_numpy(rotations_flat)  # [NUM_WINDOWS * T, 3, 3]
-        rot_matrices = rot_matrices_flat.reshape(num_windows, T, 3, 3)  # [NUM_WINDOWS, T, 3, 3]
-        
+        rot_matrices_flat = rotation_6d_to_matrix_numpy(
+            rotations_flat
+        )  # [NUM_WINDOWS * T, 3, 3]
+        rot_matrices = rot_matrices_flat.reshape(
+            num_windows, T, 3, 3
+        )  # [NUM_WINDOWS, T, 3, 3]
+
         # Define object keypoints: origin (0,0,0) and x,y,z axes with 0.01m length
-        keypoints_local = np.array([
-            [0.0, 0.0, 0.0],  # origin
-            [0.01, 0.0, 0.0], # x-axis
-            [0.0, 0.01, 0.0], # y-axis
-            [0.0, 0.0, 0.01]  # z-axis
-        ])  # [4, 3]
-        
+        keypoints_local = np.array(
+            [
+                [0.0, 0.0, 0.0],  # origin
+                [0.01, 0.0, 0.0],  # x-axis
+                [0.0, 0.01, 0.0],  # y-axis
+                [0.0, 0.0, 0.01],  # z-axis
+            ]
+        )  # [4, 3]
+
         # Transform keypoints to world coordinates for all windows and frames at once
         # keypoints_local: [4, 3], rot_matrices: [NUM_WINDOWS, T, 3, 3], positions: [NUM_WINDOWS, T, 3]
         # Use batch matrix multiplication: [NUM_WINDOWS, T, 3, 3] @ [3, 4] -> [NUM_WINDOWS, T, 3, 4]
-        keypoints_world = np.einsum('ntij,jk->ntik', rot_matrices, keypoints_local.T)  # [NUM_WINDOWS, T, 3, 4]
+        keypoints_world = np.einsum(
+            "ntij,jk->ntik", rot_matrices, keypoints_local.T
+        )  # [NUM_WINDOWS, T, 3, 4]
         # Transpose to [NUM_WINDOWS, T, 4, 3] and add translation
-        keypoints_world = keypoints_world.transpose(0, 1, 3, 2) + positions[:, :, np.newaxis, :]  # [NUM_WINDOWS, T, 4, 3]
-        
+        keypoints_world = (
+            keypoints_world.transpose(0, 1, 3, 2) + positions[:, :, np.newaxis, :]
+        )  # [NUM_WINDOWS, T, 4, 3]
+
         # Calculate accumulated motion for all windows and keypoints at once
         # Calculate displacement between consecutive frames for all keypoints
         # keypoints_world: [NUM_WINDOWS, T, 4, 3] -> diff: [NUM_WINDOWS, T-1, 4, 3]
-        displacements = np.linalg.norm(np.diff(keypoints_world, axis=1), axis=3)  # [NUM_WINDOWS, T-1, 4]
-        
+        displacements = np.linalg.norm(
+            np.diff(keypoints_world, axis=1), axis=3
+        )  # [NUM_WINDOWS, T-1, 4]
+
         # Sum displacements across time and keypoints for each window
         total_motion = np.sum(displacements, axis=(1, 2))  # [NUM_WINDOWS]
-        
+
         # Check if total motion exceeds threshold for each window
         is_motion = total_motion > motion_threshold  # [NUM_WINDOWS]
-        
+
         return is_motion
 
     def _apply_sampling_strategy(self, windows):
@@ -627,11 +686,11 @@ class HandToObjectDataset(Dataset):
         """Compute normalization statistics for the dataset."""
         meta_file = self.data_cfg.meta_file
         if not osp.exists(meta_file):
-            print(f'compute metadata....  and save to {meta_file}')
+            print(f"compute metadata....  and save to {meta_file}")
             # TODO: Implement compute_norm_stats function
             raise NotImplementedError("compute_norm_stats function not implemented")
-        print(f'using loaded metadata from {meta_file}')
-        self.stats = pickle.load(open(meta_file, 'rb'))    
+        print(f"using loaded metadata from {meta_file}")
+        self.stats = pickle.load(open(meta_file, "rb"))
 
     def _setup_full_trajectory_data_from_windows(self):
         """Setup full trajectory data by concatenating all windows in the current split."""
@@ -711,14 +770,16 @@ class HandToObjectDataset(Dataset):
 
         # # Add synthetic noise to the data
         # window_noisy = self.add_noise_data(window)
-        
+
         # Add geometry and random canonical augmentation
         if self.opt.datasets.augument.aug_cano:
             window, newoTo = self.augment_cano_object(window)
             # window_noisy['object'] = self.transform_wTo_traj(window_noisy['object'], newoTo)
 
         if self.opt.datasets.augument.aug_world:
-            print("TODO: augment world cooridate too!") # random rotation around gravity direction
+            print(
+                "TODO: augment world cooridate too!"
+            )  # random rotation around gravity direction
             assert False
 
         # Convert to tensors
@@ -733,46 +794,53 @@ class HandToObjectDataset(Dataset):
         right_hand_norm = to_tensor(
             self.normalize_data(right_hand.numpy(), "right_hand")
         )
-        
+
         object_norm = to_tensor(self.normalize_data(object_traj.numpy(), "object"))
 
-        if self.opt.hand_rep == 'joints':
+        if self.opt.hand_rep == "joints":
             hand_rep = torch.cat([left_hand_norm, right_hand_norm], dim=-1)
-        elif self.opt.hand_rep == 'theta':
+        elif self.opt.hand_rep == "theta":
             left_hand_params_dict = window["left_hand_params"]
             print(type(left_hand_params_dict["transl"]))
-            left_hand_params = self.hand_wrapper.dict2para(left_hand_params_dict, side="left", merge=True)
-            left_hand_theta = to_tensor(self.normalize_data(left_hand_params, "left_hand_theta"))
+            left_hand_params = self.hand_wrapper.dict2para(
+                left_hand_params_dict, side="left", merge=True
+            )
+            left_hand_theta = to_tensor(
+                self.normalize_data(left_hand_params, "left_hand_theta")
+            )
             right_hand_params_dict = window["right_hand_params"]
-            right_hand_params = self.hand_wrapper.dict2para(right_hand_params_dict, side="right", merge=True)
-            right_hand_theta = to_tensor(self.normalize_data(right_hand_params, "right_hand_theta"))
+            right_hand_params = self.hand_wrapper.dict2para(
+                right_hand_params_dict, side="right", merge=True
+            )
+            right_hand_theta = to_tensor(
+                self.normalize_data(right_hand_params, "right_hand_theta")
+            )
             hand_rep = torch.cat([left_hand_theta, right_hand_theta], dim=-1)
-        
-        elif self.opt.hand_rep == 'motion_rep':
+
+        elif self.opt.hand_rep == "motion_rep":
             raise NotImplementedError("motion_rep not implemented yet")
         else:
             raise ValueError(f"Invalid hand representation: {self.opt.hand_rep}")
-        
+
         target = object_norm
         condition = torch.zeros([self.window_size, 0])
 
         # create target
-        if self.opt.hand == 'out':
+        if self.opt.hand == "out":
             target = torch.cat([target, hand_rep], dim=-1)
         if self.opt.output.contact:
             target = torch.cat([target, window["contact"]], dim=-1)
-        
+
         # create condition
-        if self.opt.hand == 'cond':
+        if self.opt.hand == "cond":
             condition = torch.cat([condition, hand_rep], dim=-1)
-        
+
         oMesh = self.object_library_mesh[window["object_id"]]
-        newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])    
+        newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
 
         return {
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
             "target": target,  # [T, D] - object trajectory to denoise
-            
             # "traj_noisy_raw": to_tensor(window_noisy["object"]),
             "hand_raw": torch.cat(
                 [left_hand, right_hand], dim=-1
@@ -784,57 +852,57 @@ class HandToObjectDataset(Dataset):
             "object_id": str(window["object_id"]),
             # "is_motion": window["is_motion"],
             "object_valid": window["object_valid"],
-            "intr":  to_tensor(window["intr"]),
+            "intr": to_tensor(window["intr"]),
             "wTc": to_tensor(window["wTc"]),
-            
             "newTo": window["newTo"],
             "newPoints": window["newPoints"][0],
             "newMesh": newMesh,
             "start_idx": window["start_idx"],
             "end_idx": window["end_idx"],
-
             "contact": window["contact"],
         }
-    
+
     def transform_wTo_traj(self, wTo, newTo):
-        wTo = geom_utils.se3_to_matrix_v2(torch.FloatTensor(wTo)) # (T, 4, 4)
+        wTo = geom_utils.se3_to_matrix_v2(torch.FloatTensor(wTo))  # (T, 4, 4)
 
         oTnew = geom_utils.inverse_rt_v2(newTo)
         wTnew = wTo @ oTnew  # (T, 4, 4)
         wTnew = geom_utils.matrix_to_se3_v2(wTnew).cpu().numpy()
-        return wTnew        
+        return wTnew
 
     def augment_cano_object(self, window, newTo=None):
         """Augment object with random canonical orientation.
-        
+
         Load object geometry, apply random orientation as canonical pose,
         and transform the object trajectory accordingly.
-        
+
         Args:
             window: Window data containing object information
             newTo: Optional transformation matrix. If None, generates random rotation.
-            
+
         Returns:
             tuple: (updated_window, newTo)
         """
         if newTo is None:
-            newTo = geom_utils.random_rotations(1, )  # (1, 3, 3)
-            newTo = geom_utils.rt_to_homo(newTo) # (1, 4, 4)
-        
-        window['object'] = self.transform_wTo_traj(window['object'], newTo)
+            newTo = geom_utils.random_rotations(
+                1,
+            )  # (1, 3, 3)
+            newTo = geom_utils.rt_to_homo(newTo)  # (1, 4, 4)
+
+        window["object"] = self.transform_wTo_traj(window["object"], newTo)
 
         # Load object geometry
-        oPoints = self.object_library[window['object_id']]
+        oPoints = self.object_library[window["object_id"]]
         newPoints = mesh_utils.apply_transform(oPoints, newTo)  # (1, P, 3)
-        
+
         # Randomly sample points for visualization
         nP = min(5000, newPoints.shape[1])
-        index = torch.randint(0, newPoints.shape[1], (nP, ))
+        index = torch.randint(0, newPoints.shape[1], (nP,))
         newPoints = newPoints[:, index, :]
-        
-        window['newTo'] = newTo
-        window['newPoints'] = newPoints
-        
+
+        window["newTo"] = newTo
+        window["newPoints"] = newPoints
+
         return window, newTo
 
     def add_noise_data(self, can_window_dict):
@@ -941,21 +1009,44 @@ def create_hand_to_object_dataset(
     )
 
 
+@hydra.main(config_path="../../../config", config_name="train", version_base=None)
+def create_mini_dataset(opt):
+    data = load_pickle(opt.testdata.data_path)
+    split_file = opt.testdata.split_file
+    split = opt.testdata.testsplit
 
+    split_data = json.load(open(split_file))
+    seq_list = split_data[split]
+    new_data = {}
+    for seq in seq_list[:3]:
+        new_data[seq] = data[seq]
+
+    mini_file = opt.testdata.data_path.replace('.pkl', '_mini.pkl')
+    print(f"Saving mini dataset to {mini_file} {len(data)} -> {len(seq_list)} -> {len(new_data)}")
+    
+    split_data['mini'] = list(new_data.keys())
+    print(split_file)
+
+    with open(split_file, 'w') as f:
+        json.dump(split_data, f, indent=4)
+
+    with open(mini_file, 'wb') as f:
+        pickle.dump(new_data, f)
 
 
 @hydra.main(config_path="../../../config", config_name="train", version_base=None)
 @torch.no_grad()
 def vis_clip(opt):
-
     # okay if we load seq
     import plotly.graph_objects as go
+
     # from visualization.rerun_visualizer import RerunVisualizer
     from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
     import smplx
     from jutils import geom_utils, image_utils, mesh_utils, model_utils
     from pytorch3d.structures import Meshes
     from egorecon.utils.motion_repr import HandWrapper
+
     pt3d_viz = Pt3dVisualizer(
         exp_name="vis_traj",
         save_dir="outputs/debug_vis",
@@ -964,95 +1055,129 @@ def vis_clip(opt):
     )
 
     mano_model_folder = "assets/mano"
-    device = 'cuda:0'
+    device = "cuda:0"
 
     cnt = 0
     sided_mano_model = HandWrapper(mano_model_folder).to(device)
 
     train_dataset = HandToObjectDataset(
-            is_train=False,
-            data_path=opt.traindata.data_path,
-            window_size=opt.model.window,
-            # single_demo="P0001_624f2ba9",
-            # single_object="225397651484143",
-            sampling_strategy="random",
-            split=opt.datasets.split,
-            split_seed=42,  # Ensure reproducible splits
-            noise_scheme="syn",
-            split_file=opt.traindata.split_file,
-            **opt.datasets.augument,
-            opt=opt,
-            data_cfg=opt.traindata,
-        )
+        is_train=False,
+        data_path=opt.traindata.data_path,
+        window_size=opt.model.window,
+        # single_demo="P0001_624f2ba9",
+        # single_object="225397651484143",
+        sampling_strategy="random",
+        split=opt.datasets.split,
+        split_seed=42,  # Ensure reproducible splits
+        noise_scheme="syn",
+        split_file=opt.traindata.split_file,
+        **opt.datasets.augument,
+        opt=opt,
+        data_cfg=opt.traindata,
+    )
     train_dataset.set_metadata()
     video_list = []
-    dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
+    dataloader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=None, shuffle=False, num_workers=1
+    )
     for b, batch in enumerate(dataloader):
         batch = model_utils.to_cuda(batch, device)
 
-        wTo = batch['target_raw']  # (1, T, D)
-        hand_raw = batch['hand_raw']  # (1, T, 2*D)
+        wTo = batch["target_raw"]  # (1, T, D)
+        hand_raw = batch["hand_raw"]  # (1, T, 2*D)
 
-        left_hand_param, left_hand_shape = sided_mano_model.dict2para(batch['left_hand_params'], side='left')
-        right_hand_param, right_hand_shape = sided_mano_model.dict2para(batch['right_hand_params'], side='right')
-        
-        left_hand_verts, left_hand_faces, left_hand_joints = sided_mano_model.hand_para2verts_faces_joints(left_hand_param.float(), left_hand_shape.float(), side='left')
-        right_hand_verts, right_hand_faces, right_hand_joints = sided_mano_model.hand_para2verts_faces_joints(right_hand_param.float(), right_hand_shape.float(), side='right')
+        left_hand_param, left_hand_shape = sided_mano_model.dict2para(
+            batch["left_hand_params"], side="left"
+        )
+        right_hand_param, right_hand_shape = sided_mano_model.dict2para(
+            batch["right_hand_params"], side="right"
+        )
+
+        left_hand_verts, left_hand_faces, left_hand_joints = (
+            sided_mano_model.hand_para2verts_faces_joints(
+                left_hand_param.float(), left_hand_shape.float(), side="left"
+            )
+        )
+        right_hand_verts, right_hand_faces, right_hand_joints = (
+            sided_mano_model.hand_para2verts_faces_joints(
+                right_hand_param.float(), right_hand_shape.float(), side="right"
+            )
+        )
         # left_hand, right_hand = torch.split(hand_raw, 21 * 3, dim=-1)
         # left_hand_verts, left_hand_faces = sided_mano_model.joint2verts_faces(left_hand)
         # right_hand_verts, right_hand_faces = sided_mano_model.joint2verts_faces(right_hand)
-        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
-        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, 'white')
-        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
-        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, 'blue')
+        left_hand_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(
+            device
+        )
+        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, "white")
+        right_hand_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(
+            device
+        )
+        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, "blue")
         wTo_list = [wTo]
-        color_list = ['red']
-        newPoints = batch['newPoints'][None]
-        print('newPoints shape', newPoints.shape)
+        color_list = ["red"]
+        newPoints = batch["newPoints"][None]
+        print("newPoints shape", newPoints.shape)
         newPoints_mesh = plot_utils.pc_to_cubic_meshes(newPoints[:, :1000])
-        image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, newPoints_mesh, step=b, pref="debug_vis_clip", save_to_file=False)
+        image_list = pt3d_viz.log_training_step(
+            left_hand_meshes,
+            right_hand_meshes,
+            wTo_list,
+            color_list,
+            newPoints_mesh,
+            step=b,
+            pref="debug_vis_clip",
+            save_to_file=False,
+        )
         video_list.append(image_list)
 
-        print(f'condtiion shape 0? ={2*(3+3+15+10)}', batch['condition'].shape, )
-        print(f'target shape = {9+2*(3+3+15+10)}', batch['target'].shape)
+        print(
+            f"condtiion shape 0? ={2 * (3 + 3 + 15 + 10)}",
+            batch["condition"].shape,
+        )
+        print(f"target shape = {9 + 2 * (3 + 3 + 15 + 10)}", batch["target"].shape)
         if b >= 10:
             break
     video_list = torch.cat(video_list, axis=0)
-    image_utils.save_gif(video_list.unsqueeze(1), f"outputs/debug_vis_{opt.coord}/video_{cnt}", fps=30, ext=".mp4")
-    print('saved video', f"outputs/debug_vis_clip/video_{cnt}.mp4")
-        
+    image_utils.save_gif(
+        video_list.unsqueeze(1),
+        f"outputs/debug_vis_{opt.coord}/video_{cnt}",
+        fps=30,
+        ext=".mp4",
+    )
+    print("saved video", f"outputs/debug_vis_clip/video_{cnt}.mp4")
+
 
 def create_norm_starts():
-    src_file = 'data/cache/metadata_hot3d.pkl'
+    src_file = "data/cache/metadata_hot3d.pkl"
 
-    dst_file = 'data/cache/metadata_theta.pkl'
+    dst_file = "data/cache/metadata_theta.pkl"
 
-    with open(src_file, 'rb') as f:
+    with open(src_file, "rb") as f:
         metadata = pickle.load(f)
 
-    obj_mean = metadata['object_mean']
-    obj_std = metadata['object_std']
+    obj_mean = metadata["object_mean"]
+    obj_std = metadata["object_std"]
 
-    left_hand_theta_mean = np.zeros([1, 3+3+15+10])
-    left_hand_theta_std = np.ones([1, 3+3+15+10])
+    left_hand_theta_mean = np.zeros([1, 3 + 3 + 15 + 10])
+    left_hand_theta_std = np.ones([1, 3 + 3 + 15 + 10])
     left_hand_theta_mean[..., 3:6] = obj_mean[..., :3]
     left_hand_theta_std[..., 3:6] = obj_std[..., :3]
 
-    right_hand_theta_mean = np.zeros([1, 3+3+15+10])
-    right_hand_theta_std = np.ones([1, 3+3+15+10])
+    right_hand_theta_mean = np.zeros([1, 3 + 3 + 15 + 10])
+    right_hand_theta_std = np.ones([1, 3 + 3 + 15 + 10])
 
     right_hand_theta_mean[..., 3:6] = obj_mean[..., :3]
     right_hand_theta_std[..., 3:6] = obj_std[..., :3]
 
-    metadata['left_hand_theta_mean'] = left_hand_theta_mean
-    metadata['left_hand_theta_std'] = left_hand_theta_std
-    metadata['right_hand_theta_mean'] = right_hand_theta_mean
-    metadata['right_hand_theta_std'] = right_hand_theta_std
+    metadata["left_hand_theta_mean"] = left_hand_theta_mean
+    metadata["left_hand_theta_std"] = left_hand_theta_std
+    metadata["right_hand_theta_mean"] = right_hand_theta_mean
+    metadata["right_hand_theta_std"] = right_hand_theta_std
 
-    with open(dst_file, 'wb') as f:
+    with open(dst_file, "wb") as f:
         pickle.dump(metadata, f)
-    print('saved metadata to', dst_file)
-
+    print("saved metadata to", dst_file)
 
 
 # Global configuration variables
@@ -1063,13 +1188,11 @@ aug_cano = True
 
 if __name__ == "__main__":
     from jutils import plot_utils
-    
+
+    create_mini_dataset()
     # vis_traj()
-    vis_clip()
+    # vis_clip()
 
     # create_norm_starts()
 
-    
     # compute_norm_stats()
-
-
