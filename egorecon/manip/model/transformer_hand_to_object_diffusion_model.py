@@ -816,7 +816,9 @@ class CondGaussianDiffusion(nn.Module):
 
     def get_cond(self, hand_condition, xt, newPoints, wHands):
         # print("TODO: designate another token")
+        print("TODO: if output hands, chagne this, and also take care of normalization! make sure in the same space!!!" )
         if self.opt.condition.bps == 2:
+
             wTo_pred = self.denormalize_data(xt)
             hand = self.encode_hand_sensor_feature(
                 wHands, wTo_pred, newPoints

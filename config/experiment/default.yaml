@@ -1,5 +1,6 @@
 # @package _global_
 
+coord: 'camera'  # right_wrist
 general: 
   rerun: false
   wandb: false
@@ -20,6 +21,13 @@ train:
 condition: 
   noisy_obj: true
   bps: 0
+
+output:
+  contact: false
+
+hand: cond  # cond / out
+hand_rep: joint  # theta or motion_rep or joint
+
 
 dyn_only: false
 
@@ -52,6 +60,9 @@ datasets:
     use_constant_noise: true
     traj_std_obj_rot: 2
     traj_std_obj_trans: 0.3
+
+    aug_world: false
+    aug_cano: true
 
 
 

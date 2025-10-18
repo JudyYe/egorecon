@@ -4,4 +4,7 @@ data_path: ${.data_root_folder}/HOT3D/pred_pose/all_dataset.pkl
 demo_id: null
 target_object_id: null
 split_file: ${paths.data_dir}/HOT3D/sets/split.json
-meta_file: ${paths.data_dir}/cache/metadata_hot3d.pkl
+meta_file: ${paths.data_dir}/cache/metadata_theta.pkl
+
+trainsplit: train
+testsplit: test

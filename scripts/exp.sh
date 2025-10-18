@@ -1,14 +1,18 @@
+[] change model
+[] norm in data
+[] vis: contact, vis? 
+[] add motion rep
+
 [] set up quant
 [] faster vis
-[] save rr too?
 [] GT obs
 [] long seq
-[] template-free cond?  
-[] check for FP again
 
 
+[x] change coord frame
+[] change model p(O, H, C)
 
-?? why vis in guidance is wrong? 
+[x] why vis in guidance is wrong? 
 [x] only dynamic object 
 [x] only hand conditioned 
 [x] data cano??? data is somehow wrong? 
@@ -18,6 +22,10 @@
 
 bowl: 194930206998778
 spoon: 225397651484143
+
+python -m egorecon.manip.data.hand2obj_w_geom_motion \
+  experiment=hoi \
+  output.contact=false hand_rep=theta hand=out traindata=hot3d_mini datasets.split=mini 
 
 python -m egorecon.manip.model.guidance_optimizer_jax
 7it / s  -> 5it? 

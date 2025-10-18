@@ -356,6 +356,17 @@ def patch_contact(contact_th=0.01):
     with open(data_file, "rb") as f:
         data = pickle.load(f)
     for s, seq in enumerate(tqdm(data.keys())):
+        save_file = osp.join(args.preprocess_dir, "dataset_contact", f"{seq}.npz")
+        lock_file = osp.join(args.preprocess_dir, "dataset_contact", "lock", f"{seq}.lock")
+        done_file = osp.join(args.preprocess_dir, "dataset_contact", "done", f"{seq}.done")
+
+        if osp.exists(done_file):
+            continue
+        try:
+            os.makedirs(lock_file)
+        except FileExistsError:
+            continue
+
         for obj in data[seq]["objects"]:
             wTo = torch.FloatTensor(data[seq][f"obj_{obj}_wTo"]).to(device) # (T, 4, 4)
             T = len(wTo)
@@ -396,15 +407,19 @@ def patch_contact(contact_th=0.01):
             key = f'obj_{obj}_contact_lr'
             data[seq][key] = contact
 
+            np.savez_compressed(save_file, **data[seq])
+            os.makedirs(done_file, exist_ok=True)
+            os.system('rm -rf ' + lock_file)
+
             # data[seq][f"{side}_hand_contact"] = contact[side]
         # vis_meta(data[seq], None, vis_dir + f"/{s}")
         # if s > 0:
         #     break
             
-    new_data_file = osp.join(args.preprocess_dir, "dataset_contact.pkl")
+    # new_data_file = osp.join(args.preprocess_dir, "dataset_contact.pkl")
 
-    with open(new_data_file, "wb") as f:
-        pickle.dump(data, f)
+    # with open(new_data_file, "wb") as f:
+    #     pickle.dump(data, f)
 
     return
 

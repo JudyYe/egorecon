@@ -91,6 +91,13 @@ def rotation_6d_to_matrix_numpy(rotation_6d):
 #     return rotation_6d.view(*batch_shape, 6)
 
 
+
+def mat_to_9d_numpy(matrix):
+    rot = matrix[..., :3, :3]
+    rot_6d = matrix_to_rotation_6d_numpy(rot)
+    trans = matrix[...,:3, 3]
+    return np.concatenate([trans, rot_6d], axis=-1)
+
 def matrix_to_rotation_6d_numpy(matrix):
     """
     NumPy version of matrix_to_rotation_6d.

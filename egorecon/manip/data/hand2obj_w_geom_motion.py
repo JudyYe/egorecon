@@ -15,7 +15,7 @@ import torch
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 from jutils import geom_utils, mesh_utils
-from ...utils.motion_repr import cano_seq_mano
+from ...utils.motion_repr import cano_seq_mano, HandWrapper
 from ...utils.rotation_utils import (matrix_to_rotation_6d_numpy,
                                      quaternion_to_matrix_numpy,
                                      rotation_6d_to_matrix_numpy,
@@ -26,8 +26,6 @@ from ...visualization.pt3d_visualizer import Pt3dVisualizer
 from pytorch3d.ops import sample_points_from_meshes
 from bps_torch.bps import bps_torch
 from bps_torch.tools import sample_sphere_uniform
-from bps_torch.tools import sample_uniform_cylinder
-
 
 
 def rotate(points, R):
@@ -138,6 +136,7 @@ class HandToObjectDataset(Dataset):
         augment=False,  # Whether in training mode (for data augmentation)
         split="train",  # 'train', 'val', or 'all'
         val_split_ratio=0.2,  # Fraction of windows to use for validation
+        split_seed=42,  # Seed for reproducible splits
         noise_std_obj_rot=0.0,
         noise_std_obj_trans=0.0,
         noise_std_mano_global_rot=0.0,
@@ -146,6 +145,8 @@ class HandToObjectDataset(Dataset):
         noise_std_mano_betas=0.0,
         traj_std_obj_rot=0.0,
         traj_std_obj_trans=0.0,
+        aug_world=False,
+        aug_cano=True,
         use_constant_noise=False,
         one_window=False,
         t0=300,
@@ -153,6 +154,7 @@ class HandToObjectDataset(Dataset):
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
         data_cfg=None,
+
         **kwargs,
     ):
         self.is_train = is_train
@@ -164,6 +166,7 @@ class HandToObjectDataset(Dataset):
         self.augment = augment  # Add training mode flag
         self.split = split
         self.val_split_ratio = val_split_ratio
+        self.split_seed = split_seed
         self.one_window = one_window
         self.t0 = t0
         self.use_constant_noise = use_constant_noise
@@ -171,6 +174,7 @@ class HandToObjectDataset(Dataset):
         self.split_file = split_file
         self.opt = opt
         self.data_cfg = data_cfg
+        self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
 
         self.bps_path = osp.join(opt.paths.data_dir, 'bps/bps.pt')
         # bps_dir = osp.join(opt.paths.data_dir, 'bps')
@@ -460,6 +464,12 @@ class HandToObjectDataset(Dataset):
                     # create 9D representation for camera
                     cano_camera_data = mat_to_9d_numpy(wTc)
 
+                    if "contact_lr" in obj_data:
+                        contact = obj_data["contact_lr"][start_idx:end_idx]
+                    else:
+                        contact = np.zeros([self.window_size, 2])
+                        logging.warning("are you sure you don't have contact data?")
+
                     window_data = {
                         "demo_id": demo_id,
                         "object_id": obj_id,
@@ -475,7 +485,7 @@ class HandToObjectDataset(Dataset):
                         "right_hand_params": cano_right_mano_params_dict,
                         "left_hand_joints": cano_left_positions,
                         "right_hand_joints": cano_right_positions,
-                        "contact": obj_data["contact_lr"][start_idx:end_idx],
+                        "contact": contact,
                     }
 
                     is_motion = self._is_motion_window(cano_object_data)
@@ -484,234 +494,6 @@ class HandToObjectDataset(Dataset):
                     if self.window_check(window_data):
                         windows.append(window_data)
 
-        return windows
-
-    def _create_windows_legecy(self):
-        """Create sliding windows from trajectory data."""
-        windows = []
-        cache_name = osp.join(self.opt.paths.data_dir, 'cache', f"{self.data_cfg.name}_{self.split}_{self.noise_scheme}_{self.opt.coord}.pkl")
-        if osp.exists(cache_name):
-            print('loading window cache from ', cache_name)
-            self.windows = pickle.load(open(cache_name, 'rb'))
-            return self.windows
-
-        print('creating window cache and save to ', cache_name)
-        for demo_id, demo_data in tqdm(self.processed_data.items(), desc="Creating windows"):
-            for obj_id, obj_data in demo_data["objects"].items():
-
-                object_traj = obj_data["wTo"]  # (T, 4, 4)
-                camera_traj = demo_data["wTc"]  # (T, 4, 4)
-
-                # Find overlapping time range for all trajectories
-                left_hand = demo_data["left_hand"]["theta"]
-                right_hand = demo_data["right_hand"]["theta"]
-                min_len = min(len(left_hand), len(right_hand), len(object_traj))
-
-                if min_len < self.window_size:
-                    print(
-                        f"Warning: Trajectory too short for demo {demo_id}, obj {obj_id}: {min_len}"
-                    )
-                    continue
-
-                # Trim trajectories to same length
-                left_hand_trimmed = left_hand[:min_len]
-                right_hand_trimmed = right_hand[:min_len]
-                object_traj_trimmed = object_traj[:min_len]
-                camera_traj_trimmed = camera_traj[:min_len]
-
-                # Create sliding windows
-                for start_idx in range(
-                    0, min_len - self.window_size + 1, self.window_size // 2
-                ):
-                    end_idx = start_idx + self.window_size
-
-                    if "wTo_valid" in demo_data["objects"][obj_id]:
-                        object_valid = demo_data["objects"][obj_id]["wTo_valid"][
-                            start_idx:end_idx
-                        ]
-                    else:
-                        object_valid = np.ones(self.window_size).astype(bool)
-                        print("Warning: No object valid mask found for", self.data_path)
-
-                    if not np.all(object_valid):
-                        # Skip windows with invalid object data
-                        continue 
-                    left_wrist_aa = left_hand_trimmed[start_idx:end_idx][:, 0:3]
-                    left_wrist_pos = left_hand_trimmed[start_idx:end_idx][:, 3:6]
-
-                    right_wrist_aa = right_hand_trimmed[start_idx:end_idx][:, 0:3]
-                    right_wrist_pos = right_hand_trimmed[start_idx:end_idx][:, 3:6]
-
-                    object_pos = object_traj_trimmed[start_idx:end_idx][:, :3, 3]
-                    object_rot_mat = object_traj_trimmed[start_idx:end_idx][:, :3, :3]
-                    object_r = R.from_matrix(object_rot_mat)
-                    object_quat = object_r.as_quat()[
-                        :, [3, 0, 1, 2]
-                    ]  # Returns [x, y, z, w] -> wxyz
-
-                    camera_pos = camera_traj_trimmed[start_idx:end_idx][:, :3, 3]
-                    camera_rot_mat = camera_traj_trimmed[start_idx:end_idx][:, :3, :3]
-                    camera_r = R.from_matrix(camera_rot_mat)
-                    camera_quat = camera_r.as_quat()[
-                        :, [3, 0, 1, 2]
-                    ]  # Returns [x, y, z, w] -> wxyz
-
-                    # Canonicalize the data using the camera frame
-                    (
-                        cano_camera_pos,
-                        cano_camera_quat,
-                        cano_object_pos,
-                        cano_object_quat,
-                        canoTw_rot,
-                    ) = rotate_at_frame_w_obj(
-                        camera_pos[np.newaxis, :, np.newaxis, :],
-                        camera_quat[np.newaxis, :, np.newaxis, :],
-                        object_pos[np.newaxis],
-                        object_quat[np.newaxis],
-                    )
-
-                    if self.noise_scheme == "real":
-
-                        object_shelf = demo_data["objects"][obj_id]["wTo_shelf"][
-                            start_idx:end_idx
-                        ]
-                        object_shelf_pos = object_shelf[:, :3, 3]
-                        object_shelf_r = R.from_matrix(object_shelf[:, :3, :3])
-                        object_shelf_quat = object_shelf_r.as_quat()[:, [3, 0, 1, 2]]
-
-                        _, _, cano_object_shelf_pos, cano_object_shelf_quat, _ = (
-                            rotate_at_frame_w_obj(
-                                camera_pos[np.newaxis, :, np.newaxis, :],
-                                camera_quat[np.newaxis, :, np.newaxis, :],
-                                object_shelf_pos[np.newaxis],
-                                object_shelf_quat[np.newaxis],
-                            )
-                        )
-
-                    cano_object_pos = cano_object_pos[0]  # T X 3
-                    cano_object_quat = cano_object_quat[0]  # T X 4
-
-                    if self.noise_scheme == "real":
-                        cano_object_shelf_pos = cano_object_shelf_pos[0]  # T X 3
-                        cano_object_shelf_quat = cano_object_shelf_quat[0]  # T X 4
-
-                    cano_camera_pos = cano_camera_pos[0, :, 0, :]  # T X 3
-                    cano_camera_quat = cano_camera_quat[0, :, 0, :]  # T X 4
-
-                    # Translate everything such that the camera initial position is at the origin.
-                    camera2origin_trans = cano_camera_pos[0:1, :].copy()
-                    canoTw = np.eye(4)
-                    canoTw[:3, :3] = canoTw_rot
-                    canoTw[:3, 3] = -camera2origin_trans
-
-                    cano_camera_pos -= camera2origin_trans
-                    cano_object_pos -= camera2origin_trans
-
-                    mano_params_dict = {
-                        "global_orient": left_wrist_aa,
-                        "transl": left_wrist_pos,
-                        "betas": demo_data["left_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": left_hand_trimmed[start_idx:end_idx][:, 6:],
-                    }
-
-                    cano_left_positions, cano_left_mano_params_dict = cano_seq_mano(
-                        canoTw=canoTw,
-                        positions=None,
-                        mano_params_dict=mano_params_dict,
-                        mano_model=self.sided_mano_models["left"],
-                        device="cpu",
-                    )
-
-                    mano_params_dict = {
-                        "global_orient": right_wrist_aa,
-                        "transl": right_wrist_pos,
-                        "betas": demo_data["right_hand"]["shape"][start_idx:end_idx],
-                        "hand_pose": right_hand_trimmed[start_idx:end_idx][:, 6:],
-                    }
-
-                    cano_right_positions, cano_right_mano_params_dict = cano_seq_mano(
-                        canoTw=canoTw,
-                        positions=None,
-                        mano_params_dict=mano_params_dict,
-                        mano_model=self.sided_mano_models["right"],
-                        device="cpu",
-                    )
-
-                    wTo = object_traj_trimmed[start_idx:end_idx]  # (T, 4, 4)
-                    wTo = canoTw[None] @ wTo  
-                    cano_object_pos = wTo[:, :3, 3]
-                    cano_object_rot_mat = wTo[:, :3, :3]
-                    cano_object_quat = R.from_matrix(cano_object_rot_mat).as_quat()[:, [3, 0, 1, 2]]
-                    cano_object_rot6d = matrix_to_rotation_6d_numpy(cano_object_rot_mat)
-
-                    cano_camera_rot_mat = quaternion_to_matrix_numpy(cano_camera_quat)
-                    cano_camera_rot6d = matrix_to_rotation_6d_numpy(cano_camera_rot_mat)
-
-                    if self.noise_scheme == "real":
-                        cano_object_shelf_rot_mat = quaternion_to_matrix_numpy(
-                            cano_object_shelf_quat
-                        )
-                        cano_object_shelf_rot6d = matrix_to_rotation_6d_numpy(
-                            cano_object_shelf_rot_mat
-                        )
-                        cano_object_shelf_data = np.concatenate(
-                            (cano_object_shelf_pos, cano_object_shelf_rot6d), axis=-1
-                        )
-
-                    cano_object_data = np.concatenate(
-                        (cano_object_pos, cano_object_rot6d), axis=-1
-                    )
-                    cano_camera_data = np.concatenate(
-                        (cano_camera_pos, cano_camera_rot6d), axis=-1
-                    )
-
-                    window_data = {
-                        "demo_id": demo_id,
-                        "object_id": obj_id,
-                        "start_idx": start_idx,
-                        "end_idx": end_idx,
-                        # 'left_hand': cano_left_hand_data,
-                        # 'right_hand': cano_right_hand_data,
-                        # "shelf_valid": shelf_valid,
-                        # "object_shelf": cano_object_shelf_data,
-                        "object_valid": object_valid,
-                        "object": cano_object_data,
-                        "wTc": cano_camera_data,
-                        "intr": demo_data["intrinsic"],
-                        "left_hand": cano_left_positions.reshape(-1, 21 * 3),
-                        "right_hand": cano_right_positions.reshape(-1, 21 * 3),
-                        "left_hand_params": cano_left_mano_params_dict,
-                        "right_hand_params": cano_right_mano_params_dict,
-                        "left_hand_joints": cano_left_positions,
-                        "right_hand_joints": cano_right_positions,
-                    }
-
-                    if self.noise_scheme == "real":
-                        shelf_valid = demo_data["objects"][obj_id]["shelf_valid"][
-                            start_idx:end_idx
-                        ]
-                        window_data["shelf_valid"] = shelf_valid
-                        window_data["object_shelf"] = cano_object_shelf_data
-
-                    # Check if this is a motion window
-                    is_motion = self._is_motion_window(cano_object_data)
-                    window_data["is_motion"] = is_motion
-                    
-                    # Calculate mean velocity for the object trajectory
-                    if len(cano_object_data) > 1:
-                        velocities = np.linalg.norm(np.diff(cano_object_data[:, :3], axis=0), axis=1)
-                        mean_velocity = np.mean(velocities)
-                    else:
-                        mean_velocity = 0.0
-                    window_data["mean_velocity"] = mean_velocity
-
-                    if self.window_check(window_data):
-                        windows.append(window_data)
-
-        
-        os.makedirs(osp.dirname(cache_name), exist_ok=True)
-        pickle.dump(windows, open(cache_name, 'wb'))
-        
         return windows
 
     def window_check(self, window_data):
@@ -931,13 +713,13 @@ class HandToObjectDataset(Dataset):
         # window_noisy = self.add_noise_data(window)
         
         # Add geometry and random canonical augmentation
-        if aug_cano:
+        if self.opt.datasets.augument.aug_cano:
             window, newoTo = self.augment_cano_object(window)
             # window_noisy['object'] = self.transform_wTo_traj(window_noisy['object'], newoTo)
 
-        if aug_world:
+        if self.opt.datasets.augument.aug_world:
             print("TODO: augment world cooridate too!") # random rotation around gravity direction
-            return 
+            assert False
 
         # Convert to tensors
         left_hand = to_tensor(window["left_hand"])  # [T, D]
@@ -951,26 +733,38 @@ class HandToObjectDataset(Dataset):
         right_hand_norm = to_tensor(
             self.normalize_data(right_hand.numpy(), "right_hand")
         )
-        hand_norm = torch.cat([left_hand_norm, right_hand_norm], dim=-1)
+        
         object_norm = to_tensor(self.normalize_data(object_traj.numpy(), "object"))
 
-        # traj_noisy_norm = to_tensor(
-        #     self.normalize_data(window_noisy["object"], "object")
-        # )
-
-        # Add noisy object trajectory to conditioning if specified
-        # if self.opt.condition.noisy_obj:
-        #     condition = torch.cat([condition, traj_noisy_norm], dim=-1)
-
+        if self.opt.hand_rep == 'joints':
+            hand_rep = torch.cat([left_hand_norm, right_hand_norm], dim=-1)
+        elif self.opt.hand_rep == 'theta':
+            left_hand_params_dict = window["left_hand_params"]
+            print(type(left_hand_params_dict["transl"]))
+            left_hand_params = self.hand_wrapper.dict2para(left_hand_params_dict, side="left", merge=True)
+            left_hand_theta = to_tensor(self.normalize_data(left_hand_params, "left_hand_theta"))
+            right_hand_params_dict = window["right_hand_params"]
+            right_hand_params = self.hand_wrapper.dict2para(right_hand_params_dict, side="right", merge=True)
+            right_hand_theta = to_tensor(self.normalize_data(right_hand_params, "right_hand_theta"))
+            hand_rep = torch.cat([left_hand_theta, right_hand_theta], dim=-1)
+        
+        elif self.opt.hand_rep == 'motion_rep':
+            raise NotImplementedError("motion_rep not implemented yet")
+        else:
+            raise ValueError(f"Invalid hand representation: {self.opt.hand_rep}")
+        
         target = object_norm
         condition = torch.zeros([self.window_size, 0])
+
+        # create target
         if self.opt.hand == 'out':
-            target = torch.cat([target, hand_norm], dim=-1)
+            target = torch.cat([target, hand_rep], dim=-1)
         if self.opt.output.contact:
             target = torch.cat([target, window["contact"]], dim=-1)
         
+        # create condition
         if self.opt.hand == 'cond':
-            condition = torch.cat([condition, hand_norm], dim=-1)
+            condition = torch.cat([condition, hand_rep], dim=-1)
         
         oMesh = self.object_library_mesh[window["object_id"]]
         newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])    
@@ -988,14 +782,14 @@ class HandToObjectDataset(Dataset):
             "target_raw": object_traj,  # [T, D] - unnormalized for evaluation
             "demo_id": window["demo_id"],
             "object_id": str(window["object_id"]),
-            "is_motion": window["is_motion"],
+            # "is_motion": window["is_motion"],
             "object_valid": window["object_valid"],
             "intr":  to_tensor(window["intr"]),
             "wTc": to_tensor(window["wTc"]),
+            
             "newTo": window["newTo"],
             "newPoints": window["newPoints"][0],
             "newMesh": newMesh,
-
             "start_idx": window["start_idx"],
             "end_idx": window["end_idx"],
 
@@ -1042,7 +836,6 @@ class HandToObjectDataset(Dataset):
         window['newPoints'] = newPoints
         
         return window, newTo
-
 
     def add_noise_data(self, can_window_dict):
         """Add noise to the data for training."""
@@ -1184,6 +977,7 @@ def vis_clip(opt):
             # single_object="225397651484143",
             sampling_strategy="random",
             split=opt.datasets.split,
+            split_seed=42,  # Ensure reproducible splits
             noise_scheme="syn",
             split_file=opt.traindata.split_file,
             **opt.datasets.augument,
@@ -1195,7 +989,6 @@ def vis_clip(opt):
     dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=None, shuffle=False, num_workers=1)
     for b, batch in enumerate(dataloader):
         batch = model_utils.to_cuda(batch, device)
-        print('motion', batch['is_motion'])
 
         wTo = batch['target_raw']  # (1, T, D)
         hand_raw = batch['hand_raw']  # (1, T, 2*D)
@@ -1220,6 +1013,8 @@ def vis_clip(opt):
         image_list = pt3d_viz.log_training_step(left_hand_meshes, right_hand_meshes, wTo_list, color_list, newPoints_mesh, step=b, pref="debug_vis_clip", save_to_file=False)
         video_list.append(image_list)
 
+        print(f'condtiion shape 0? ={2*(3+3+15+10)}', batch['condition'].shape, )
+        print(f'target shape = {9+2*(3+3+15+10)}', batch['target'].shape)
         if b >= 10:
             break
     video_list = torch.cat(video_list, axis=0)
@@ -1227,17 +1022,52 @@ def vis_clip(opt):
     print('saved video', f"outputs/debug_vis_clip/video_{cnt}.mp4")
         
 
+def create_norm_starts():
+    src_file = 'data/cache/metadata_hot3d.pkl'
+
+    dst_file = 'data/cache/metadata_theta.pkl'
+
+    with open(src_file, 'rb') as f:
+        metadata = pickle.load(f)
+
+    obj_mean = metadata['object_mean']
+    obj_std = metadata['object_std']
+
+    left_hand_theta_mean = np.zeros([1, 3+3+15+10])
+    left_hand_theta_std = np.ones([1, 3+3+15+10])
+    left_hand_theta_mean[..., 3:6] = obj_mean[..., :3]
+    left_hand_theta_std[..., 3:6] = obj_std[..., :3]
+
+    right_hand_theta_mean = np.zeros([1, 3+3+15+10])
+    right_hand_theta_std = np.ones([1, 3+3+15+10])
+
+    right_hand_theta_mean[..., 3:6] = obj_mean[..., :3]
+    right_hand_theta_std[..., 3:6] = obj_std[..., :3]
+
+    metadata['left_hand_theta_mean'] = left_hand_theta_mean
+    metadata['left_hand_theta_std'] = left_hand_theta_std
+    metadata['right_hand_theta_mean'] = right_hand_theta_mean
+    metadata['right_hand_theta_std'] = right_hand_theta_std
+
+    with open(dst_file, 'wb') as f:
+        pickle.dump(metadata, f)
+    print('saved metadata to', dst_file)
+
+
 
 # Global configuration variables
 th = 0.05
 use_cache = False
 aug_cano = True
+# aug_world = False
 
 if __name__ == "__main__":
     from jutils import plot_utils
     
     # vis_traj()
     vis_clip()
+
+    # create_norm_starts()
 
     
     # compute_norm_stats()
