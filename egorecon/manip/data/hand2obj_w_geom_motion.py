@@ -205,7 +205,7 @@ class HandToObjectDataset(Dataset):
         use_constant_noise=False,
         one_window=False,
         t0=300,
-        split_file=None,
+        # split_file=None,
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
         data_cfg=None,
@@ -225,7 +225,7 @@ class HandToObjectDataset(Dataset):
         self.t0 = t0
         self.use_constant_noise = use_constant_noise
         self.noise_scheme = noise_scheme
-        self.split_file = split_file
+        self.split_file = data_cfg.split_file
         self.opt = opt
         self.data_cfg = data_cfg
         self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
@@ -874,6 +874,10 @@ class HandToObjectDataset(Dataset):
         oMesh = self.object_library_mesh[window["object_id"]]
         newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
 
+        left_hand_param = self.hand_wrapper.dict2para(window["left_hand_params"], side="left", merge=True)
+        right_hand_param = self.hand_wrapper.dict2para(window["right_hand_params"], side="right", merge=True)
+
+
         return {
             "contact": contact,
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
@@ -881,8 +885,8 @@ class HandToObjectDataset(Dataset):
             "hand_raw": torch.cat(
                 [left_hand, right_hand], dim=-1
             ),  # [T, 2*D] - left and right hand trajectories
-            "left_hand_params": {k: to_tensor(v) for k, v in window["left_hand_params"].items()},
-            "right_hand_params": {k: to_tensor(v) for k, v in window["right_hand_params"].items()},
+            "left_hand_params": left_hand_param,
+            "right_hand_params": right_hand_param,
             "motion_raw": target_unnorm,
             "target_raw": object_traj,  # [T, D] - unnormalized for evaluation
             "demo_id": window["demo_id"],
@@ -1128,21 +1132,21 @@ def vis_clip(opt):
         wTo = batch["target_raw"]  # (1, T, D)
         hand_raw = batch["hand_raw"]  # (1, T, 2*D)
 
-        left_hand_param, left_hand_shape = sided_mano_model.dict2para(
-            batch["left_hand_params"], side="left"
-        )
-        right_hand_param, right_hand_shape = sided_mano_model.dict2para(
-            batch["right_hand_params"], side="right"
-        )
+        # left_hand_param, left_hand_shape = sided_mano_model.dict2para(
+        #     batch["left_hand_params"], side="left"
+        # )
+        # right_hand_param, right_hand_shape = sided_mano_model.dict2para(
+        #     batch["right_hand_params"], side="right"
+        # )
 
         left_hand_verts, left_hand_faces, left_hand_joints = (
             sided_mano_model.hand_para2verts_faces_joints(
-                left_hand_param.float(), left_hand_shape.float(), side="left"
+                batch["left_hand_params"].float(), side="left"
             )
         )
         right_hand_verts, right_hand_faces, right_hand_joints = (
             sided_mano_model.hand_para2verts_faces_joints(
-                right_hand_param.float(), right_hand_shape.float(), side="right"
+                batch["right_hand_params"].float(), side="right"
             )
         )
         # left_hand, right_hand = torch.split(hand_raw, 21 * 3, dim=-1)

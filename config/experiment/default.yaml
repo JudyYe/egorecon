@@ -78,6 +78,7 @@ datasets:
 #   demo_id: P0001_624f2ba9
 #   target_object_id: 96945373046044+253405647833885+225397651484143
 
+ds_type: w_geom
 
 guide:
   hint: reproj_com

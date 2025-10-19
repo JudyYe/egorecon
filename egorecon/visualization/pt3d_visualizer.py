@@ -36,7 +36,6 @@ class Pt3dVisualizer:
         object_cache = {}
         if lib == "hot3d":
             glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
-            print("glob_file", glob_file, "object_mesh_dir", object_mesh_dir)
             for mesh_file in glob_file:
                 uid = osp.basename(mesh_file).split(".")[0]
                 object_cache[uid] = mesh_utils.load_mesh(mesh_file)
@@ -84,7 +83,6 @@ class Pt3dVisualizer:
         left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, left_textures)
         right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, right_textures)
 
-        print(wTo.shape)
         wObj_exp = mesh_utils.apply_transform(oObj_exp, geom_utils.se3_to_matrix_v2(wTo))
         wScene = mesh_utils.join_scene([left_hand_meshes, right_hand_meshes, wObj_exp])
 
@@ -94,10 +92,8 @@ class Pt3dVisualizer:
 
         nTw = mesh_utils.get_nTw(wScene.verts_packed()[None], new_scale=1.2)
         print('render wScene', wScene.verts_padded().shape, nTw.shape, )
-        print(nTw.dtype, wScene.verts_packed().dtype, obj_textures.dtype, left_textures.dtype, right_textures.dtype, contact.dtype)
 
         image_list = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
-        print("render done!")
 
         image_list = image_list["image"]
 
@@ -144,7 +140,7 @@ class Pt3dVisualizer:
             oObj = uid.to(device)
         else:
             if uid not in self.object_cache:
-                print(uid, self.object_cache.keys())
+                pass
             oObj = self.object_cache[uid].to(device)
 
         oObj_verts = oObj.verts_padded()  # (1, V, 3)
@@ -160,7 +156,6 @@ class Pt3dVisualizer:
         scene_points = torch.cat(scene_points, 0)[None]
 
         nTw = mesh_utils.get_nTw(scene_points, new_scale=1.2)
-        print('nTw', nTw.shape)
 
         wScene = []
         if left_hand_meshes is not None:
@@ -185,7 +180,6 @@ class Pt3dVisualizer:
         coord = plot_utils.create_coord(device, T, size=0.2)
         wScene = mesh_utils.join_scene([wScene, coord])
 
-        print('render wScene', wScene.verts_packed().shape)
         image_list = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
         print("render done!")
 
@@ -224,9 +218,6 @@ def render_scene_from_azel(
     cTn = geom_utils.rt_to_homo(R, tsl)
 
     cTw_rot, cTw_tsl = look_at_view_transform(dist, el, az, True, up=((0, 0, 1),), device=device)
-    # print("cTw_p", cTw_rot.shape, cTw_tsl.shape)
-    # print("cTw my", cTn.shape)
-    # print(cTn[0], cTw_rot, cTw_tsl)
 
     cTw = cTn @ nTw_exp
 
@@ -251,9 +242,7 @@ def test():
     coord = plot_utils.create_coord('cuda', N, size=0.2)
     wScene = mesh_utils.join_scene([wScene, coord])
 
-    print("rendering")
     image = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=500)
-    print("image", image['image'].shape)
 
     wScene = plot_utils.create_coord('cuda', 1, size=0.2)
     image_utils.save_gif(image['image'].unsqueeze(1), "outputs/tmp/test.mp4", fps=30, ext=".mp4")

@@ -86,12 +86,15 @@ class HandWrapper(nn.Module):
         else:
             return hand_para, hand_shape
 
-    def hand_para2verts_faces_joints(self, hand_para, hand_shape, side="right"):
+    def hand_para2verts_faces_joints(self, hand_para, hand_shape=None, side="right"):
         """
         :param hand_para: (B, T, 3+3+15)
         :param hand_shape: (B, T, 10)
         :param side: _description_, defaults to 'right'
         """
+        if hand_shape is None:
+            assert hand_para.shape[-1] == 3+3+15+10, f"hand_para shape: {hand_para.shape}"
+            hand_para, hand_shape = torch.split(hand_para, [3+3+15, 10], dim=-1)
 
         pref_dim = hand_para.shape[:-1]
         hand_para = hand_para.reshape(-1, hand_para.shape[-1])

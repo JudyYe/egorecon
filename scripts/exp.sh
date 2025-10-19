@@ -26,6 +26,15 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=dev/tmp \
+  experiment=hoi \
+  dyn_only=true \
+  traindata=hotclip_mini 
+
+
+
+
 python -m egorecon.manip.data.hand2obj_w_geom_motion \
   experiment=hoi \
   output.contact=false hand_rep=theta hand=out traindata=hot3d_mini datasets.split=mini 

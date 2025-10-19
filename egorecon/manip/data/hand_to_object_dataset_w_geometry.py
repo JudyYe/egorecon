@@ -149,7 +149,6 @@ class HandToObjectDataset(Dataset):
         use_constant_noise=False,
         one_window=False,
         t0=300,
-        split_file=None,
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
         data_cfg=None,
@@ -168,7 +167,7 @@ class HandToObjectDataset(Dataset):
         self.t0 = t0
         self.use_constant_noise = use_constant_noise
         self.noise_scheme = noise_scheme
-        self.split_file = split_file
+        self.split_file = data_cfg.split_file
         self.opt = opt
         self.data_cfg = data_cfg
 

@@ -60,3 +60,12 @@ def get_norm_stats(metafile, opt, field='target'):
             raise NotImplementedError(f"Invalid hand: {hand}")
 
     return mean, std
+
+
+# def default_collate_fn(batch):  # 
+#     from jutils import mesh_utils
+#     mesh_utils.collate_meshes
+#     from torch.utils.data import default_collate
+#     # write a patch when type(batch) is pytroch3d.structures.meshes.Meshes. behavior: Meshes(verts_list=[verts1, verts2, ...], faces_list=[faces1, faces2, ...]) -> Meshes(verts=[verts1, verts2, ...], faces=[faces1, faces2, ...])
+#     # where verts_list and faces_list from 
+#     return 

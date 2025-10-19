@@ -1,10 +1,9 @@
-import numpy as np
-
 import math
 import os
 import os.path as osp
 from inspect import isfunction
 
+import numpy as np
 import pytorch3d.ops as pt3d_ops
 import torch
 import torch.nn.functional as F
@@ -15,13 +14,11 @@ from jutils import geom_utils, mesh_utils
 from torch import nn
 from tqdm.auto import tqdm
 
+from egorecon.utils.motion_repr import HandWrapper
+
 from ..data.utils import get_norm_stats
-from .guidance_optimizer_jax import (
-    do_guidance_optimization,
-    project,
-    se3_to_wxyz_xyz,
-    wxyz_xyz_to_se3,
-)
+from .guidance_optimizer_jax import (do_guidance_optimization, project,
+                                     se3_to_wxyz_xyz, wxyz_xyz_to_se3)
 from .transformer_module import Decoder
 
 
@@ -225,6 +222,7 @@ class CondGaussianDiffusion(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
 
         self.hand_sensor_encoder = nn.Sequential(
             nn.Linear(in_features=21 * 3 * 2, out_features=512),
@@ -334,7 +332,7 @@ class CondGaussianDiffusion(nn.Module):
         self.bps_path = osp.join(opt.paths.data_dir, "bps/bps.pt")
         self.prep_bps_data()
 
-    def set_metadata(self,):
+    def set_metadata(self, *args, **kwargs):
         meta_file = self.opt.traindata.meta_file
         mean, std = get_norm_stats(meta_file, self.opt, 'target')
         self.register_buffer("mean", torch.FloatTensor(mean.reshape(1, 1, -1)))

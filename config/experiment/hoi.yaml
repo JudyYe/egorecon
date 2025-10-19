@@ -33,3 +33,4 @@ output:
 hand_rep: theta  # theta or motion_rep or joint
 hand: out
 
+ds_type: w_motion

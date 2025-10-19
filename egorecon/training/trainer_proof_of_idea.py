@@ -19,7 +19,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
 from tqdm import tqdm
 
-from ..manip.model import build_model
+from ..manip.model import build_model, CondGaussianDiffusion
 from ..manip.data import build_dataloader
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
@@ -42,7 +42,7 @@ class Trainer(object):
     def __init__(
         self,
         opt,
-        diffusion_model,
+        diffusion_model: CondGaussianDiffusion,
         *,
         ema_decay=0.995,
         train_batch_size=32,
@@ -162,7 +162,7 @@ class Trainer(object):
 
     def prep_train_dataset(self, opt):
         dl, ds = build_dataloader(
-            opt.traindata.name,
+            opt.traindata,
             opt,
             is_train=True,
             shuffle=not opt.test,
@@ -174,7 +174,7 @@ class Trainer(object):
 
     def prep_val_dataset(self, opt):
         dl, ds = build_dataloader(
-            opt.testdata.name,
+            opt.testdata,
             opt,
             is_train=False,
             shuffle=False,
