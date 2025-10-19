@@ -19,9 +19,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Adam
 from tqdm import tqdm
 
-from ..manip.model.transformer_hand_to_object_diffusion_model import (
-    CondGaussianDiffusion,
-)
+from ..manip.model import build_model
 from ..manip.data import build_dataloader
 from ..visualization.rerun_visualizer import RerunVisualizer
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
@@ -33,7 +31,6 @@ from ..manip.model.guidance_optimizer_jax import (
 )
 
 from move_utils.slurm_utils import slurm_engine
-
 
 def cycle(dl):
     while True:
@@ -264,7 +261,7 @@ class Trainer(object):
                 max_infill_ratio = 0.1
                 prob = random.uniform(0, 1)
                 batch_size, clip_len, _ = cond.shape
-                if prob > 1 - mask_prob:
+                if prob > 1 - mask_prob and 'traj_noisy_raw' in sample:
                     traj_feat_dim = sample["traj_noisy_raw"].shape[-1]
                     start = (
                         torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
@@ -393,7 +390,10 @@ class Trainer(object):
                 # baseline
                 bs_for_vis = 1
 
-                x = val_data_dict["traj_noisy_raw"]
+                if 'traj_noisy_raw' in val_data_dict:
+                    x = val_data_dict["traj_noisy_raw"]
+                else:
+                    x = val_data_dict["traj_raw"]
                 obs = self.model.get_obs(guide=True, batch=val_data_dict, shape=x.shape)
 
                 # x_opt = self.model.guide_jax(x, model_kwargs={'obs': obs})
@@ -823,28 +823,7 @@ def run_train(opt, device):
     # Save run settings
     OmegaConf.save(config=opt, f=os.path.join(save_dir / "opt.yaml"))
 
-    # Define model
-    repr_dim = 24 * 3 + 22 * 6
-
-    repr_dim = 9  # Output dimension (3D translation + 6D rotation)
-    cond_dim = 2 * 21 * 3
-    if opt.condition.noisy_obj:
-        cond_dim += 9  # Input dimension (2 hands × pose_dim each)
-    if opt.condition.bps == 2:
-        cond_dim += 2 * 21 * 3
-    else:
-        pass
-
-    diffusion_model = CondGaussianDiffusion(
-        opt,
-        d_feats=repr_dim,
-        out_dim=repr_dim,
-        condition_dim=cond_dim,
-        max_timesteps=opt.model.window + 2,
-        timesteps=1000,
-        loss_type="l1",
-        **opt.model,
-    )
+    diffusion_model = build_model(opt)
     if opt.ckpt:
         ckpt = torch.load(opt.ckpt)
         model_utils.load_my_state_dict(diffusion_model, ckpt["model"])

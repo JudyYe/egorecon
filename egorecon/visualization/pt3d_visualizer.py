@@ -57,6 +57,58 @@ class Pt3dVisualizer:
         return object_cache
 
 
+    def log_hoi_step(self, left_hand_meshes, right_hand_meshes, wTo, oObj, pref="training/", step=0, save_to_file=True, device='cuda:0', contact=None):
+
+        B, P, D = left_hand_meshes.verts_padded().shape
+        left_textures = mesh_utils.get_color('blue').expand(B, P, 3).to(device)
+        right_textures = mesh_utils.get_color('blue').expand(B, P, 3).to(device)
+        _, V, D = oObj.verts_padded().shape
+        obj_textures = mesh_utils.get_color('white').expand(B, V, 3).to(device)
+
+        if contact is not None:
+            contact_hand_textures = mesh_utils.get_color('red').expand(B, P, 3).to(device)
+            contact_obj_textures = mesh_utils.get_color('red').expand(B, V, 3).to(device)
+            contact_left = contact[...,  0].reshape(B, 1, 1).to(device)  # (B, )
+            contact_right = contact[...,  1].reshape(B, 1, 1).to(device)  # (B, )
+            contact_obj = ((contact_left + contact_right) > 0).float()
+
+            left_textures = contact_left * contact_hand_textures + (1 - contact_left) * left_textures
+            right_textures = contact_right * contact_hand_textures + (1 - contact_right) * right_textures
+            obj_textures = contact_obj * contact_obj_textures + (1 - contact_obj) * obj_textures
+
+        oObj_verts_exp = oObj.verts_padded().repeat(B, 1, 1)
+        oObj_face_exp = oObj.faces_padded().repeat(B, 1, 1)
+        oObj_exp = Meshes(verts=oObj_verts_exp, faces=oObj_face_exp).to(device)
+        oObj_exp.textures = mesh_utils.pad_texture(oObj_exp, obj_textures)
+
+        left_hand_meshes.textures = mesh_utils.pad_texture(left_hand_meshes, left_textures)
+        right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, right_textures)
+
+        print(wTo.shape)
+        wObj_exp = mesh_utils.apply_transform(oObj_exp, geom_utils.se3_to_matrix_v2(wTo))
+        wScene = mesh_utils.join_scene([left_hand_meshes, right_hand_meshes, wObj_exp])
+
+        coord = plot_utils.create_coord(device, B, size=0.2)
+        wScene = mesh_utils.join_scene([wScene, coord])
+        
+
+        nTw = mesh_utils.get_nTw(wScene.verts_packed()[None], new_scale=1.2)
+        print('render wScene', wScene.verts_padded().shape, nTw.shape, )
+        print(nTw.dtype, wScene.verts_packed().dtype, obj_textures.dtype, left_textures.dtype, right_textures.dtype, contact.dtype)
+
+        image_list = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
+        print("render done!")
+
+        image_list = image_list["image"]
+
+        if save_to_file:
+            fname = osp.join(self.save_dir, f"{pref}")
+            image_utils.save_gif(image_list.unsqueeze(1), fname, fps=30, ext=".mp4")
+            return fname + ".mp4"
+        else:
+            return image_list
+
+
     def log_training_step(
         self,
         left_hand_meshes,

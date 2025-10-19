@@ -22,6 +22,7 @@ datasets:
 
 condition: 
   noisy_obj: false
+  bps: 2
 
 dyn_only: true
 

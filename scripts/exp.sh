@@ -1,13 +1,14 @@
 [] change model | TODO
 [x] norm in data, data done
 
-[] get a mini hot3d clip? 
-[] vis: contact, vis? 
-[] add motion rep
+[x] get a mini hot3d clip? 
+[] vis: contact, vis other motion 
+
+([] add motion rep)
 
 [] set up quant
 [] faster vis
-[] GT obs
+[] off-the-shelf obs pipeline
 [] long seq
 
 

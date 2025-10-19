@@ -513,7 +513,7 @@ if __name__ == "__main__":
 
     # batch_preprocess()
 
-    # merge_preprocess()
-    patch_contact()
+    merge_preprocess()
+    # patch_contact()
 
     # make_own_split()

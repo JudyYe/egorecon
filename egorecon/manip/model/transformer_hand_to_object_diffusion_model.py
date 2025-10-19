@@ -15,6 +15,7 @@ from jutils import geom_utils, mesh_utils
 from torch import nn
 from tqdm.auto import tqdm
 
+from ..data.utils import get_norm_stats
 from .guidance_optimizer_jax import (
     do_guidance_optimization,
     project,
@@ -333,9 +334,9 @@ class CondGaussianDiffusion(nn.Module):
         self.bps_path = osp.join(opt.paths.data_dir, "bps/bps.pt")
         self.prep_bps_data()
 
-    def set_metadata(self, stats):
-        mean = stats["object_mean"]
-        std = stats["object_std"]
+    def set_metadata(self,):
+        meta_file = self.opt.traindata.meta_file
+        mean, std = get_norm_stats(meta_file, self.opt, 'target')
         self.register_buffer("mean", torch.FloatTensor(mean.reshape(1, 1, -1)))
         self.register_buffer("std", torch.FloatTensor(std.reshape(1, 1, -1)))
 

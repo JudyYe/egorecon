@@ -29,6 +29,8 @@ from pytorch3d.ops import sample_points_from_meshes
 from bps_torch.bps import bps_torch
 from bps_torch.tools import sample_sphere_uniform
 
+from .utils import get_norm_stats
+
 
 def rotate(points, R):
     shape = list(points.shape)
@@ -53,7 +55,7 @@ def load_pickle(path, num=-1):
             all_seq = pickle.load(f)
 
         all_processed_data = {}
-        if 'right_hand' in all_seq:
+        if "right_hand" in all_seq:
             # don't need to process
             all_processed_data = all_seq
         else:
@@ -111,6 +113,50 @@ def decode_npz(data):
     processed_data["objects"] = objects
     return processed_data
 
+
+def encode_npz(processed_data):
+    """
+    Reverse of decode_npz: converts processed_data dict back to npz-compatible format.
+    
+    Args:
+        processed_data: Dictionary with structure:
+            - "objects": dict of object data by UID
+            - "left_hand": dict of left hand data
+            - "right_hand": dict of right hand data  
+            - other keys: global data
+    
+    Returns:
+        dict: Dictionary ready to be saved as npz file
+    """
+    # Start with a copy of the processed data
+    npz_data = {}
+    
+    # Add all non-nested keys directly
+    for k, v in processed_data.items():
+        if k not in ["objects", "left_hand", "right_hand"]:
+            npz_data[k] = v
+    
+    # Add object UIDs list
+    if "objects" in processed_data:
+        npz_data["objects"] = list(processed_data["objects"].keys())
+        
+        # Flatten object data with obj_{uid}_ prefix
+        for uid, obj_data in processed_data["objects"].items():
+            uid = str(uid)
+            for key, value in obj_data.items():
+                npz_data[f"obj_{uid}_{key}"] = value
+    
+    # Flatten left hand data with left_hand_ prefix
+    if "left_hand" in processed_data:
+        for key, value in processed_data["left_hand"].items():
+            npz_data[f"left_hand_{key}"] = value
+    
+    # Flatten right hand data with right_hand_ prefix  
+    if "right_hand" in processed_data:
+        for key, value in processed_data["right_hand"].items():
+            npz_data[f"right_hand_{key}"] = value
+    
+    return npz_data
 
 # in rohm:
 # init(): create windows -> canonical --> add noise --> get rep
@@ -297,11 +343,11 @@ class HandToObjectDataset(Dataset):
     def _filter_data(self, single_demo=None, single_object=None):
         """Filter data for overfitting on specific demo/object."""
         filtered_data = {}
-        if self.split == "mini":
-            seq = list(self.processed_data.keys())[0]
-            seq_list = [seq]
-        else:
-            seq_list = json.load(open(self.split_file))[self.split]
+        # if self.split == "mini":
+        #     seq = list(self.processed_data.keys())[0]
+        #     seq_list = [seq]
+        # else:
+        seq_list = json.load(open(self.split_file))[self.split]
 
         for seq in seq_list:
             filtered_data[seq] = {}
@@ -312,12 +358,12 @@ class HandToObjectDataset(Dataset):
                 obj_list = list(self.processed_data[seq]["objects"].keys())
 
             logging.warning("Well let's remove this in the end!!")
-            if self.one_window:
-                t0 = self.t0
-                t1 = t0 + 120
-            else:
-                t0 = 0
-                t1 = len(self.processed_data[seq]["wTc"])
+            # if self.one_window:
+            #     t0 = self.t0
+            #     t1 = t0 + 120
+            # else:
+            t0 = 0
+            t1 = len(self.processed_data[seq]["wTc"])
             for key, value in self.processed_data[seq].items():
                 if key == "objects":
                     continue
@@ -363,8 +409,7 @@ class HandToObjectDataset(Dataset):
             f"{self.data_cfg.name}_{self.split}_{self.opt.coord}.npz",
         )
 
-
-        if osp.exists(cache_name):
+        if osp.exists(cache_name) and use_cache:
             print("loading window cache from ", cache_name)
             self.windows = pickle.load(open(cache_name, "rb"))
             return self.windows
@@ -529,7 +574,7 @@ class HandToObjectDataset(Dataset):
 
                     if self.window_check(window_data):
                         windows.append(window_data)
-        
+
         os.makedirs(osp.dirname(cache_name), exist_ok=True)
         with open(cache_name, "wb") as f:
             pickle.dump(windows, f)
@@ -685,12 +730,16 @@ class HandToObjectDataset(Dataset):
     def set_metadata(self):
         """Compute normalization statistics for the dataset."""
         meta_file = self.data_cfg.meta_file
-        if not osp.exists(meta_file):
-            print(f"compute metadata....  and save to {meta_file}")
-            # TODO: Implement compute_norm_stats function
-            raise NotImplementedError("compute_norm_stats function not implemented")
-        print(f"using loaded metadata from {meta_file}")
-        self.stats = pickle.load(open(meta_file, "rb"))
+        with open(meta_file, "rb") as f:
+            metadata = pickle.load(f)
+
+        mean, std = get_norm_stats(metadata, self.opt, "target")
+        self.mean_target = mean
+        self.std_target = std
+
+        mean, std = get_norm_stats(metadata, self.opt, "condition")
+        self.mean_condition = mean
+        self.std_condition = std
 
     def _setup_full_trajectory_data_from_windows(self):
         """Setup full trajectory data by concatenating all windows in the current split."""
@@ -736,27 +785,26 @@ class HandToObjectDataset(Dataset):
             and hasattr(self, "object_motion_full")
         )
 
-    def normalize_data(self, data, data_type):
-        """Normalize data using computed statistics."""
-        if not self.stats:
-            print("no stats!!! you'd better doing normailization right now!")
-            return data
+    def normalize_target(self, target):
+        mean = self.mean_target
+        std = self.std_target
+        return (target - mean) / std
 
-        mean = self.stats[f"{data_type}_mean"]
-        std = self.stats[f"{data_type}_std"]
+    def normalize_condition(self, condition):
+        mean = self.mean_condition
+        std = self.std_condition
+        return (condition - mean) / std
 
-        return (data - mean) / std
+    # def normalize_data(self, data, data_type):
+    #     """Normalize data using computed statistics."""
+    #     if not self.stats:
+    #         print("no stats!!! you'd better doing normailization right now!")
+    #         return data
 
-    def denormalize_data(self, data, data_type):
-        """Denormalize data using computed statistics."""
-        if not self.stats:
-            print("no stats!!! you'd better doing normailization right now!")
-            return data
+    #     mean = self.stats[f"{data_type}_mean"]
+    #     std = self.stats[f"{data_type}_std"]
 
-        mean = self.stats[f"{data_type}_mean"]
-        std = self.stats[f"{data_type}_std"]
-
-        return data * std + mean
+    #     return (data - mean) / std
 
     def __len__(self):
         if self.is_train:
@@ -782,71 +830,60 @@ class HandToObjectDataset(Dataset):
             )  # random rotation around gravity direction
             assert False
 
-        # Convert to tensors
-        left_hand = to_tensor(window["left_hand"])  # [T, D]
-        right_hand = to_tensor(window["right_hand"])  # [T, D]
-        object_traj = to_tensor(window["object"])  # [T, D]
-
-        print("TOOD: rewrite norm")
-
-        # Normalize
-        left_hand_norm = to_tensor(self.normalize_data(left_hand.numpy(), "left_hand"))
-        right_hand_norm = to_tensor(
-            self.normalize_data(right_hand.numpy(), "right_hand")
-        )
-
-        object_norm = to_tensor(self.normalize_data(object_traj.numpy(), "object"))
+        # get target, condition , Normalize
+        left_hand = to_tensor(window["left_hand"])
+        right_hand = to_tensor(window["right_hand"])
+        object_traj = to_tensor(window["object"])
+        contact = to_tensor(window["contact"])
 
         if self.opt.hand_rep == "joints":
-            hand_rep = torch.cat([left_hand_norm, right_hand_norm], dim=-1)
+            hand_rep = torch.cat([left_hand, right_hand], dim=-1)
         elif self.opt.hand_rep == "theta":
             left_hand_params_dict = window["left_hand_params"]
-            print(type(left_hand_params_dict["transl"]))
             left_hand_params = self.hand_wrapper.dict2para(
                 left_hand_params_dict, side="left", merge=True
-            )
-            left_hand_theta = to_tensor(
-                self.normalize_data(left_hand_params, "left_hand_theta")
             )
             right_hand_params_dict = window["right_hand_params"]
             right_hand_params = self.hand_wrapper.dict2para(
                 right_hand_params_dict, side="right", merge=True
             )
-            right_hand_theta = to_tensor(
-                self.normalize_data(right_hand_params, "right_hand_theta")
-            )
-            hand_rep = torch.cat([left_hand_theta, right_hand_theta], dim=-1)
+            hand_rep = torch.cat([left_hand_params, right_hand_params], dim=-1)
 
         elif self.opt.hand_rep == "motion_rep":
             raise NotImplementedError("motion_rep not implemented yet")
         else:
             raise ValueError(f"Invalid hand representation: {self.opt.hand_rep}")
 
-        target = object_norm
+        target = object_traj
         condition = torch.zeros([self.window_size, 0])
 
         # create target
         if self.opt.hand == "out":
             target = torch.cat([target, hand_rep], dim=-1)
         if self.opt.output.contact:
-            target = torch.cat([target, window["contact"]], dim=-1)
+            target = torch.cat([target, contact], dim=-1)
+
+        target_unnorm = target.clone()
+        target = self.normalize_target(target)
 
         # create condition
         if self.opt.hand == "cond":
             condition = torch.cat([condition, hand_rep], dim=-1)
+        condition = self.normalize_condition(condition)
 
         oMesh = self.object_library_mesh[window["object_id"]]
         newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
 
         return {
+            "contact": contact,
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
             "target": target,  # [T, D] - object trajectory to denoise
-            # "traj_noisy_raw": to_tensor(window_noisy["object"]),
             "hand_raw": torch.cat(
                 [left_hand, right_hand], dim=-1
             ),  # [T, 2*D] - left and right hand trajectories
-            "left_hand_params": window["left_hand_params"],
-            "right_hand_params": window["right_hand_params"],
+            "left_hand_params": {k: to_tensor(v) for k, v in window["left_hand_params"].items()},
+            "right_hand_params": {k: to_tensor(v) for k, v in window["right_hand_params"].items()},
+            "motion_raw": target_unnorm,
             "target_raw": object_traj,  # [T, D] - unnormalized for evaluation
             "demo_id": window["demo_id"],
             "object_id": str(window["object_id"]),
@@ -859,7 +896,6 @@ class HandToObjectDataset(Dataset):
             "newMesh": newMesh,
             "start_idx": window["start_idx"],
             "end_idx": window["end_idx"],
-            "contact": window["contact"],
         }
 
     def transform_wTo_traj(self, wTo, newTo):
@@ -1011,26 +1047,32 @@ def create_hand_to_object_dataset(
 
 @hydra.main(config_path="../../../config", config_name="train", version_base=None)
 def create_mini_dataset(opt):
-    data = load_pickle(opt.testdata.data_path)
+    with open(opt.testdata.data_path, "rb") as f:
+        data = pickle.load(f)
+    # data = load_pickle(opt.testdata.data_path)
     split_file = opt.testdata.split_file
     split = opt.testdata.testsplit
 
     split_data = json.load(open(split_file))
     seq_list = split_data[split]
     new_data = {}
+    seq = seq_list[0]
     for seq in seq_list[:3]:
         new_data[seq] = data[seq]
-
-    mini_file = opt.testdata.data_path.replace('.pkl', '_mini.pkl')
-    print(f"Saving mini dataset to {mini_file} {len(data)} -> {len(seq_list)} -> {len(new_data)}")
     
-    split_data['mini'] = list(new_data.keys())
+
+    mini_file = opt.testdata.data_path.replace(".pkl", "_mini.pkl")
+    print(
+        f"Saving mini dataset to {mini_file} {len(data)} -> {len(seq_list)} -> {len(new_data)}"
+    )
+
+    split_data["minitest"] = list(new_data.keys())
     print(split_file)
 
-    with open(split_file, 'w') as f:
+    with open(split_file, "w") as f:
         json.dump(split_data, f, indent=4)
 
-    with open(mini_file, 'wb') as f:
+    with open(mini_file, "wb") as f:
         pickle.dump(new_data, f)
 
 
@@ -1114,28 +1156,28 @@ def vis_clip(opt):
             device
         )
         right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, "blue")
-        wTo_list = [wTo]
-        color_list = ["red"]
-        newPoints = batch["newPoints"][None]
-        print("newPoints shape", newPoints.shape)
-        newPoints_mesh = plot_utils.pc_to_cubic_meshes(newPoints[:, :1000])
-        image_list = pt3d_viz.log_training_step(
+        # newPoints_mesh = plot_utils.pc_to_cubic_meshes(newPoints[:, :1000])
+        # image_list = pt3d_viz.log_training_step(
+        #     left_hand_meshes,
+        #     right_hand_meshes,
+        #     wTo_list,
+        #     color_list,
+        #     newPoints_mesh,
+        #     step=b,
+        #     pref="debug_vis_clip",
+        #     save_to_file=False,
+        # )
+        image_list = pt3d_viz.log_hoi_step(
             left_hand_meshes,
             right_hand_meshes,
-            wTo_list,
-            color_list,
-            newPoints_mesh,
-            step=b,
+            wTo,
+            batch["newMesh"],
             pref="debug_vis_clip",
+            contact=batch["contact"],
             save_to_file=False,
         )
         video_list.append(image_list)
 
-        print(
-            f"condtiion shape 0? ={2 * (3 + 3 + 15 + 10)}",
-            batch["condition"].shape,
-        )
-        print(f"target shape = {9 + 2 * (3 + 3 + 15 + 10)}", batch["target"].shape)
         if b >= 10:
             break
     video_list = torch.cat(video_list, axis=0)
@@ -1189,9 +1231,9 @@ aug_cano = True
 if __name__ == "__main__":
     from jutils import plot_utils
 
-    create_mini_dataset()
+    # create_mini_dataset()
     # vis_traj()
-    # vis_clip()
+    vis_clip()
 
     # create_norm_starts()
 
