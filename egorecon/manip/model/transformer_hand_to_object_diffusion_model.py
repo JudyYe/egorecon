@@ -10,7 +10,8 @@ import torch.nn.functional as F
 from bps_torch.bps import bps_torch
 from bps_torch.tools import sample_sphere_uniform
 from einops import rearrange, reduce
-from jutils import geom_utils, mesh_utils
+from jutils import geom_utils, mesh_utils, plot_utils
+from pytorch3d.structures import Meshes
 from torch import nn
 from tqdm.auto import tqdm
 
@@ -497,7 +498,6 @@ class CondGaussianDiffusion(nn.Module):
             #         }, f)
             # assert False
             # print('grad', scale, grad * scale, x)
-            print("loss", loss, "scale", scale, t[0])
 
             grad = model_variance * grad
 
@@ -578,31 +578,8 @@ class CondGaussianDiffusion(nn.Module):
         b = shape[0]
         x = torch.randn(shape, device=device)
 
-        obs = self.get_obs(kwargs.get('guide', False), kwargs['obs'], shape)
+        obs = self.get_obs(kwargs.get('guide', False), kwargs.get('obs', {}), shape)
         kwargs['obs'] = obs
-        # if kwargs.get('guide', False):
-        #     batch = kwargs['obs']
-        #     x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
-        #     if self.opt.guide.hint == "reproj_cd":
-        #         b, T = shape[:2]
-        #         ind_list = []
-        #         kP = 1000
-        #         for t in range(T):
-        #             inds = torch.randperm(x2d.shape[2])[:kP]
-        #             ind_list.append(inds)
-        #         ind_list = torch.stack(ind_list, dim=0).to(x_cond.device)  # (T, kP)
-        #         ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
-        #         x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
-
-        #     obs = {
-        #         "x": se3_to_wxyz_xyz(batch['target_raw']),
-        #         "newPoints": batch['newPoints'],
-        #         "wTc": se3_to_wxyz_xyz(batch['wTc']),
-        #         "intr": batch['intr'],
-        #         "x2d": x2d,
-        #     }
-        #     kwargs['obs'] = obs
-
         for i in tqdm(
             reversed(range(0, self.num_timesteps)),
             desc="sampling loop time step",
@@ -813,30 +790,66 @@ class CondGaussianDiffusion(nn.Module):
 
         return curr_loss
 
-    def get_cond(self, hand_condition, xt, newPoints, wHands):
-        # print("TODO: designate another token")
-        print("TODO: if output hands, chagne this, and also take care of normalization! make sure in the same space!!!" )
+    # def get_cond_v2(self, hand_condition, xt, newPoints):
+
+    #     left_right = hand_condition.split(hand_condition.shape[-1] // 2, dim=-1)
+        
+    #     # TODO: Implement get_cond_v2 method
+    #     cond = self._get_bps_cond(hand_condition, left_right, None, newPoints)
+
+    def _get_bps_cond(self, orig_condition, wJoints, wTo_pred, newPoints):
         if self.opt.condition.bps == 2:
 
-            wTo_pred = self.denormalize_data(xt)
             hand = self.encode_hand_sensor_feature(
-                wHands, wTo_pred, newPoints
+                wJoints, wTo_pred, newPoints
             )  # (B, T, J*3*2)
             bps_cond = self.encode_bps_feature(newPoints)
-            hand_condition = torch.cat([hand_condition, hand], dim=-1)
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
-
+            cond = torch.cat([orig_condition, hand], dim=-1)
+            cond = torch.cat([cond, bps_cond], dim=-2)  
+            assert False, "well something is wrong"
         elif self.opt.condition.bps == 1:
             bps_cond = self.encode_bps_feature(newPoints)
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+            cond = torch.cat([orig_condition, bps_cond], dim=-2)  # (B, T, (2*D) + 1024*3)
+
         else:
-            bs = hand_condition.shape[0]
-            bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(
-                hand_condition.device
+            bs = orig_condition.shape[0]
+            bps_cond = torch.zeros([bs, 1, orig_condition.shape[-1]]).to(
+                orig_condition.device
             )
-            cond = torch.cat([hand_condition, bps_cond], dim=-2)
+            cond = torch.cat([orig_condition, bps_cond], dim=-2)  # (B, T, (2*D))
 
         return cond
+        
+
+    def get_cond(self, hand_condition, xt, newPoints, wHands):
+        # print("TODO: designate another token")
+        wTo_pred = self.denormalize_data(xt)
+        
+        cond = self._get_bps_cond(hand_condition, wHands, wTo_pred, newPoints)
+        return cond
+
+        # print("TODO: if output hands, chagne this, and also take care of normalization! make sure in the same space!!!" )
+        # if self.opt.condition.bps == 2:
+
+        #     wTo_pred = self.denormalize_data(xt)
+        #     hand = self.encode_hand_sensor_feature(
+        #         wHands, wTo_pred, newPoints
+        #     )  # (B, T, J*3*2)
+        #     bps_cond = self.encode_bps_feature(newPoints)
+        #     hand_condition = torch.cat([hand_condition, hand], dim=-1)
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
+
+        # elif self.opt.condition.bps == 1:
+        #     bps_cond = self.encode_bps_feature(newPoints)
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
+        # else:
+        #     bs = hand_condition.shape[0]
+        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(
+        #         hand_condition.device
+        #     )
+        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
+
+        # return cond
 
     def encode_bps(self, newPoints):
         newCom = newPoints.mean(dim=1)  # (1, 3)
@@ -1016,7 +1029,110 @@ class CondGaussianDiffusion(nn.Module):
             x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
         return x_t_packed
 
+    def decode_dict(self, target_raw):
+        """
+        Decode target_raw back into its components.
+        
+        Args:
+            target_raw: [B, T, D] - denormalized target containing:
+                - object trajectory (9D: 3D translation + 6D rotation)
+                - hand representation (if hand == "out")
+                - contact information (if output.contact == True)
+        
+        Returns:
+            dict: Dictionary containing decoded components
+        """
+        B, T, D = target_raw.shape
+        
+        # Start with object trajectory (always first 9D)
+        obj_dim = 9
+        wTo = target_raw[..., :obj_dim]  # [B, T, 9]
+        
+        # Track current position in the concatenated tensor
+        current_pos = obj_dim
+        
+        # Extract hand representation if hand == "out"
+        left_hand_params = None
+        right_hand_params = None
+        if self.opt.hand == "out":
+            if self.opt.hand_rep == "joints":
+                # Hand joints: 21 joints * 3D * 2 hands = 126D
+                hand_dim = 21 * 3 * 2
+                hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 126]
+                left_hand, right_hand = torch.split(hand_rep, 21 * 3, dim=-1)  # [B, T, 63] each
+                
+                # Convert joints to hand parameters (this would need the inverse of joint2verts_faces_joints)
+                # For now, we'll need to implement this conversion or use a different approach
+                left_hand_params = left_hand
+                right_hand_params = right_hand
+                
+            elif self.opt.hand_rep == "theta":
+                # Hand theta: (3+3+15+10) * 2 = 62D
+                hand_dim = (3 + 3 + 15 + 10) * 2
+                hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 62]
+                left_hand_params, right_hand_params = torch.split(hand_rep, hand_dim // 2, dim=-1)  # [B, T, 31] each
+            
+            current_pos += hand_dim
+        
+        # Extract contact information if present
+        contact = None
+        if self.opt.output.contact:
+            contact_dim = 2  # left and right hand contact
+            contact = target_raw[..., current_pos:current_pos + contact_dim]  # [B, T, 2]
+            current_pos += contact_dim
+        
+        rtn = {
+            'wTo': wTo,
+            'left_hand_params': left_hand_params,
+            'right_hand_params': right_hand_params,
+            'contact': contact,
+        }
+        return rtn
 
+    def decode_hand_joints(self, left_hand, right_hand):
+        device = left_hand.device if left_hand is not None else right_hand.device
+        hand_rep = self.opt.hand_rep
+        if left_hand is not None:
+            if hand_rep == "joints":
+                left_joints = left_hand
+            elif hand_rep == "theta":
+                _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
+        if right_hand is not None:
+            if hand_rep == "joints":
+                right_joints = right_hand
+            elif hand_rep == "theta":
+                _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
+
+        B, T, J, _ = left_joints.shape
+        left_joints = left_joints.reshape(B, T, J * 3)
+        right_joints = right_joints.reshape(B, T, J * 3)
+        joints = torch.cat([left_joints, right_joints], dim=-1)
+        return joints
+
+    def decode_hand_mesh(self, left_hand, right_hand):
+        device = left_hand.device if left_hand is not None else right_hand.device
+        
+        hand_rep = self.opt.hand_rep
+        if left_hand is not None:
+            if hand_rep == "joints":
+                verts, faces = plot_utils.pc_to_cubic_meshes(left_hand)
+            elif hand_rep == "theta":
+                verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
+            print(verts.shape, faces.shape, left_hand.shape)
+            left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+        else:
+            left_hand_meshes = None
+
+        if right_hand is not None:
+            if hand_rep == "joints":
+                verts, faces = plot_utils.pc_to_cubic_meshes(right_hand)
+            elif hand_rep == "theta":
+                verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
+            right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+        else:
+            right_hand_meshes = None
+
+        return (left_hand_meshes, right_hand_meshes)
 
 
 def quadratic_ts() -> np.ndarray:

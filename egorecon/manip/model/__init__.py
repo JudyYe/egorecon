@@ -31,6 +31,8 @@ def build_model(opt) -> CondGaussianDiffusion:
     repr_dim = 9  # Output dimension (3D translation + 6D rotation)
     if hand == 'out':
         repr_dim += hand_rep_dim
+    if opt.output.contact: 
+        repr_dim += 2
 
     diffusion_model = CondGaussianDiffusion(
         opt,

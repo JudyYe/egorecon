@@ -181,7 +181,7 @@ class Trainer(object):
             batch_size=1,
             num_workers=1,
         )
-        self.val_dl = cycle(dl)
+        self.val_dl = dl
         self.val_ds = ds
 
     def save(self, milestone):
@@ -257,33 +257,33 @@ class Trainer(object):
                 )  # [1] - sequence length
 
                 ######### add occlusion mask for traj repr, with some schedules
-                mask_prob = 0.5
-                max_infill_ratio = 0.1
-                prob = random.uniform(0, 1)
-                batch_size, clip_len, _ = cond.shape
-                if prob > 1 - mask_prob and 'traj_noisy_raw' in sample:
-                    traj_feat_dim = sample["traj_noisy_raw"].shape[-1]
-                    start = (
-                        torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
-                    )
-                    mask_len = (
-                        clip_len
-                        * torch.FloatTensor(batch_size).uniform_(0, 1)
-                        * max_infill_ratio
-                    ).long()
-                    end = start + mask_len
-                    end[end > clip_len] = clip_len
-                    mask_traj = torch.ones(batch_size, clip_len).to(device)  # [bs, t]
-                    for bs in range(batch_size):
-                        mask_traj[bs, start[bs] : end[bs]] = 0
-                    mask_traj_exp = mask_traj.unsqueeze(-1).repeat(
-                        1, 1, traj_feat_dim
-                    )  # [bs, t, 4]
-                    cond[:, :, -traj_feat_dim:] = (
-                        cond[:, :, -traj_feat_dim:] * mask_traj_exp
-                    )
-                else:
-                    mask_traj = torch.ones(batch_size, clip_len).to(device)
+                # mask_prob = 0.5
+                # max_infill_ratio = 0.1
+                # prob = random.uniform(0, 1)
+                # batch_size, clip_len, _ = cond.shape
+                # if prob > 1 - mask_prob and 'traj_noisy_raw' in sample:
+                #     traj_feat_dim = sample["traj_noisy_raw"].shape[-1]
+                #     start = (
+                #         torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
+                #     )
+                #     mask_len = (
+                #         clip_len
+                #         * torch.FloatTensor(batch_size).uniform_(0, 1)
+                #         * max_infill_ratio
+                #     ).long()
+                #     end = start + mask_len
+                #     end[end > clip_len] = clip_len
+                #     mask_traj = torch.ones(batch_size, clip_len).to(device)  # [bs, t]
+                #     for bs in range(batch_size):
+                #         mask_traj[bs, start[bs] : end[bs]] = 0
+                #     mask_traj_exp = mask_traj.unsqueeze(-1).repeat(
+                #         1, 1, traj_feat_dim
+                #     )  # [bs, t, 4]
+                #     cond[:, :, -traj_feat_dim:] = (
+                #         cond[:, :, -traj_feat_dim:] * mask_traj_exp
+                #     )
+                # else:
+                # mask_traj = torch.ones(batch_size, clip_len).to(device)
 
                 # Extract data from sample and move to device
                 # Generate padding mask
@@ -352,17 +352,20 @@ class Trainer(object):
                 # evaluation step
                 self.ema.ema_model.eval()
                 all_metrics = defaultdict(list)
+
+                metrics_train = self.validation_step(sample, pref=f"train/")
+                self.accumulate_metrics(
+                    metrics_train, all_metrics, pref="train/"
+                )
+
                 # Collect all metrics for comprehensive logging
                 with torch.no_grad():
                     for b, val_data_dict in enumerate(self.val_dl):
+                        if b >= 2:
+                            break
                         val_data_dict = model_utils.to_cuda(val_data_dict)
 
-                        metrics_train = self.validation_step(sample, pref=f"train/")
-                        self.accumulate_metrics(
-                            metrics_train, all_metrics, pref="train/"
-                        )
-
-                        metrics_val = self.validation_step(val_data_dict, pref=f"val/")
+                        metrics_val = self.validation_step(val_data_dict, pref=f"val/{b:03d}")
                         self.accumulate_metrics(metrics_val, all_metrics, pref="val/")
 
                 self.log_metrics_to_wandb(

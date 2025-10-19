@@ -734,12 +734,12 @@ class HandToObjectDataset(Dataset):
             metadata = pickle.load(f)
 
         mean, std = get_norm_stats(metadata, self.opt, "target")
-        self.mean_target = mean
-        self.std_target = std
+        self.mean_target = torch.FloatTensor(mean)
+        self.std_target = torch.FloatTensor(std)
 
         mean, std = get_norm_stats(metadata, self.opt, "condition")
-        self.mean_condition = mean
-        self.std_condition = std
+        self.mean_condition = torch.FloatTensor(mean)
+        self.std_condition = torch.FloatTensor(std)
 
     def _setup_full_trajectory_data_from_windows(self):
         """Setup full trajectory data by concatenating all windows in the current split."""
@@ -870,9 +870,7 @@ class HandToObjectDataset(Dataset):
         if self.opt.hand == "cond":
             condition = torch.cat([condition, hand_rep], dim=-1)
         condition = self.normalize_condition(condition)
-
-        oMesh = self.object_library_mesh[window["object_id"]]
-        newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
+        
 
         left_hand_param = self.hand_wrapper.dict2para(window["left_hand_params"], side="left", merge=True)
         right_hand_param = self.hand_wrapper.dict2para(window["right_hand_params"], side="right", merge=True)
@@ -897,7 +895,7 @@ class HandToObjectDataset(Dataset):
             "wTc": to_tensor(window["wTc"]),
             "newTo": window["newTo"],
             "newPoints": window["newPoints"][0],
-            "newMesh": newMesh,
+            "newMesh": window["newMesh"],
             "start_idx": window["start_idx"],
             "end_idx": window["end_idx"],
         }
@@ -929,6 +927,8 @@ class HandToObjectDataset(Dataset):
             )  # (1, 3, 3)
             newTo = geom_utils.rt_to_homo(newTo)  # (1, 4, 4)
 
+        # newTo = torch.eye(4)[None]
+        # logging.warning('debug!!!', newTo)
         window["object"] = self.transform_wTo_traj(window["object"], newTo)
 
         # Load object geometry
@@ -940,9 +940,13 @@ class HandToObjectDataset(Dataset):
         index = torch.randint(0, newPoints.shape[1], (nP,))
         newPoints = newPoints[:, index, :]
 
+        oMesh = self.object_library_mesh[window["object_id"]]
+        logging.warning('debug!!!', oMesh.verts_padded().shape, window["newTo"].shape, "HERERERE!!")
+        newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
+
         window["newTo"] = newTo
         window["newPoints"] = newPoints
-
+        window["newMesh"] = newMesh
         return window, newTo
 
     def add_noise_data(self, can_window_dict):
