@@ -5,10 +5,10 @@ def build_model(opt) -> CondGaussianDiffusion:
 
     # Define model
 
-    hand_rep = opt.get('hand_rep', 'joints')
+    hand_rep = opt.get('hand_rep', 'joint')
     if hand_rep == 'theta':
         hand_rep_dim = (3 + 3 + 15 + 10) * 2  # (2 X (3 + 3 + 15 + 10))
-    elif hand_rep == 'joints':
+    elif hand_rep == 'joint':
         hand_rep_dim = 21 * 3 * 2  # (2 X J X 3)
     else:
         raise ValueError(f"Invalid hand representation: {hand_rep}")

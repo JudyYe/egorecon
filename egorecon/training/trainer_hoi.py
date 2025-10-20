@@ -10,16 +10,17 @@ from omegaconf import OmegaConf
 from pytorch3d.structures import Meshes
 from torch.cuda.amp import autocast
 from ..manip.model import build_model
-from ..manip.model.guidance_optimizer_jax import (do_guidance_optimization,
-                                                  se3_to_wxyz_xyz,
-                                                  wxyz_xyz_to_se3)
+from ..manip.model.guidance_optimizer_jax import (
+    do_guidance_optimization,
+    se3_to_wxyz_xyz,
+    wxyz_xyz_to_se3,
+)
 from .trainer_proof_of_idea import Trainer as BaseTrainer
 
 
 class Trainer(BaseTrainer):
     def __init__(self, opt, diffusion_model, *args, **kwargs):
         super().__init__(opt, diffusion_model, *args, **kwargs)
-
 
     def validation_step(
         self,
@@ -116,65 +117,90 @@ class Trainer(BaseTrainer):
         if self.step % self.vis_every == 0 or just_vis:
             bs_for_vis = 1
 
-            val_data_dict_for_vis = {k: v[:bs_for_vis] for k, v in val_data_dict.items()}
-            fname = self.gen_vis_res(
+            val_data_dict_for_vis = {
+                k: v[:bs_for_vis] for k, v in val_data_dict.items()
+            }
+            log_dict = self.gen_vis_res(
                 self.step,
                 val_data_dict_for_vis,
-                {'pred_raw': object_pred_raw[:bs_for_vis]},
+                {"pred_raw": object_pred_raw[:bs_for_vis]},
                 pref=f"{pref}",
             )
             if self.use_wandb:
-                wandb.log(
-                    {f"{pref}vis": wandb.Video(fname)}, step=self.step,
-                )
+                wandb.log(log_dict, step=self.step)
 
             if sample_guide:
                 _ = self.gen_vis_res(
                     self.step,
                     val_data_dict_for_vis,
-                    {'pred_raw': post_object_pred_raw[:bs_for_vis]},
-                    pref=f"{pref}uid_{val_data_dict['object_id'][bs_for_vis - 1]}_post",
+                    {"pred_raw": post_object_pred_raw[:bs_for_vis]},
+                    pref=f"{pref}_post",
                 )
-                fname = self.gen_vis_res(
+                log_dict = self.gen_vis_res(
                     self.step,
                     val_data_dict_for_vis,
-                    {'pred_raw': guided_object_pred_raw[:bs_for_vis]},
+                    {"pred_raw": guided_object_pred_raw[:bs_for_vis]},
                     pref=f"{pref}_guided",
                 )
 
             if self.use_wandb:
-                wandb.log(
-                    {f"{pref}vis_guided": wandb.Video(fname)},
-                    step=self.step,
-                )
+                wandb.log(log_dict, step=self.step)
         if rtn_sample:
             return metrics, (object_pred_raw, guided_object_pred_raw)
         return metrics
 
     def gen_vis_res(self, step, batch, output, pref):
-        oObj = batch['newMesh'] # a Mesh?? 
+        oObj = batch["newMesh"]  # a Mesh??
 
-        oObj = Meshes(verts=[batch['newMesh'].verts_list()[0]], faces=[batch['newMesh'].faces_list()[0]]).to(device)
+        oObj = Meshes(
+            verts=[batch["newMesh"].verts_list()[0]],
+            faces=[batch["newMesh"].faces_list()[0]],
+        ).to(device)
 
         # motion_raw = batch['motion_raw']    # well object raw
         # gt_
-        wTo_gt = batch['target_raw'][0]
-        hand_meshes = self.model.decode_hand_mesh(batch['left_hand_params'][0], batch['right_hand_params'][0])
-        self.viz_off.log_hoi_step(*hand_meshes, wTo_gt, oObj, pref=pref + f'_gt_{step:07d}', contact=batch['contact'][0])
+        wTo_gt = batch["target_raw"][0]
+        hand_meshes = self.model.decode_hand_mesh(
+            batch["left_hand_params"][0],
+            batch["right_hand_params"][0],
+            hand_rep="theta",
+        )
+        fname = self.viz_off.log_hoi_step(
+            *hand_meshes,
+            wTo_gt,
+            oObj,
+            pref=pref + f"_gt_{step:07d}",
+            contact=batch["contact"][0],
+        )
+        log_dict = {f"{pref}vis_gt": wandb.Video(fname)}
 
         if output is not None:
-            pred_raw = output['pred_raw']
+            pred_raw = output["pred_raw"]
             pred_dict = self.model.decode_dict(pred_raw)
-            hand_pred_meshes = self.model.decode_hand_mesh(pred_dict['left_hand_params'][0], pred_dict['right_hand_params'][0])
-            wTo_pred = pred_dict['wTo'][0]
-            self.viz_off.log_hoi_step(*hand_pred_meshes, wTo_pred, oObj, pref=pref + f'_pred_{step:07d}', contact=pred_dict['contact'][0])
+            if self.opt.hand == "out":
+                hand_pred_meshes = self.model.decode_hand_mesh(
+                    pred_dict["left_hand_params"][0], pred_dict["right_hand_params"][0]
+                )
+            elif self.opt.hand == "cond":
+                hand_pred_meshes = hand_meshes
+            wTo_pred = pred_dict["wTo"][0]
+            fname_pred = self.viz_off.log_hoi_step(
+                *hand_pred_meshes,
+                wTo_pred,
+                oObj,
+                pref=pref + f"_pred_{step:07d}",
+                contact=pred_dict["contact"][0],
+            )
+            log_dict[f"{pref}vis_pred"] = wandb.Video(fname_pred)
 
+        return log_dict
 
     def test(self):
         for batch in self.val_dl:
             batch = model_utils.to_cuda(batch)
             self.gen_vis_res(self.step, batch, None, pref="test")
-        return 
+        return
+
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()
@@ -217,13 +243,13 @@ def run_train(opt, device):
         train_num_steps=opt.general.train_num_steps,
     )
 
-
     if opt.test:
         trainer.test()
     else:
         trainer.train()
 
     torch.cuda.empty_cache()
+
 
 device = torch.device("cuda:0")
 if __name__ == "__main__":

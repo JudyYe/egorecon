@@ -26,10 +26,38 @@
 bowl: 194930206998778
 spoon: 225397651484143
 
+
+
 python -m egorecon.training.trainer_hoi  -m  \
-  expname=dev/tmp \
+  expname=hoi/contact\${output.contact}_\${hand_rep}_obj \
+  experiment=obj_only \
+  dyn_only=true \
+  output.contact=false,true \
+  hand_rep=joint \
+  general.rerun=true general.wandb=true \
+  +engine=move
+
+
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=hoi/contact\${output.contact}_\${hand_rep} \
   experiment=hoi \
   dyn_only=true \
+  output.contact=false,true \
+  hand_rep=theta,joint \
+  general.rerun=true general.wandb=true \
+  +engine=move
+
+
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=hoi/contact\${output.contact}_\${hand_rep} \
+  experiment=hoi \
+  dyn_only=true \
+  output.contact=false \
+  hand_rep=joint \
+  general.rerun=true general.wandb=true \
+
+
+
   traindata=hotclip_mini 
 
 

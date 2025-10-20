@@ -1055,7 +1055,7 @@ class CondGaussianDiffusion(nn.Module):
         left_hand_params = None
         right_hand_params = None
         if self.opt.hand == "out":
-            if self.opt.hand_rep == "joints":
+            if self.opt.hand_rep == "joint":
                 # Hand joints: 21 joints * 3D * 2 hands = 126D
                 hand_dim = 21 * 3 * 2
                 hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 126]
@@ -1080,6 +1080,8 @@ class CondGaussianDiffusion(nn.Module):
             contact_dim = 2  # left and right hand contact
             contact = target_raw[..., current_pos:current_pos + contact_dim]  # [B, T, 2]
             current_pos += contact_dim
+        else:
+            contact = torch.zeros([B, T, 2], device=target_raw.device)
         
         rtn = {
             'wTo': wTo,
@@ -1093,12 +1095,12 @@ class CondGaussianDiffusion(nn.Module):
         device = left_hand.device if left_hand is not None else right_hand.device
         hand_rep = self.opt.hand_rep
         if left_hand is not None:
-            if hand_rep == "joints":
+            if hand_rep == "joint":
                 left_joints = left_hand
             elif hand_rep == "theta":
                 _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
         if right_hand is not None:
-            if hand_rep == "joints":
+            if hand_rep == "joint":
                 right_joints = right_hand
             elif hand_rep == "theta":
                 _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
@@ -1109,26 +1111,28 @@ class CondGaussianDiffusion(nn.Module):
         joints = torch.cat([left_joints, right_joints], dim=-1)
         return joints
 
-    def decode_hand_mesh(self, left_hand, right_hand):
+    def decode_hand_mesh(self, left_hand, right_hand, hand_rep=None):
         device = left_hand.device if left_hand is not None else right_hand.device
         
-        hand_rep = self.opt.hand_rep
+        if hand_rep is None:
+            hand_rep = self.opt.hand_rep
         if left_hand is not None:
-            if hand_rep == "joints":
-                verts, faces = plot_utils.pc_to_cubic_meshes(left_hand)
+            if hand_rep == "joint":
+                T, Jx3 = left_hand.shape
+                left_hand_meshes = plot_utils.pc_to_cubic_meshes(left_hand.reshape(T, Jx3 // 3, 3))
             elif hand_rep == "theta":
                 verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
-            print(verts.shape, faces.shape, left_hand.shape)
-            left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+                left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
         else:
             left_hand_meshes = None
 
         if right_hand is not None:
-            if hand_rep == "joints":
-                verts, faces = plot_utils.pc_to_cubic_meshes(right_hand)
+            if hand_rep == "joint":
+                T, Jx3 = right_hand.shape
+                right_hand_meshes = plot_utils.pc_to_cubic_meshes(right_hand.reshape(T, Jx3 // 3, 3))
             elif hand_rep == "theta":
                 verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
-            right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+                right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
         else:
             right_hand_meshes = None
 

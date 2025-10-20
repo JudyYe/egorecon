@@ -340,6 +340,45 @@ def batch_preprocess():
         os.rmdir(lock_file)
 
 
+
+def find_missing_contact():
+    data_file = osp.join(args.preprocess_dir, "dataset.pkl")
+    with open(data_file, "rb") as f:
+        data = pickle.load(f)
+
+    data_dir = osp.join(args.preprocess_dir, "dataset_contact")
+    for s, seq in enumerate(tqdm(data.keys())):
+        obj_list = data[seq]["objects"]
+        npz_file = osp.join(data_dir, f"{seq}.npz")
+        flag = False
+
+
+        try:
+            new_data = np.load(npz_file, allow_pickle=True)
+            new_data = dict(new_data)
+            for obj in obj_list:
+                key = f"obj_{obj}_contact_lr"
+                if key not in new_data:
+                    print(f"Missing contact for {seq}, {obj}")
+                    flag = True
+                    break
+        except EOFError:
+            print(f"EOFError {seq}")
+            flag = True
+
+        done_file = osp.join(data_dir, "done", f"{seq}.done")
+        if flag:
+            os.system('rm -rf ' + done_file)
+        else:
+            os.makedirs(done_file, exist_ok=True)
+        #         continue
+        # key = f"obj_{obj_list[0]}_contact_lr"
+        # if key not in data[seq]:
+        #     print(f"Missing contact for {seq}")
+        #     continue
+
+
+
 @torch.no_grad()
 def patch_contact(contact_th=0.01):
     # per-frame contact label: yes or no, threshold is contact_th
@@ -361,6 +400,7 @@ def patch_contact(contact_th=0.01):
         done_file = osp.join(args.preprocess_dir, "dataset_contact", "done", f"{seq}.done")
 
         if osp.exists(done_file):
+            print(f"Done {seq}")
             continue
         try:
             os.makedirs(lock_file)
@@ -513,7 +553,8 @@ if __name__ == "__main__":
 
     # batch_preprocess()
 
-    merge_preprocess()
+    # find_missing_contact()
     # patch_contact()
+    merge_preprocess()
 
     # make_own_split()

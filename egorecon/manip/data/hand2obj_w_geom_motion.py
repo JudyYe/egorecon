@@ -8,6 +8,7 @@ import os
 import os.path as osp
 import pickle
 from copy import deepcopy
+from pytorch3d.structures import Meshes
 
 import numpy as np
 import smplx
@@ -549,7 +550,7 @@ class HandToObjectDataset(Dataset):
                         contact = obj_data["contact_lr"][start_idx:end_idx]
                     else:
                         contact = np.zeros([self.window_size, 2])
-                        logging.warning("are you sure you don't have contact data?")
+                        logging.warning(f"are you sure you don't have contact data?, {obj_data.keys()}, {self.data_path} {demo_id} {obj_id}")
 
                     window_data = {
                         "demo_id": demo_id,
@@ -814,7 +815,7 @@ class HandToObjectDataset(Dataset):
 
     def __getitem__(self, idx):
         idx = idx % len(self.windows)
-        window = self.windows[idx]
+        window = deepcopy(self.windows[idx])
 
         # # Add synthetic noise to the data
         # window_noisy = self.add_noise_data(window)
@@ -836,7 +837,7 @@ class HandToObjectDataset(Dataset):
         object_traj = to_tensor(window["object"])
         contact = to_tensor(window["contact"])
 
-        if self.opt.hand_rep == "joints":
+        if self.opt.hand_rep == "joint":
             hand_rep = torch.cat([left_hand, right_hand], dim=-1)
         elif self.opt.hand_rep == "theta":
             left_hand_params_dict = window["left_hand_params"]
@@ -941,9 +942,8 @@ class HandToObjectDataset(Dataset):
         newPoints = newPoints[:, index, :]
 
         oMesh = self.object_library_mesh[window["object_id"]]
-        logging.warning('debug!!!', oMesh.verts_padded().shape, window["newTo"].shape, "HERERERE!!")
-        newMesh = mesh_utils.apply_transform(oMesh, window["newTo"])
-
+        newMesh = mesh_utils.apply_transform(oMesh, newTo)
+    
         window["newTo"] = newTo
         window["newPoints"] = newPoints
         window["newMesh"] = newMesh
@@ -1232,7 +1232,7 @@ def create_norm_starts():
 
 # Global configuration variables
 th = 0.05
-use_cache = False
+use_cache = True
 aug_cano = True
 # aug_world = False
 

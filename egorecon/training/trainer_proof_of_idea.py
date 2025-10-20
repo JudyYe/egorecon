@@ -615,7 +615,7 @@ class Trainer(object):
             if self.use_wandb:
                 object_id = val_data_dict["object_id"][bs_for_vis - 1]
                 wandb.log(
-                    {f"{pref}vis_uid_{object_id}": wandb.Video(fname)}, step=self.step
+                    {f"{pref}vis": wandb.Video(fname)}, step=self.step
                 )
 
             if sample_guide:
@@ -642,7 +642,7 @@ class Trainer(object):
 
             if self.use_wandb:
                 wandb.log(
-                    {f"{pref}vis_uid_{object_id}_guided": wandb.Video(fname)},
+                    {f"{pref}vis_guided": wandb.Video(fname)},
                     step=self.step,
                 )
         if rtn_sample:

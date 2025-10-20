@@ -30,6 +30,8 @@ def get_norm_stats(metafile, opt, field='target'):
         left_std = metadata["left_hand_std"]
         right_mean = metadata["right_hand_mean"]
         right_std = metadata["right_hand_std"]
+    else:
+        raise NotImplementedError(f"Invalid hand representation: {hand_rep}")
     hand_mean = np.concatenate([left_mean, right_mean], axis=-1)
     hand_std = np.concatenate([left_std, right_std], axis=-1)
 

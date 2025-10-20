@@ -22,6 +22,8 @@ datasets:
 
 condition: 
   noisy_obj: false
-  bps: 2
+  bps: 1
 
 dyn_only: true
+
+ds_type: w_motion
