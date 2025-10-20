@@ -56,6 +56,7 @@ class Trainer(object):
         save_and_sample_every=40000,
         results_folder="./results",
         use_wandb=True,
+        load_data=True,
     ):
         super().__init__()
         self.opt = opt
@@ -95,8 +96,9 @@ class Trainer(object):
         self.batch_size = train_batch_size
         self.model = diffusion_model
 
-        self.prep_dataloader(window_size=opt.model.window)
-
+        if load_data:
+            self.prep_dataloader(window_size=opt.model.window)
+        
         diffusion_model.to(device)
         self.ema = EMA(diffusion_model, beta=ema_decay, update_every=ema_update_every)
 
@@ -393,51 +395,51 @@ class Trainer(object):
                 # baseline
                 bs_for_vis = 1
 
-                if 'traj_noisy_raw' in val_data_dict:
-                    x = val_data_dict["traj_noisy_raw"]
-                else:
-                    x = val_data_dict["traj_raw"]
-                obs = self.model.get_obs(guide=True, batch=val_data_dict, shape=x.shape)
+                # if 'traj_noisy_raw' in val_data_dict:
+                #     x = val_data_dict["traj_noisy_raw"]
+                # else:
+                #     x = val_data_dict["traj_raw"]
+                # obs = self.model.get_obs(guide=True, batch=val_data_dict, shape=x.shape)
 
-                # x_opt = self.model.guide_jax(x, model_kwargs={'obs': obs})
-                x_opt, _ = do_guidance_optimization(
-                    traj=se3_to_wxyz_xyz(x),
-                    obs=obs,
-                    guidance_mode=self.opt.guide.hint,
-                    phase="fp",
-                    verbose=True,
-                    # verbose=False,
-                )
+                # # x_opt = self.model.guide_jax(x, model_kwargs={'obs': obs})
+                # x_opt, _ = do_guidance_optimization(
+                #     traj=se3_to_wxyz_xyz(x),
+                #     obs=obs,
+                #     guidance_mode=self.opt.guide.hint,
+                #     phase="fp",
+                #     verbose=True,
+                #     # verbose=False,
+                # )
 
-                points = val_data_dict["newPoints"][:bs_for_vis]
-                points = plot_utils.pc_to_cubic_meshes(points[:, :vis_P])
+                # points = val_data_dict["newPoints"][:bs_for_vis]
+                # points = plot_utils.pc_to_cubic_meshes(points[:, :vis_P])
 
-                hand_poses_raw = val_data_dict["hand_raw"][
-                    :bs_for_vis
-                ]  # [1, T, 2*D] - left + right hand
-                object_motion_raw = val_data_dict["target_raw"][:bs_for_vis]
-                left_hand_raw, right_hand_raw = torch.split(
-                    hand_poses_raw, 21 * 3, dim=-1
-                )
-                print(
-                    "x_opt",
-                    x_opt.shape,
-                    x.shape,
-                    object_motion_raw.shape,
-                    left_hand_raw.shape,
-                    right_hand_raw.shape,
-                )
-                fname = self.gen_vis_res(
-                    self.step,
-                    left_hand_raw,
-                    right_hand_raw,
-                    object_motion_raw,
-                    object_noisy=x[:bs_for_vis],
-                    object_pred=x_opt[:bs_for_vis],
-                    object_id=points,  # val_data_dict["object_id"][bs_for_vis-1],
-                    seq_len=x_opt.shape[1],
-                    pref=f"{self.opt.test_folder}/{b}_sample_fp_",
-                )
+                # hand_poses_raw = val_data_dict["hand_raw"][
+                #     :bs_for_vis
+                # ]  # [1, T, 2*D] - left + right hand
+                # object_motion_raw = val_data_dict["target_raw"][:bs_for_vis]
+                # left_hand_raw, right_hand_raw = torch.split(
+                #     hand_poses_raw, 21 * 3, dim=-1
+                # )
+                # print(
+                #     "x_opt",
+                #     x_opt.shape,
+                #     x.shape,
+                #     object_motion_raw.shape,
+                #     left_hand_raw.shape,
+                #     right_hand_raw.shape,
+                # )
+                # fname = self.gen_vis_res(
+                #     self.step,
+                #     left_hand_raw,
+                #     right_hand_raw,
+                #     object_motion_raw,
+                #     object_noisy=x[:bs_for_vis],
+                #     object_pred=x_opt[:bs_for_vis],
+                #     object_id=points,  # val_data_dict["object_id"][bs_for_vis-1],
+                #     seq_len=x_opt.shape[1],
+                #     pref=f"{self.opt.test_folder}/{b}_sample_fp_",
+                # )
 
                 for s in range(3):
                     _, (pred, _) = self.validation_step(
@@ -448,22 +450,22 @@ class Trainer(object):
                         rtn_sample=True,
                     )
 
-                    batch = val_data_dict
-                    fname = "outputs/tmp.pkl"
-                    if not osp.exists(fname):
-                        print("save tmp")
-                        x = batch["target"]
-                        wTo_pred_se3 = self.model.denormalize_data(pred)  # (B, T, 3+6)
-                        wTo_gt = batch["target_raw"]
-                        with open(fname, "wb") as f:
-                            pickle.dump(
-                                {
-                                    "x": wTo_pred_se3,
-                                    "gt": wTo_gt,
-                                    "batch": batch,
-                                },
-                                f,
-                            )
+                    # batch = val_data_dict
+                    # fname = "outputs/tmp.pkl"
+                    # if not osp.exists(fname):
+                    #     print("save tmp")
+                    #     x = batch["target"]
+                    #     wTo_pred_se3 = self.model.denormalize_data(pred)  # (B, T, 3+6)
+                    #     wTo_gt = batch["target_raw"]
+                    #     with open(fname, "wb") as f:
+                    #         pickle.dump(
+                    #             {
+                    #                 "x": wTo_pred_se3,
+                    #                 "gt": wTo_gt,
+                    #                 "batch": batch,
+                    #             },
+                    #             f,
+                    #         )
 
             for b, val_data_dict in enumerate(self.dl):
                 if b >= 10:

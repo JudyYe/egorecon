@@ -18,6 +18,65 @@ from ..manip.model.guidance_optimizer_jax import (
 from .trainer_proof_of_idea import Trainer as BaseTrainer
 
 
+def gen_vis_res(model, viz_off, opt, step, batch, output, pref):
+    """Generate visualization results for hand-object interaction.
+    
+    Args:
+        model: The diffusion model used for decoding
+        viz_off: Pt3dVisualizer instance for visualization
+        opt: Configuration object containing hand settings
+        step: Current step number
+        batch: Input batch data
+        output: Model output predictions
+        pref: Prefix for visualization files
+    """
+    oObj = batch["newMesh"]  # a Mesh??
+
+    oObj = Meshes(
+        verts=[batch["newMesh"].verts_list()[0]],
+        faces=[batch["newMesh"].faces_list()[0]],
+    ).to(device)
+
+    # motion_raw = batch['motion_raw']    # well object raw
+    # gt_
+    wTo_gt = batch["target_raw"][0]
+    hand_meshes = model.decode_hand_mesh(
+        batch["left_hand_params"][0],
+        batch["right_hand_params"][0],
+        hand_rep="theta",
+    )
+    fname = viz_off.log_hoi_step(
+        *hand_meshes,
+        wTo_gt,
+        oObj,
+        pref=pref + f"_gt_{step:07d}",
+        contact=batch["contact"][0],
+    )
+    log_dict = {f"{pref}vis_gt": wandb.Video(fname)}
+
+    if output is not None:
+        pred_raw = output["pred_raw"]
+        pred_dict = model.decode_dict(pred_raw)
+        hand_io = opt.get("hand", "cond")
+        if hand_io == "out":
+            hand_pred_meshes = model.decode_hand_mesh(
+                pred_dict["left_hand_params"][0], pred_dict["right_hand_params"][0]
+            )
+        elif hand_io == "cond":
+            hand_pred_meshes = hand_meshes
+        wTo_pred = pred_dict["wTo"][0]
+        fname_pred = viz_off.log_hoi_step(
+            *hand_pred_meshes,
+            wTo_pred,
+            oObj,
+            pref=pref + f"_pred_{step:07d}",
+            contact=pred_dict["contact"][0],
+        )
+        log_dict[f"{pref}vis_pred"] = wandb.Video(fname_pred)
+
+    return log_dict
+
+
 class Trainer(BaseTrainer):
     def __init__(self, opt, diffusion_model, *args, **kwargs):
         super().__init__(opt, diffusion_model, *args, **kwargs)
@@ -120,7 +179,10 @@ class Trainer(BaseTrainer):
             val_data_dict_for_vis = {
                 k: v[:bs_for_vis] for k, v in val_data_dict.items()
             }
-            log_dict = self.gen_vis_res(
+            log_dict = gen_vis_res(
+                self.model,
+                self.viz_off,
+                self.opt,
                 self.step,
                 val_data_dict_for_vis,
                 {"pred_raw": object_pred_raw[:bs_for_vis]},
@@ -130,13 +192,19 @@ class Trainer(BaseTrainer):
                 wandb.log(log_dict, step=self.step)
 
             if sample_guide:
-                _ = self.gen_vis_res(
+                _ = gen_vis_res(
+                    self.model,
+                    self.viz_off,
+                    self.opt,
                     self.step,
                     val_data_dict_for_vis,
                     {"pred_raw": post_object_pred_raw[:bs_for_vis]},
                     pref=f"{pref}_post",
                 )
-                log_dict = self.gen_vis_res(
+                log_dict = gen_vis_res(
+                    self.model,
+                    self.viz_off,
+                    self.opt,
                     self.step,
                     val_data_dict_for_vis,
                     {"pred_raw": guided_object_pred_raw[:bs_for_vis]},
@@ -149,56 +217,11 @@ class Trainer(BaseTrainer):
             return metrics, (object_pred_raw, guided_object_pred_raw)
         return metrics
 
-    def gen_vis_res(self, step, batch, output, pref):
-        oObj = batch["newMesh"]  # a Mesh??
-
-        oObj = Meshes(
-            verts=[batch["newMesh"].verts_list()[0]],
-            faces=[batch["newMesh"].faces_list()[0]],
-        ).to(device)
-
-        # motion_raw = batch['motion_raw']    # well object raw
-        # gt_
-        wTo_gt = batch["target_raw"][0]
-        hand_meshes = self.model.decode_hand_mesh(
-            batch["left_hand_params"][0],
-            batch["right_hand_params"][0],
-            hand_rep="theta",
-        )
-        fname = self.viz_off.log_hoi_step(
-            *hand_meshes,
-            wTo_gt,
-            oObj,
-            pref=pref + f"_gt_{step:07d}",
-            contact=batch["contact"][0],
-        )
-        log_dict = {f"{pref}vis_gt": wandb.Video(fname)}
-
-        if output is not None:
-            pred_raw = output["pred_raw"]
-            pred_dict = self.model.decode_dict(pred_raw)
-            if self.opt.hand == "out":
-                hand_pred_meshes = self.model.decode_hand_mesh(
-                    pred_dict["left_hand_params"][0], pred_dict["right_hand_params"][0]
-                )
-            elif self.opt.hand == "cond":
-                hand_pred_meshes = hand_meshes
-            wTo_pred = pred_dict["wTo"][0]
-            fname_pred = self.viz_off.log_hoi_step(
-                *hand_pred_meshes,
-                wTo_pred,
-                oObj,
-                pref=pref + f"_pred_{step:07d}",
-                contact=pred_dict["contact"][0],
-            )
-            log_dict[f"{pref}vis_pred"] = wandb.Video(fname_pred)
-
-        return log_dict
 
     def test(self):
         for batch in self.val_dl:
             batch = model_utils.to_cuda(batch)
-            self.gen_vis_res(self.step, batch, None, pref="test")
+            gen_vis_res(self.model, self.viz_off, self.opt, self.step, batch, None, pref="test")
         return
 
 

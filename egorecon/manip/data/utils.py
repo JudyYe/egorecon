@@ -40,7 +40,9 @@ def get_norm_stats(metafile, opt, field='target'):
         std.append(hand_std)
 
 
-    contact = opt.output.contact
+    contact = False
+    if 'output' in opt:
+        contact = opt.output.contact
 
     if contact:
         contact_mean = np.array([[0, 0]])

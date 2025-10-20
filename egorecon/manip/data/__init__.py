@@ -10,9 +10,10 @@ from torch.utils.data._utils.collate import collate, default_collate_fn_map
 
 
 def build_dataset(ds_name, opt, data_cfg, is_train=True):
-    if opt.ds_type == "w_geom":
+    ds_type = opt.get('ds_type', 'w_motion')
+    if ds_type == "w_geom":
         from .hand_to_object_dataset_w_geometry import HandToObjectDataset as Dataset
-    elif opt.ds_type == "w_motion":
+    elif ds_type == "w_motion":
         from .hand2obj_w_geom_motion import HandToObjectDataset as Dataset
 
     split = data_cfg.trainsplit if is_train else data_cfg.testsplit

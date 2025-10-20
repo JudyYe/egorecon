@@ -407,7 +407,7 @@ class HandToObjectDataset(Dataset):
         cache_name = osp.join(
             self.opt.paths.data_dir,
             "cache",
-            f"{self.data_cfg.name}_{self.split}_{self.opt.coord}.npz",
+            f"{self.data_cfg.name}_{self.split}_{self.opt.get('coord', 'camera')}.npz",
         )
 
         if osp.exists(cache_name) and use_cache:
@@ -454,7 +454,8 @@ class HandToObjectDataset(Dataset):
                         :, [3, 0, 1, 2]
                     ]  # wxyz
 
-                    if self.opt.coord == "camera":
+                    coord = self.opt.get('coord', "camera")
+                    if coord == "camera":
                         camera_pos = demo_data["wTc"][start_idx:end_idx][:, :3, 3]
                         camera_rot = demo_data["wTc"][start_idx:end_idx][:, :3, :3]
                         camera_quat = R.from_matrix(camera_rot).as_quat()[
@@ -477,7 +478,7 @@ class HandToObjectDataset(Dataset):
                         canoTw = np.eye(4)
                         canoTw[:3, :3] = canoTw_rot
                         canoTw[:3, 3] = -cano_camera_pos[0:1, :].copy()
-                    elif self.opt.coord == "right_wrist":
+                    elif coord == "right_wrist":
                         # 1st frame of right wrist
                         mano_params_dict = {
                             "global_orient": right_wrist_aa,
@@ -498,7 +499,7 @@ class HandToObjectDataset(Dataset):
                             )
                         )
                     else:
-                        raise ValueError(f"Invalid coordinate system: {self.opt.coord}")
+                        raise ValueError(f"Invalid coordinate system: {coord}")
 
                     # canonicalize: lr-hand, object, camera
 
@@ -821,11 +822,11 @@ class HandToObjectDataset(Dataset):
         # window_noisy = self.add_noise_data(window)
 
         # Add geometry and random canonical augmentation
-        if self.opt.datasets.augument.aug_cano:
+        if self.opt.datasets.augument.get("aug_cano", True):
             window, newoTo = self.augment_cano_object(window)
             # window_noisy['object'] = self.transform_wTo_traj(window_noisy['object'], newoTo)
 
-        if self.opt.datasets.augument.aug_world:
+        if self.opt.datasets.augument.get("aug_world", False):
             print(
                 "TODO: augment world cooridate too!"
             )  # random rotation around gravity direction
@@ -837,9 +838,10 @@ class HandToObjectDataset(Dataset):
         object_traj = to_tensor(window["object"])
         contact = to_tensor(window["contact"])
 
-        if self.opt.hand_rep == "joint":
+        hand_rep = self.opt.get('hand_rep', 'joint')
+        if hand_rep == "joint":
             hand_rep = torch.cat([left_hand, right_hand], dim=-1)
-        elif self.opt.hand_rep == "theta":
+        elif hand_rep == "theta":
             left_hand_params_dict = window["left_hand_params"]
             left_hand_params = self.hand_wrapper.dict2para(
                 left_hand_params_dict, side="left", merge=True
@@ -850,25 +852,26 @@ class HandToObjectDataset(Dataset):
             )
             hand_rep = torch.cat([left_hand_params, right_hand_params], dim=-1)
 
-        elif self.opt.hand_rep == "motion_rep":
+        elif hand_rep == "motion_rep":
             raise NotImplementedError("motion_rep not implemented yet")
         else:
-            raise ValueError(f"Invalid hand representation: {self.opt.hand_rep}")
+            raise ValueError(f"Invalid hand representation: {hand_rep}")
 
         target = object_traj
         condition = torch.zeros([self.window_size, 0])
 
         # create target
-        if self.opt.hand == "out":
+        hand_io = self.opt.get("hand", "cond")
+        if hand_io == "out":
             target = torch.cat([target, hand_rep], dim=-1)
-        if self.opt.output.contact:
+        if "output" in self.opt and self.opt.output.contact:
             target = torch.cat([target, contact], dim=-1)
 
         target_unnorm = target.clone()
         target = self.normalize_target(target)
 
         # create condition
-        if self.opt.hand == "cond":
+        if hand_io == "cond":
             condition = torch.cat([condition, hand_rep], dim=-1)
         condition = self.normalize_condition(condition)
         

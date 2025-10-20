@@ -71,6 +71,7 @@ def do_guidance_optimization(
     intr_jax = None
     x2d_jax = None
 
+
     if "newPoints" in obs:
         oPoints_jax = cast(jax.Array, obs["newPoints"].numpy(force=True))
     if "wTc" in obs:
@@ -82,7 +83,10 @@ def do_guidance_optimization(
 
     if "joints_traj" in obs:
         joints_traj_jax = cast(jax.Array, obs["joints_traj"].numpy(force=True))
-
+    
+    # Extract is_contact parameter
+    if "contact" in obs:
+        is_contact_jax = cast(jax.Array, obs["contact"].numpy(force=True))
     # Optimize using vmapped function
     optimized_traj, debug_info = _optimize_vmapped(
         x_traj=x_traj_jax,
@@ -94,6 +98,7 @@ def do_guidance_optimization(
         intr=intr_jax,
         x2d=x2d_jax,
         joints_traj=joints_traj_jax,
+        is_contact=is_contact_jax,
     )
 
     # Convert back to torch tensor
@@ -129,6 +134,7 @@ def _optimize_vmapped(
     intr: jax.Array = None,
     x2d: jax.Array = None,
     joints_traj: jax.Array = None,
+    is_contact: jax.Array = None,
 ) -> tuple[jax.Array, dict]:
     """Vectorized optimization over batch dimension using JAX vmap.
 
@@ -141,10 +147,16 @@ def _optimize_vmapped(
     6. **Performance**: Significantly faster than sequential optimization loops
 
     Args:
-        x_traj: SE3 trajectories to optimize (B, T, 9) - PARAMETERS
-        gt_traj: Ground truth SE3 trajectories (B, T, 9) - OBSERVATIONS
+        x_traj: SE3 trajectories to optimize (B, T, 7) - PARAMETERS
+        gt_traj: Ground truth SE3 trajectories (B, T, 7) - OBSERVATIONS
         guidance_params: Guidance parameters
         verbose: Whether to print optimization progress
+        oPoints: Object points for reprojection (optional)
+        wTc: Camera poses (optional)
+        intr: Camera intrinsics (optional)
+        x2d: 2D observations (optional)
+        joints_traj: Joint trajectories (optional)
+        is_contact: Contact flags for left and right hands (B, T, 2) - optional
 
     Returns:
         Tuple of (optimized_trajectories, debug_info)
@@ -159,7 +171,7 @@ def _optimize_vmapped(
             # intr=intr,
             # x2d=x2d,
         )
-    )(x_traj=x_traj, gt_traj=gt_traj, oPoints=oPoints, wTc=wTc, intr=intr, x2d=x2d, joints_traj=joints_traj)
+    )(x_traj=x_traj, gt_traj=gt_traj, oPoints=oPoints, wTc=wTc, intr=intr, x2d=x2d, joints_traj=joints_traj, is_contact=is_contact)
 
 
 # Modes for guidance
@@ -186,9 +198,10 @@ class JaxGuidanceParams:
     use_reproj: jdc.Static[bool] = False
     use_reproj_cd: jdc.Static[bool] = False
 
-    use_abs_contact: jdc.Static[bool] = False
-    use_rel_contact: jdc.Static[bool] = False
-    contact_weight: float = 1.0
+    use_abs_contact: jdc.Static[bool] = True
+    use_rel_contact: jdc.Static[bool] = True
+    contact_weight: float = 10.0
+    rel_contact_weight: float = 40.
 
     # smoothness weights
     tsl_weight: float = 1.0
@@ -200,7 +213,7 @@ class JaxGuidanceParams:
 
     hand_quat_smoothness_weight = 1.0
 
-    contact_th: float = 0.03
+    contact_th: float = 0.5
 
 
     # Optimization parameters
@@ -240,13 +253,15 @@ class JaxGuidanceParams:
             elif phase == "inner":
                 max_iters = 25
             elif phase == "post":
-                max_iters = 50
+                max_iters = 100
             return JaxGuidanceParams(
                 use_l2=False,
                 use_reproj=False,
                 use_reproj_cd=True,
-                use_contact=True,
+                use_abs_contact=True,
+                use_rel_contact=True,
                 reproj_weight=1.0,
+                use_smoothness=True,
                 max_iters=max_iters,
             )
         else:
@@ -263,6 +278,7 @@ def _optimize(
     intr: jax.Array = None,
     x2d: jax.Array = None,
     joints_traj: jax.Array = None,
+    is_contact: jax.Array = None,
 ) -> jax.Array:
     """Apply constraints using Levenberg-Marquardt optimizer. Returns updated SE3 trajectory.
 
@@ -271,7 +287,12 @@ def _optimize(
         gt_traj: Ground truth SE3 trajectory (T, 7) - wxyz_xyz format [qw, qx, qy, qz, x, y, z] - OBSERVATIONS
         guidance_params: Guidance parameters
         verbose: Whether to print optimization progress
-        joints_traj: Joints trajectory (T, 21, 3) - JOINT INDICES
+        oPoints: Object points for reprojection (optional)
+        wTc: Camera poses (optional)
+        intr: Camera intrinsics (optional)
+        x2d: 2D observations (optional)
+        joints_traj: Joints trajectory (T, 42, 3) - JOINT INDICES for left and right hands
+        is_contact: Contact flags for left and right hands (T, 2) - optional
     Returns:
         Optimized SE3 trajectory (T, 7)
     """
@@ -453,12 +474,14 @@ def _optimize(
             _SE3TrajectoryVar(jnp.arange(timesteps)),
             joints_traj,
             oPoints[None],
+            is_contact,
         )
         def abs_contact_cost(
             vals: jaxls.VarValues,
             cur: _SE3TrajectoryVar,  
             joints_traj: jax.Array,  # (J = 42, 3)
             oPoints: jax.Array,
+            is_contact: jax.Array,
         ) -> jax.Array:
 
             current_traj = jaxlie.SE3(vals[cur])
@@ -471,10 +494,9 @@ def _optimize(
             contact_cost = dist.min(axis=0)  * guidance_params.contact_weight  # (2, J//2)
             # contact_cost = -jax.lax.top_k(-contact_cost, k=5, axis=-1)[0]
             # contact_cost = contact_cost.min(axis=-1, keepdims=True)
-            print(contact_cost.shape)
 
             # is_contact = jnp.min(dist, axis=-1) < guidance_params.contact_th
-            is_contact = jnp.array([0, 1])
+            # is_contact = jnp.array([0, 1])
             non_contact_cost = jnp.ones((2,1)) * 0 * guidance_params.contact_weight  # (2,)
 
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, non_contact_cost)
@@ -489,6 +511,8 @@ def _optimize(
             joints_traj[:-1],
             joints_traj[1:],
             oPoints[None],
+            is_contact[:-1],
+            is_contact[1:]
         )
         def relative_contact_cost(
             vals: jaxls.VarValues,
@@ -497,6 +521,8 @@ def _optimize(
             joints_traj_current: jax.Array,  # (J = 42, 3)
             joints_traj_next: jax.Array,
             oPoints: jax.Array,
+            is_contact_cur: jax.Array,
+            is_contact_next: jax.Array,
         ) -> jax.Array:
             current_traj = jaxlie.SE3(vals[current])
             # current_traj = jaxlie.SE3(x_traj[k_start])
@@ -522,7 +548,7 @@ def _optimize(
 
             # is_contact = (contact_cur < th) & (contact_next < th)  # (2,)
             # array((0, 1))
-            is_contact = jnp.array([0, 1])
+            is_contact = (is_contact_cur > 0) & (is_contact_next > 0)
 
             # p_near is the nearest point on the object to the current each joint
             p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
@@ -537,10 +563,11 @@ def _optimize(
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
             dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
+            print(dist_prox.shape)
             
-            contact_cost = guidance_params.contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
+            contact_cost = guidance_params.rel_contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
 
-            no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.contact_weight  # (2, J//2)
+            no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.rel_contact_weight  # (2, J//2)
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
 
             return cost.flatten()
@@ -764,6 +791,11 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
 
 
+    # Create dummy is_contact tensor with shape (B, T, 2) for left and right hands
+    BS, T = data["batch"]["target_raw"].shape[:2]
+    is_contact_dummy = torch.zeros(BS, T, 2, dtype=torch.bool)  # (B, T, 2) - False for no contact
+    is_contact_dummy[..., 1] = 1
+    
     obs = {
         # "x": se3_to_wxyz_xyz(
         #     data["gt"]
@@ -774,6 +806,7 @@ def test_optimization(mode="reproj_corrsp", test_shelf=False, save_dir='outputs/
         "intr": data["batch"]["intr"],  # (BS, 3, 3)
         "x2d": x2d,  # (BS, T, P, 2?)
         "joints_traj": data["batch"]["hand_raw"],
+        "contact": is_contact_dummy,  # (B, T, 2) - left and right hand contact flags
     }
     guidance_mode = mode  # "reproj_corrsp"  # Test reprojection mode
 

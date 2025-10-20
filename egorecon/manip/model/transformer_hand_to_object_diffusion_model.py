@@ -332,10 +332,12 @@ class CondGaussianDiffusion(nn.Module):
 
         self.bps_path = osp.join(opt.paths.data_dir, "bps/bps.pt")
         self.prep_bps_data()
+        self.set_metadata()
 
     def set_metadata(self, *args, **kwargs):
         meta_file = self.opt.traindata.meta_file
         mean, std = get_norm_stats(meta_file, self.opt, 'target')
+        print('mean', mean.shape)
         self.register_buffer("mean", torch.FloatTensor(mean.reshape(1, 1, -1)))
         self.register_buffer("std", torch.FloatTensor(std.reshape(1, 1, -1)))
 
@@ -614,11 +616,13 @@ class CondGaussianDiffusion(nn.Module):
                 x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
 
             obs = {
+                "contact": batch['contact'],
                 "x": se3_to_wxyz_xyz(batch['target_raw']),
                 "newPoints": batch['newPoints'],
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,
+                "joints_traj": batch["hand_raw"]
             }
         return obs
 
@@ -1054,8 +1058,10 @@ class CondGaussianDiffusion(nn.Module):
         # Extract hand representation if hand == "out"
         left_hand_params = None
         right_hand_params = None
-        if self.opt.hand == "out":
-            if self.opt.hand_rep == "joint":
+        hand_io = self.opt.get("hand", "cond")
+        hand_rep = self.opt.get("hand_rep", "joints")
+        if hand_io == "out":
+            if hand_rep == "joint":
                 # Hand joints: 21 joints * 3D * 2 hands = 126D
                 hand_dim = 21 * 3 * 2
                 hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 126]
@@ -1066,7 +1072,7 @@ class CondGaussianDiffusion(nn.Module):
                 left_hand_params = left_hand
                 right_hand_params = right_hand
                 
-            elif self.opt.hand_rep == "theta":
+            elif hand_rep == "theta":
                 # Hand theta: (3+3+15+10) * 2 = 62D
                 hand_dim = (3 + 3 + 15 + 10) * 2
                 hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 62]
@@ -1076,7 +1082,8 @@ class CondGaussianDiffusion(nn.Module):
         
         # Extract contact information if present
         contact = None
-        if self.opt.output.contact:
+
+        if "output" in self.opt and self.opt.output.contact:
             contact_dim = 2  # left and right hand contact
             contact = target_raw[..., current_pos:current_pos + contact_dim]  # [B, T, 2]
             current_pos += contact_dim

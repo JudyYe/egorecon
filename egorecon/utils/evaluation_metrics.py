@@ -1,17 +1,16 @@
-import os 
+
+import json
+import os
+import time
+from collections import defaultdict
+
 import numpy as np
-import time 
-
-import json 
-
-
+import torch
+import torch.nn.functional as F
+import trimesh
+from jutils import geom_utils
 from sklearn.cluster import DBSCAN
 
-import trimesh 
-
-import torch 
-
-import torch.nn.functional as F
 
 def get_frobenious_norm_rot_only(x, y):
     # x, y: N X 3 X 3 
@@ -436,3 +435,109 @@ def compute_metrics(ori_verts_gt, ori_verts_pred, ori_jpos_gt, ori_jpos_pred, hu
    
     return lhand_jpe, rhand_jpe, hand_jpe, mpvpe, mpjpe, rot_dist, trans_err, gt_contact_dist, contact_dist, \
     gt_foot_sliding_jnts, foot_sliding_jnts, contact_precision, contact_recall, contact_acc, contact_f1_score  
+
+
+
+
+def compute_wTo_error(pred_moton, gt_motion, object_id_list, scale=0.05):
+
+
+    # pred_moton, gt_motion: (B, T, 3+6)
+    # We'll compare the translation and the orientation (rot6d) by transforming canonical axes
+    # Unpack translation and rotation
+    pred_tsl = pred_moton[..., :3]  # (B, T, 3)
+    pred_rot6d = pred_moton[..., 3:9]  # (B, T, 6)
+    gt_tsl = gt_motion[..., :3]
+    gt_rot6d = gt_motion[..., 3:9]
+
+    # Compute translation error (L2 norm per frame, then mean over time)
+    tsl_error = torch.norm(pred_tsl - gt_tsl, dim=-1).mean(dim=-1)  # (B,)
+
+    # Prepare canonical axes: (4, 3): origin and 3 axes
+    axes = (
+        torch.eye(3, device=pred_moton.device) * scale
+    )  # (3, 3)  this is like cube size 5cm
+    origin = torch.zeros(1, 3, device=pred_moton.device)
+    cano_points = torch.cat([origin, axes], dim=0)  # (4, 3)
+
+    # Expand to batch and time
+    B, T = pred_rot6d.shape[:2]
+    cano_points = cano_points[None, None, ...].expand(B, T, 4, 3)  # (B, T, 4, 3)
+
+    # Get rotation matrices
+    pred_rotmat = geom_utils.rotation_6d_to_matrix(
+        pred_rot6d.reshape(-1, 6)
+    ).reshape(B, T, 3, 3)
+    gt_rotmat = geom_utils.rotation_6d_to_matrix(gt_rot6d.reshape(-1, 6)).reshape(
+        B, T, 3, 3
+    )
+
+    # Transform canonical points (only rotate, no translation)
+    pred_points = torch.matmul(
+        cano_points, pred_rotmat.transpose(-2, -1)
+    )  # (B, T, 4, 3)
+    gt_points = torch.matmul(
+        cano_points, gt_rotmat.transpose(-2, -1)
+    )  # (B, T, 4, 3)
+
+    # Compute mean L2 error over the 4 points, per frame, then mean over time
+    rot_error = (
+        torch.norm(pred_points - gt_points, dim=-1).mean(dim=-1).mean(dim=-1)
+    )  # (B,)
+
+    # Total error: sum or mean of both
+    # Compute total_error as the mean error of the cano_points after applying both rotation and translation,
+    # using homogeneous coordinates for clarity.
+
+    # Prepare canonical points in homogeneous coordinates: (4, 4)
+    cano_points_homo = torch.cat(
+        [cano_points, torch.ones_like(cano_points[..., :1])], dim=-1
+    )  # (B, T, 4, 4)
+
+    # Build homogeneous transformation matrices for pred and gt: (B, T, 4, 4)
+    pred_rotmat_homo = (
+        torch.eye(4, device=pred_moton.device)
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .repeat(B, T, 1, 1)
+    )
+    pred_rotmat_homo[..., :3, :3] = pred_rotmat
+    pred_rotmat_homo[..., :3, 3] = pred_tsl
+
+    gt_rotmat_homo = (
+        torch.eye(4, device=gt_motion.device)
+        .unsqueeze(0)
+        .unsqueeze(0)
+        .repeat(B, T, 1, 1)
+    )
+    gt_rotmat_homo[..., :3, :3] = gt_rotmat
+    gt_rotmat_homo[..., :3, 3] = gt_tsl
+
+    # Transform canonical points
+    pred_points_full = (cano_points_homo @ pred_rotmat_homo.transpose(-2, -1))[
+        ..., :3
+    ]  # (B, T, 4, 3)
+    gt_points_full = (cano_points_homo @ gt_rotmat_homo.transpose(-2, -1))[
+        ..., :3
+    ]  # (B, T, 4, 3)
+
+    # Compute mean L2 error over the 4 points, per frame, then mean over time
+    total_error = (
+        torch.norm(pred_points_full - gt_points_full, dim=-1)
+        .mean(dim=-1)
+        .mean(dim=-1)
+    )  # (B,)
+
+    metrics = {
+        "tsl_error": defaultdict(list),
+        "rot_error": defaultdict(list),
+        "total_error": defaultdict(list),
+    }
+
+    for b, object_id in enumerate(object_id_list):
+        metrics["tsl_error"][object_id].append(tsl_error[b].item())
+        metrics["rot_error"][object_id].append(rot_error[b].item())
+        metrics["total_error"][object_id].append(total_error[b].item())
+
+
+    return metrics
