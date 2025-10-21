@@ -1,30 +1,76 @@
-[] change model | TODO
+[] off-the-shelf obs pipeline
+[] long seq
+[] set up quant
+
+
+[x] change model | TODO
 [x] norm in data, data done
 
 [x] get a mini hot3d clip? 
-[] vis: contact, vis other motion 
+[x] vis: contact, vis other motion 
 
-([] add motion rep)
-
-[] set up quant
-[] faster vis
-[] off-the-shelf obs pipeline
-[] long seq
+[x] faster vis
 
 
 [x] change coord frame
-[] change model p(O, H, C)
 
 [x] why vis in guidance is wrong? 
 [x] only dynamic object 
 [x] only hand conditioned 
 [x] data cano??? data is somehow wrong? 
-[] guidance 
+[x] guidance 
 [x] noise eval
 [x] metadata
 
 bowl: 194930206998778
 spoon: 225397651484143
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=hoi/contactTrue_theta \
+  ckpt_index=model-3.pt \
+  ddim=true
+
+  ckpt=\${exp_dir}/weights/model-19.pt \
+  test_folder=eval_\${guide.hint}_ddim\${ddim}
+
+
+
+
+-
+
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=overfit_hoi/contact\${output.contact}_\${hand_rep} \
+  experiment=hoi \
+  dyn_only=true \
+  output.contact=true \
+  hand_rep=joint \
+  general.rerun=true general.wandb=true \
+  general.eval_every=1000 general.vis_every=1000 \
+  traindata=hotclip_mini 
+
+
+
+--------------------------------
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=dev/contact\${output.contact}_\${hand_rep}_obj2 \
+  experiment=obj_only \
+  dyn_only=true \
+  output.contact=true \
+  hand_rep=joint \
+  general.rerun=true general.wandb=true \
+  +engine=move
+
+
+
+
+
+python -m egorecon.training.trainer_hoi  -m  \
+  expname=hoi/contact\${output.contact}_\${hand_rep}_obj2 \
+  experiment=obj_only \
+  dyn_only=true \
+  output.contact=true \
+  hand_rep=joint \
+  general.rerun=true general.wandb=true \
 
 
 
@@ -32,7 +78,7 @@ python -m egorecon.training.trainer_hoi  -m  \
   expname=hoi/contact\${output.contact}_\${hand_rep}_obj \
   experiment=obj_only \
   dyn_only=true \
-  output.contact=false,true \
+  output.contact=true \
   hand_rep=joint \
   general.rerun=true general.wandb=true \
   +engine=move

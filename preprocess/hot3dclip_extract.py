@@ -7,7 +7,7 @@ import pickle
 import tarfile
 from collections import defaultdict
 from glob import glob
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
@@ -39,6 +39,65 @@ from pytorch3d.structures import Meshes
 # "obj_{i}_wTo": [T, 4, 4],
 # "obj_{i}_wTo_valid": [T, ],
 
+
+def extract_image_one_clip(clip_path, **kwargs):
+    """
+    Extract images from a clip and save them as %04d.jpg in extract_images/clip_name/
+    
+    Args:
+        clip_path: Path to the .tar file containing the clip data
+    """
+    tar = tarfile.open(clip_path, mode="r")
+    clip_name = os.path.basename(clip_path).split(".tar")[0]
+    
+    # Create output directory for this clip
+    extract_dir = os.path.join(args.preprocess_dir, clip_name)
+    os.makedirs(extract_dir, exist_ok=True)
+    
+    T = clip_util.get_number_of_frames(tar)
+    
+    for frame_id in tqdm(range(T), desc=f"Extracting images from {clip_name}"):
+        frame_key = f"{frame_id:06d}"
+        
+        # Load camera parameters
+        cameras, _ = clip_util.load_cameras(tar, frame_key)
+        image_streams = sorted(cameras.keys(), key=lambda x: int(x.split("-")[0]))
+        
+        # Use the first image stream
+        stream_id = image_streams[0]
+        stream_key = str(stream_id)
+        
+        # Load the image
+        image: np.ndarray = clip_util.load_image(tar, frame_key, stream_key)
+        
+        # Make sure the image has 3 channels
+        if image.ndim == 2:
+            image = np.stack([image, image, image], axis=-1)
+        
+        # Get camera model for potential warping
+        camera_model = cameras[stream_id]
+        camera_model_orig = camera_model
+        camera_model = clip_util.convert_to_pinhole_camera(camera_model)
+        
+        # Warp image if needed
+        image = warp_image(
+            src_camera=camera_model_orig,
+            dst_camera=camera_model,
+            src_image=image,
+        )
+        down_sample = 4
+        H, W = image.shape[:2]
+        image = cv2.resize(image, (W // down_sample, H // down_sample))
+        
+        # Save image with 4-digit zero-padded frame number
+        output_path = os.path.join(extract_dir, f"{frame_id:04d}.jpg")
+        cv2.imwrite(output_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+    
+    tar.close()
+    print(f"Extracted {T} images to {extract_dir}")
+    return extract_dir
+
+    
 device = 'cuda:0'
 def get_one_clip(clip_path, vis=False):
     tar = tarfile.open(clip_path, mode="r")
@@ -318,7 +377,7 @@ def vis_meta(meta, image_list, vis_dir, num=-1):
     return
 
 
-def batch_preprocess():
+def batch_preprocess(func):
     # clips = sorted([p for p in os.listdir(args.clips_dir, 'train_aria') if p.endswith(".tar")])
     clips_aria = sorted(glob(os.path.join(args.clips_dir, "train_aria", "*.tar")))
     clips_quest = sorted(glob(os.path.join(args.clips_dir, "train_quest3", "*.tar")))
@@ -334,7 +393,8 @@ def batch_preprocess():
         except FileExistsError:
             continue
 
-        get_one_clip(clip, vis=False)
+        # get_one_clip(clip, vis=False)
+        func(clip, vis=False)
 
         os.makedirs(done_file)
         os.rmdir(lock_file)
@@ -551,10 +611,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
     vis_dir = "outputs/vis_hot3d_clips_preprocess/"
 
-    # batch_preprocess()
+    batch_preprocess(extract_image_one_clip)
 
     # find_missing_contact()
     # patch_contact()
-    merge_preprocess()
+    # merge_preprocess()
 
     # make_own_split()
+
+
+
+    # Example usage of extract_image_one_clip
+    # Uncomment and modify the path to test:
+
+    # clip_path = osp.join(args.clips_dir, "train_aria", "clip-002240.tar")
+    # extract_image_one_clip(clip_path)

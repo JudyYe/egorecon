@@ -345,6 +345,10 @@ class CondGaussianDiffusion(nn.Module):
         return (data - self.mean) / self.std
 
     def denormalize_data(self, data):
+        # print('data', data.shape)
+        # # print function stack when ipdb is set
+        # import ipdb; ipdb.set_trace()
+
         return data * self.std + self.mean
 
     def predict_start_from_noise_new(self, x_t, t, noise):
@@ -398,7 +402,7 @@ class CondGaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(
-        self, x, t, x_cond, padding_mask=None, clip_denoised=True, guide=False, **kwargs
+        self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, **kwargs
     ):
         b, *_, device = *x.shape, x.device
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
@@ -423,7 +427,9 @@ class CondGaussianDiffusion(nn.Module):
         return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
     def guide_jax(self, x_start, model_kwargs):
-        x_start = self.denormalize_data(x_start)
+        x_start_raw = self.denormalize_data(x_start)
+        x_dict = self.decode_dict(x_start_raw)
+
         x_0_pred, _ = do_guidance_optimization(
             traj=se3_to_wxyz_xyz(x_start),
             obs=model_kwargs['obs'],
@@ -510,68 +516,33 @@ class CondGaussianDiffusion(nn.Module):
             return grad
         return x.detach()
 
-    def gradients(self, x, batch={}, use_x0=True):
-        with torch.enable_grad():
-            x.requires_grad_(True)
+    # def project_oPoints(self, oPoints, wTo_pred_se3, intr, cTw):
+    #     """
 
-            B, T = x.shape[:2]
-            wTo_pred_se3 = self.denormalize_data(x)  # (B, T, 3+6)
-            intr = batch["intr"]  # (B, 3, 3? )
-            wTc = batch["wTc"]  # (B, T, 4, 4)
-            wTc_tsl, wTc_rot6d = wTc[..., :3], wTc[..., 3:]
-            wTc_mat = geom_utils.rotation_6d_to_matrix(wTc_rot6d)
-            wTc = geom_utils.rt_to_homo(wTc_mat, wTc_tsl)
-            cTw = geom_utils.inverse_rt_v2(wTc)
+    #     :param oPoints: (B, T, P, 3)
+    #     :param wTo_pred_se3: (B, T, 3+6)
+    #     :param intr: (B, 3, 3)
+    #     :param cTw: (B, T, 4, 4)
+    #     """
 
-            wTo_gt = batch["target_raw"]
-            # iPoints_gt = batch['iPoints']   # (B, T, P, 2)
+    #     B, T, P, _ = oPoints.shape
 
-            if self.opt.guide.hint == "reproj_com":
-                oPoints = torch.zeros([B, T, 1, 3], device=x.device)
+    #     wTo_pred_tsl, wTo_pred_rot6d = wTo_pred_se3[..., :3], wTo_pred_se3[..., 3:]
+    #     wTo_pred_mat = geom_utils.rotation_6d_to_matrix(wTo_pred_rot6d)
+    #     wTo_pred = geom_utils.rt_to_homo(wTo_pred_mat, wTo_pred_tsl)  # (B, T, 4, 4)
 
-                iPoints_gt = self.project_oPoints(oPoints, wTo_gt, intr, cTw)
-                iPoints_pred = self.project_oPoints(
-                    oPoints, wTo_pred_se3, intr, cTw
-                )  # (B, T, P, 2)
+    #     cTo_pred = cTw @ wTo_pred
 
-                loss = (
-                    (iPoints_pred - iPoints_gt).norm(dim=-1).mean(dim=-1).mean(dim=-1)
-                )  # (B, )
-            elif self.opt.guide.hint == "com":
-                loss = (wTo_pred_se3 - wTo_gt).norm(dim=-1).mean(dim=-1)  # (B, )
+    #     # oPoints_homo = torch.cat([oPoints, torch.ones_like(oPoints[..., :1])], dim=-1)  # (B, T, P, 4)
 
-            grad = torch.autograd.grad([loss.sum()], [x])[0]  #
-            # grad[..., 0] = 0
-            x.detach()
-        return loss, grad
+    #     cPoints_pred = mesh_utils.apply_transform(
+    #         oPoints.reshape(B * T, P, 3), cTo_pred.reshape(B * T, 4, 4)
+    #     ).reshape(B, T, P, 3)  # (B, T, P, 3)
 
-    def project_oPoints(self, oPoints, wTo_pred_se3, intr, cTw):
-        """
-
-        :param oPoints: (B, T, P, 3)
-        :param wTo_pred_se3: (B, T, 3+6)
-        :param intr: (B, 3, 3)
-        :param cTw: (B, T, 4, 4)
-        """
-
-        B, T, P, _ = oPoints.shape
-
-        wTo_pred_tsl, wTo_pred_rot6d = wTo_pred_se3[..., :3], wTo_pred_se3[..., 3:]
-        wTo_pred_mat = geom_utils.rotation_6d_to_matrix(wTo_pred_rot6d)
-        wTo_pred = geom_utils.rt_to_homo(wTo_pred_mat, wTo_pred_tsl)  # (B, T, 4, 4)
-
-        cTo_pred = cTw @ wTo_pred
-
-        # oPoints_homo = torch.cat([oPoints, torch.ones_like(oPoints[..., :1])], dim=-1)  # (B, T, P, 4)
-
-        cPoints_pred = mesh_utils.apply_transform(
-            oPoints.reshape(B * T, P, 3), cTo_pred.reshape(B * T, 4, 4)
-        ).reshape(B, T, P, 3)  # (B, T, P, 3)
-
-        intr_exp = intr.unsqueeze(1).repeat(1, T, 1, 1)
-        iPoints_pred = cPoints_pred @ intr_exp.transpose(-2, -1)
-        iPoints_pred = iPoints_pred[..., :2] / iPoints_pred[..., 2:3]
-        return iPoints_pred
+    #     intr_exp = intr.unsqueeze(1).repeat(1, T, 1, 1)
+    #     iPoints_pred = cPoints_pred @ intr_exp.transpose(-2, -1)
+    #     iPoints_pred = iPoints_pred[..., :2] / iPoints_pred[..., 2:3]
+    #     return iPoints_pred
 
     @torch.no_grad()
     def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None, **kwargs):

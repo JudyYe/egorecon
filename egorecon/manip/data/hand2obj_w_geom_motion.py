@@ -902,6 +902,7 @@ class HandToObjectDataset(Dataset):
             "newMesh": window["newMesh"],
             "start_idx": window["start_idx"],
             "end_idx": window["end_idx"],
+            "ind": idx,
         }
 
     def transform_wTo_traj(self, wTo, newTo):

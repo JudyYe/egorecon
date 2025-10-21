@@ -502,6 +502,17 @@ def _optimize(
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, non_contact_cost)
             return cost.flatten()
     
+    # if guidance_params.use_static:
+    #     @cost_with_args(
+    #         _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+    #         _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+    #         joints_traj[:-1],
+    #         joints_traj[1:],
+    #         oPoints[None],
+    #         is_contact[:-1],
+    #         is_contact[1:]
+    #     )
+
     if guidance_params.use_rel_contact:
         # approximate contact label
         # smoothness on 
@@ -563,12 +574,20 @@ def _optimize(
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
             dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
-            print(dist_prox.shape)
+            # print(dist_prox.shape)
             
             contact_cost = guidance_params.rel_contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
 
             no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.rel_contact_weight  # (2, J//2)
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
+
+            is_static = (((is_contact_cur <= 0) & (is_contact_cur <= 0)).sum(-1) >= 2) # (1, 2)
+            res = next_traj.inverse() @  current_traj 
+            res_cost = is_static * dist_residual(guidance_params.rel_contact_weight, res)
+            # print('res cost', res_cost.shape, is_static.shape)
+
+            cost = jnp.concatenate([cost.flatten(), res_cost.flatten()])
+
 
             return cost.flatten()
                 
