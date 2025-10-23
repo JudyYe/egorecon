@@ -111,6 +111,7 @@ class Trainer(BaseTrainer):
     def __init__(self, opt, diffusion_model, *args, **kwargs):
         super().__init__(opt, diffusion_model, *args, **kwargs)
 
+
     def validation_step(
         self,
         val_data_dict,
@@ -140,6 +141,7 @@ class Trainer(BaseTrainer):
                 newPoints=val_data_dict["newPoints"],
                 hand_raw=val_data_dict["hand_raw"],
                 gt_contact=val_data_dict["contact"],
+                training_info=self.training_info(),
             )
 
         if self.use_wandb:

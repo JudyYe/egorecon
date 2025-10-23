@@ -1,5 +1,6 @@
 [] off-the-shelf obs pipeline
 
+[]some are black??
 
 [] hand_rep: jonit+hA? 
 [] bps: hand surface instead of joints? 
@@ -32,15 +33,30 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
-
-
 python -m egorecon.training.trainer_hoi  -m    \
-  expname=fix_bps/bps\${condition.bps}_contact\${output.contact}_\${hand_rep}_w\${loss.w_contact}   \
+  expname=fix_bps_overfit/bps\${condition.bps}_w\${loss.w_contact}_\${loss.w_rel_contact}_\${loss.w_smoothness}   \
   experiment=obj_only   \
   dyn_only=true   output.contact=true   \
   hand_rep=joint   \
-  condition.bps=2,1   \
-  loss.w_contact=10 \
+  traindata=hotclip_mini   \
+  condition.bps=2   \
+  loss.w_contact=1 \
+  loss.w_rel_contact=.1,0 \
+  loss.w_smoothness=0.1 \
+  general.eval_every=2000 general.vis_every=2000 general.train_num_steps=50000   general.save_and_sample_every=\${general.vis_every} \
+  general.rerun=true general.wandb=true   \
+  +engine=move
+
+
+-
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=fix_bps/bps\${condition.bps}_contact\${output.contact}_\${hand_rep}_w\${loss.w_contact}_\${loss.w_smoothness}   \
+  experiment=obj_only   \
+  dyn_only=true   output.contact=true   \
+  hand_rep=joint   \
+  condition.bps=2   \
+  loss.w_contact=10 loss.w_smoothness=0.1 \
   general.rerun=true general.wandb=true   \
   +engine=move
 

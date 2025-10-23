@@ -150,6 +150,9 @@ class Trainer(object):
             object_mesh_dir=opt.paths.object_mesh_dir,
         )
 
+    def training_info(self):
+        return {'step': self.step}
+
     def prep_dataloader(self, window_size):
         opt = self.opt
         if not opt.test:
@@ -304,6 +307,7 @@ class Trainer(object):
                         newPoints=sample["newPoints"],
                         hand_raw=sample["hand_raw"],
                         gt_contact=sample["contact"],
+                        training_info=self.training_info(),
                     )
 
 

@@ -728,7 +728,8 @@ class CondGaussianDiffusion(nn.Module):
         return loss.mean(), {'model_out': model_out, 'x0_pred': x0_pred}
 
     def forward(
-        self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None, gt_contact=None
+        self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None, gt_contact=None,
+        training_info={},
     ):
         """
         Forward pass for training.
@@ -754,7 +755,7 @@ class CondGaussianDiffusion(nn.Module):
         loss += curr_loss.mean()
         losses = {'diffusion': curr_loss.mean()}
         # add other losses
-        if self.opt.loss.w_contact > 0:
+        if  self.opt.loss.w_contact > 0 and training_info.get('step', 0) > self.opt.train.warmup:
             x0_pred = info['x0_pred']
             B, T, _ = x0_pred.shape
             x0_pred_raw = self.denormalize_data(x0_pred)
@@ -767,13 +768,67 @@ class CondGaussianDiffusion(nn.Module):
             wHands = hand_raw.reshape(B*T, -1, 3) # (B*T, J, 3)
             J_2 = wHands.shape[-2]
 
-            dist = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)[0]  # (B*T, J*2, )
+            dist, idx, wNn = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)  # (B*T, 2*J, 3)
             min_dist = dist.reshape(B, T, 2, J_2 // 2)
             contact_loss = min_dist * gt_contact[..., None]
             contact_loss = contact_loss.mean()
 
             loss += self.opt.loss.w_contact * contact_loss
             losses['contact'] = contact_loss
+
+        if self.opt.loss.w_rel_contact > 0 and training_info.get('step', 0) > self.opt.train.warmup:
+            assert self.opt.loss.w_contact > 0, "w_rel_contact requires w_contact"
+            # relative contact
+            # wNn_next: where is the nearest point on the object moves to in the next step
+            # print("TODO careful", idx.shape, wPoints.shape)
+            wNn_next = torch.gather(wPoints.reshape(B, T, -1, 3)[:, 1:], 2, idx.reshape(B, T, -1, 1)[:, :-1])  # (B, T-1, J, 3)
+
+            p_near = (wNn.reshape(B * T, J_2, 3) - wHands).reshape(B, T, J_2, 3)[:, :-1]
+            p_near_next = (wNn_next - wHands.reshape(B, T, J_2, 3)[:, 1:]).reshape(B, T-1, J_2, 3)
+
+            current_rot = wTo_pred.reshape(B, T, 4, 4)[:, :-1, :3, :3].clone()
+            next_rot = wTo_pred.reshape(B, T, 4, 4)[:, 1:, :3, :3].clone()
+
+            
+            # p_near_next = p_near_next.reshape(B*(T-1), J_2, 3)
+            # p_near = p_near.reshape(B*(T-1), J_2, 3)
+            # next_rot = next_rot.reshape(B*(T-1), 3, 3)
+            # current_rot = current_rot.reshape(B*(T-1), 3, 3)
+            # print(next_rot.shape, current_rot.shape, p_near.shape)  # (B, )
+            rot_T_rot = next_rot @ current_rot.transpose(-1, -2)
+            # print(rot_T_rot.shape, p_near.shape)
+            res = p_near_next -  p_near @ rot_T_rot.transpose(-1, -2)
+            # print(res.shape)  
+            res = res.reshape(B, T-1, J_2, 3)
+
+            dist_prox = torch.norm(res, dim=-1) # (B, T-1, J)
+
+            contact_mask = ((gt_contact[:, :-1] > 0) & (gt_contact[:, 1:] > 0)).float()
+            rel_contact_loss = dist_prox.reshape(B, T-1, 2, J_2//2) * contact_mask[..., None]
+            rel_contact_loss = rel_contact_loss.mean()
+
+            loss += self.opt.loss.w_rel_contact * rel_contact_loss
+            losses['rel_contact'] = rel_contact_loss
+
+        # temporal smoothness: no acceleration
+        if self.opt.loss.w_smoothness > 0 and training_info.get('step', 0) > self.opt.train.warmup:
+            x0_pred = info['x0_pred']
+            B, T, _ = x0_pred.shape
+            x0_pred_raw = self.denormalize_data(x0_pred)
+            wTo_pred = self.decode_dict(x0_pred_raw)['wTo']
+            
+            wTo_pred = geom_utils.se3_to_matrix_v2(wTo_pred)  # (B, T, 4, 4)
+            wTo_pred = wTo_pred.reshape(B*T, 4, 4)
+            oPoints_exp = newPoints[None].repeat(1, T, 1, 1).reshape(B*T, -1, 3)
+            wPoints = mesh_utils.apply_transform(oPoints_exp, wTo_pred)  # (B*T, P, 3)  
+
+            wVel = wPoints[:, 1:] - wPoints[:, :-1]
+            wAcc = wVel[:, 1:] - wVel[:, :-1]
+
+            acc_loss = (wAcc**2).mean()
+            loss += self.opt.loss.w_smoothness * acc_loss
+            losses['smoothness'] = acc_loss
+
 
         losses['Total'] = loss
         return loss, losses

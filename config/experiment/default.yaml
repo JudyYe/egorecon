@@ -16,10 +16,14 @@ train:
   ema_decay: 0.995
   step_start_ema: 10000
   ema_update_every: 10
+  warmup: 5000
 
 loss:
   w_contact: 0. 
+  w_rel_contact: 0.
+  w_smoothness: 0.
 
+  
 condition: 
   noisy_obj: true
   bps: 0

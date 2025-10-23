@@ -601,9 +601,11 @@ def merge_preprocess():
         pickle.dump(data, f)
     return
 
+
 from copy import deepcopy
 from jutils import hand_utils
-def patch_shelf_pred(num=20):
+# def patch_shelf_pred(num=20, debug=True):
+def patch_shelf_pred(num=-1, debug=False):    
     mano_model_path = args.mano_model_dir
     # data_file = osp.join(args.preprocess_dir, "dataset_contact_mini.pkl")
     data_file = osp.join(args.preprocess_dir, "dataset_contact.pkl")
@@ -626,8 +628,9 @@ def patch_shelf_pred(num=20):
     for s, seq in enumerate(data.keys()):
         if num > 0 and s >= num:
             break
-        data_copy[seq] = data[seq]
-        data_copy_copy[seq] = deepcopy(data[seq])
+        if debug:
+            data_copy[seq] = data[seq]
+            data_copy_copy[seq] = deepcopy(data[seq])
         seq_shelf = {}
         T = data[seq]["wTc"].shape[0]
 
@@ -669,24 +672,32 @@ def patch_shelf_pred(num=20):
             for key in key_list:
                 seq_shelf[key] = gtfalse_shelf[key]
 
-        data_patch[seq] = seq_shelf
         for key in seq_shelf.keys():
             if torch.is_tensor(seq_shelf[key]):
                 seq_shelf[key] = seq_shelf[key].cpu().numpy()
-            if seq_shelf["ready"]:
-                data[seq][key] = seq_shelf[key]
-                data_copy[seq][key] = seq_shelf[key]
+                
+            if debug:
+                if seq_shelf["ready"]:
+                    data[seq][key] = seq_shelf[key]
+                    data_copy[seq][key] = seq_shelf[key]
 
-    # just for fast vis
-    save_file = osp.join(args.preprocess_dir, "dataset_test_slam.pkl")
-    with open(save_file, "wb") as f:
-        pickle.dump(data_copy, f)
-    
-    save_file = osp.join(args.preprocess_dir, "dataset_test_copy.pkl")
-    with open(save_file, "wb") as f:
-        pickle.dump(data_copy_copy, f)
+        data_patch[seq] = seq_shelf
 
-    print(f"Saved dataset_contact_mini_patched_camFalse to {save_file}")
+    if debug:
+        # just for fast vis
+        save_file = osp.join(args.preprocess_dir, "dataset_test_slam.pkl")
+        with open(save_file, "wb") as f:
+            pickle.dump(data_copy, f)
+        
+        save_file = osp.join(args.preprocess_dir, "dataset_test_copy.pkl")
+        with open(save_file, "wb") as f:
+            pickle.dump(data_copy_copy, f)
+    else:
+        save_file = osp.join(args.preprocess_dir, "dataset_contact_patched_camFalse.pkl")
+        with open(save_file, "wb") as f:
+            pickle.dump(data_patch, f)
+
+    print(f"Saved to {save_file}")
 
 from jutils import geom_utils
 def align_world_coordinate(data, gtfalse_shelf,hand_wrapper):
