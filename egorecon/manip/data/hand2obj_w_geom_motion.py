@@ -927,10 +927,13 @@ class HandToObjectDataset(Dataset):
             tuple: (updated_window, newTo)
         """
         if newTo is None:
-            newTo = geom_utils.random_rotations(
+            newTo_rot = geom_utils.random_rotations(
                 1,
             )  # (1, 3, 3)
-            newTo = geom_utils.rt_to_homo(newTo)  # (1, 4, 4)
+            # maximum radius is 0.25. let's jitter translation with 0.05 (5cm)
+            newTo_tsl = (torch.randn(1, 3) * 0.05).clamp(-0.05, 0.05)
+            newTo = geom_utils.rt_to_homo(newTo_rot, newTo_tsl)  # (1, 4, 4)
+
 
         # newTo = torch.eye(4)[None]
         # logging.warning('debug!!!', newTo)

@@ -297,15 +297,15 @@ class Trainer(object):
 
                 # with autocast(device_type='cuda', enabled=self.amp):
                 with autocast(enabled=self.amp):
-                    loss_diffusion = self.model(
+                    loss, losses = self.model(
                         object_motion,
                         cond,
                         padding_mask,
                         newPoints=sample["newPoints"],
                         hand_raw=sample["hand_raw"],
+                        gt_contact=sample["contact"],
                     )
 
-                    loss = loss_diffusion
 
                     if torch.isnan(loss).item():
                         print("WARNING: NaN loss. Skipping to next data...")
@@ -332,10 +332,11 @@ class Trainer(object):
                         continue
 
                     if self.use_wandb:
-                        log_dict = {
-                            "Train/Loss/Total Loss": loss.item(),
-                            "Train/Loss/Diffusion Loss": loss_diffusion.item(),
-                        }
+                        # log_dict = {
+                        #     "Train/Loss/Total Loss": loss.item(),
+                        #     "Train/Loss/Diffusion Loss": loss_diffusion.item(),
+                        # }
+                        log_dict = {f'Train/Loss/{k}': v.item() for k, v in losses.items()}
                         wandb.log(log_dict, step=self.step)
 
                     if idx % 50 == 0 and i == 0:
@@ -349,6 +350,14 @@ class Trainer(object):
             self.scaler.update()
 
             self.ema.update()
+
+            if self.step % 100 == 0:
+                # pretty print loss
+                print(f"Step: {self.step} Loss: {loss.item()} ({self.opt.expname})")
+                for k, v in losses.items():
+                    if k != 'Total':
+                        print(f"    {k}: {v.item():.4f}")
+
 
             if self.step % self.opt.general.eval_every == 0:
                 # evaluation step
@@ -382,6 +391,7 @@ class Trainer(object):
             self.step += 1
 
         print("training complete")
+        self.save('last')
 
         if self.use_wandb:
             wandb.run.finish()

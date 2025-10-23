@@ -1,3 +1,4 @@
+import pickle
 import os
 import os.path as osp
 
@@ -13,11 +14,14 @@ from ..manip.model.guidance_optimizer_jax import (
     se3_to_wxyz_xyz,
     wxyz_xyz_to_se3,
 )
-from .trainer_hoi import gen_vis_res
-from ..manip.model.transformer_hand_to_object_diffusion_model import CondGaussianDiffusion
+from .trainer_hoi import gen_vis_res, vis_gen_process
+from ..manip.model.transformer_hand_to_object_diffusion_model import (
+    CondGaussianDiffusion,
+)
 from ..manip.data import build_dataloader
 from ..utils.evaluation_metrics import compute_wTo_error
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
+
 device = torch.device("cuda:0")
 
 
@@ -26,8 +30,7 @@ def build_model_from_ckpt(opt):
     with open(cfg_file, "r") as f:
         cfg = OmegaConf.load(f)
     diffusion_model = build_model(cfg)
-    print(diffusion_model.opt)
-    
+
     ckpt = torch.load(opt.ckpt)
     model_utils.load_my_state_dict(diffusion_model, ckpt["model"])
     diffusion_model.to(device)
@@ -45,9 +48,9 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
 
     # add guidance
     for b, batch in enumerate(tqdm(dl)):
-        if b >= 100:
+        if opt.test_num > 0 and b >= opt.test_num:
             break
-        b = batch['ind'][0]
+        b = batch["ind"][0]
         sample = batch = model_utils.to_cuda(batch)
 
         seq_len = torch.tensor([sample["condition"].shape[1]]).to(device)
@@ -58,7 +61,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         padding_mask = tmp_mask[:, None, :]
 
         metrics = {}
-        guided_object_pred_raw, _ = diffusion_model.sample_raw(
+        guided_object_pred_raw, info = diffusion_model.sample_raw(
             torch.randn_like(sample["target"]),
             sample["condition"],
             padding_mask=padding_mask,
@@ -66,8 +69,37 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             obs=sample,
             newPoints=sample["newPoints"],
             hand_raw=sample["hand_raw"],
+            rtn_x_list=True,
         )
-        print(guided_object_pred_raw.shape)
+
+        save_file = osp.join(
+            model_cfg.exp_dir, opt.test_folder, f"test_guided_{b:04d}.pkl"
+        )
+        with open(save_file, "wb") as f:
+            pickle.dump(
+                {
+                    "x_list": info["x_list"],
+                    "wJoints": sample["hand_raw"],
+                    "newPoints": sample["newPoints"],
+                    "wTo": guided_object_pred_raw,
+                    "batch": sample,
+                },
+                f,
+            )
+        print(f"Saved to {save_file}")
+
+        # # vis x_list
+        # vis_gen_process(
+        #     info["x_list"],
+        #     diffusion_model,
+        #     viz_off,
+        #     model_cfg,
+        #     step=0,
+        #     batch=sample,
+        #     pref=f"test_guided_{b:04d}_process",
+        # )
+
+        # print(guided_object_pred_raw.shape)
         metrics_guided = compute_wTo_error(
             guided_object_pred_raw, sample["target_raw"], sample["object_id"]
         )
@@ -80,9 +112,9 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             step=0,
             batch=sample,
             output={"pred_raw": guided_object_pred_raw},
-            pref=f"test_guided_{b:04d}"
+            pref=f"test_guided_{b:04d}",
         )
-        
+
         if opt.post_guidance:
             # directly guide object_pred_raw
             obs = diffusion_model.get_obs(
@@ -108,17 +140,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 step=0,
                 batch=sample,
                 output={"pred_raw": post_object_pred_raw},
-                pref=f"test_post_{b:04d}"
+                pref=f"test_post_{b:04d}",
             )
 
         # Generate visualization for the guided prediction
+
 
 def set_test_cfg(opt, model_cfg):
     model_cfg.guide.hint = opt.guide.hint
     model_cfg.ddim = opt.ddim
     model_cfg.post_guidance = opt.post_guidance
-
-
 
 
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
@@ -128,22 +159,51 @@ def main(opt):
     set_test_cfg(opt, diffusion_model.opt)
 
     torch.manual_seed(123)
-    
+
     dl, ds = build_dataloader(
-            opt.testdata,
-            diffusion_model.opt,
-            is_train=False,
-            shuffle=True,
-            batch_size=1,
-            num_workers=1,
-        )
+        opt.testdata,
+        diffusion_model.opt,
+        is_train=False,
+        shuffle=True,
+        batch_size=1,
+        num_workers=1,
+    )
 
     test_guided_generation(diffusion_model, dl, opt)
 
     return
 
 
+
+# @hydra.main(config_path="../../config", config_name="test", version_base=None)
+# @slurm_engine()
+# def debug(opt):
+#     diffusion_model = build_model_from_ckpt(opt)
+#     set_test_cfg(opt, diffusion_model.opt)
+
+#     pkl_file = 'outputs/hoi/contactTrue_joint_obj/eval/test_guided_0001.pkl'
+#     with open(pkl_file, 'rb') as f:
+#         data = pickle.load(f)
+
+#     x_list = data['x_list']
+#     wJoints = data['wJoints']
+#     newPoints = data['newPoints']
+#     wTo = data['wTo']
+#     batch = data['batch']
+
+#     for i, (xt, t) in enumerate(x_list):
+#         denorm_xt = diffusion_model.denormalize_data(xt)
+#         out = diffusion_model.decode_dict(denorm_xt)
+#         wTo_pred = out['wTo']
+#         coord = diffusion_model.encode_hand_sensor(wJoints, wTo_pred, newPoints)  # o-h (B, T, J*3) # per step hand sensor feature  
+#         B, T, J_3 = wJoints.shape
+
+#         wNN = coord + wJoints  # (B, T, J, 3)
+
+
+# def vis()
+
+
+
 if __name__ == "__main__":
     main()
-
-

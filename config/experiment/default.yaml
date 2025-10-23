@@ -17,10 +17,13 @@ train:
   step_start_ema: 10000
   ema_update_every: 10
 
+loss:
+  w_contact: 0. 
 
 condition: 
   noisy_obj: true
   bps: 0
+bps_per_t_start: 400  
 
 output:
   contact: false
@@ -82,3 +85,5 @@ ds_type: w_geom
 
 guide:
   hint: reproj_cd
+
+legacy_bps: false

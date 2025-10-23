@@ -42,3 +42,5 @@ ckpt_index: null
 seed: null
 
 ddim: true
+
+test_num: 100

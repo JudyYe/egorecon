@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import os.path as osp
@@ -330,14 +331,13 @@ class CondGaussianDiffusion(nn.Module):
             ** -p2_loss_weight_gamma,
         )
 
-        self.bps_path = osp.join(opt.paths.data_dir, "bps/bps.pt")
+        self.bps_path = osp.join(opt.paths.data_dir, "bps/bps-small.pt")
         self.prep_bps_data()
         self.set_metadata()
 
     def set_metadata(self, *args, **kwargs):
         meta_file = self.opt.traindata.meta_file
         mean, std = get_norm_stats(meta_file, self.opt, 'target')
-        print('mean', mean.shape)
         self.register_buffer("mean", torch.FloatTensor(mean.reshape(1, 1, -1)))
         self.register_buffer("std", torch.FloatTensor(std.reshape(1, 1, -1)))
 
@@ -345,10 +345,6 @@ class CondGaussianDiffusion(nn.Module):
         return (data - self.mean) / self.std
 
     def denormalize_data(self, data):
-        # print('data', data.shape)
-        # # print function stack when ipdb is set
-        # import ipdb; ipdb.set_trace()
-
         return data * self.std + self.mean
 
     def predict_start_from_noise_new(self, x_t, t, noise):
@@ -402,9 +398,10 @@ class CondGaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(
-        self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, **kwargs
+        self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, newPoints=None, hand_raw=None, **kwargs
     ):
         b, *_, device = *x.shape, x.device
+        x_cond = self.get_cond(x_cond, x, t, newPoints, hand_raw)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
             x=x,
             t=t,
@@ -516,36 +513,8 @@ class CondGaussianDiffusion(nn.Module):
             return grad
         return x.detach()
 
-    # def project_oPoints(self, oPoints, wTo_pred_se3, intr, cTw):
-    #     """
-
-    #     :param oPoints: (B, T, P, 3)
-    #     :param wTo_pred_se3: (B, T, 3+6)
-    #     :param intr: (B, 3, 3)
-    #     :param cTw: (B, T, 4, 4)
-    #     """
-
-    #     B, T, P, _ = oPoints.shape
-
-    #     wTo_pred_tsl, wTo_pred_rot6d = wTo_pred_se3[..., :3], wTo_pred_se3[..., 3:]
-    #     wTo_pred_mat = geom_utils.rotation_6d_to_matrix(wTo_pred_rot6d)
-    #     wTo_pred = geom_utils.rt_to_homo(wTo_pred_mat, wTo_pred_tsl)  # (B, T, 4, 4)
-
-    #     cTo_pred = cTw @ wTo_pred
-
-    #     # oPoints_homo = torch.cat([oPoints, torch.ones_like(oPoints[..., :1])], dim=-1)  # (B, T, P, 4)
-
-    #     cPoints_pred = mesh_utils.apply_transform(
-    #         oPoints.reshape(B * T, P, 3), cTo_pred.reshape(B * T, 4, 4)
-    #     ).reshape(B, T, P, 3)  # (B, T, P, 3)
-
-    #     intr_exp = intr.unsqueeze(1).repeat(1, T, 1, 1)
-    #     iPoints_pred = cPoints_pred @ intr_exp.transpose(-2, -1)
-    #     iPoints_pred = iPoints_pred[..., :2] / iPoints_pred[..., 2:3]
-    #     return iPoints_pred
-
     @torch.no_grad()
-    def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None, **kwargs):
+    def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None, rtn_x_list=False, **kwargs):
         device = self.betas.device
 
         b = shape[0]
@@ -553,6 +522,7 @@ class CondGaussianDiffusion(nn.Module):
 
         obs = self.get_obs(kwargs.get('guide', False), kwargs.get('obs', {}), shape)
         kwargs['obs'] = obs
+        x_list = []
         for i in tqdm(
             reversed(range(0, self.num_timesteps)),
             desc="sampling loop time step",
@@ -565,10 +535,12 @@ class CondGaussianDiffusion(nn.Module):
                 padding_mask=padding_mask,
                 **kwargs,
             )
+            x_list.append((x.clone(), i))
         if self.opt.post_guidance and kwargs.get('guide', False):
             x = self.guide_jax(x, model_kwargs=kwargs)
 
-
+        if rtn_x_list:
+            return x, x_list
         return x  # BS X T X D
 
     def get_obs(self, guide, batch, shape):
@@ -605,18 +577,30 @@ class CondGaussianDiffusion(nn.Module):
         padding_mask=None,
         newPoints=None,
         hand_raw=None,
+        rtn_x_list=False,
         **kwargs,
     ):
-        motion = self.sample(
+        rtn = self.sample(
             x_start,
             hand_condition,
             padding_mask=padding_mask,
             newPoints=newPoints,
             hand_raw=hand_raw,
+            rtn_x_list=rtn_x_list,
             **kwargs,
         )
+        if rtn_x_list:
+            motion = rtn[0]
+            x_list = rtn[1]
+        else:
+            motion = rtn
+
         motion_raw = self.denormalize_data(motion)
-        return motion_raw, {"motion": motion}
+        info = {"motion": motion_raw}
+        if rtn_x_list:
+            info["x_list"] = x_list
+        return motion_raw, info
+        # return motion_raw, {"motion": motion}
 
     @torch.no_grad()
     def sample(
@@ -641,7 +625,7 @@ class CondGaussianDiffusion(nn.Module):
         """
         # self.denoise_fn.eval()
         self.eval()
-        cond = self.get_cond(hand_condition, x_start, newPoints, hand_raw)
+        # cond = self.get_cond(hand_condition, x_start, newPoints, hand_raw)
 
         # # (BPS representation) Encode object geometry to low dimensional vectors.
         # if self.opt.condition.bps:
@@ -662,9 +646,11 @@ class CondGaussianDiffusion(nn.Module):
         sample_res = sample_loop_fn(
             x_start.shape,
             x_start,
-            cond,
+            hand_condition,
             padding_mask,
             guide=guide,
+            newPoints=newPoints,
+            hand_raw=hand_raw,
             **kwargs,
         )
         # BS X T X D
@@ -728,10 +714,11 @@ class CondGaussianDiffusion(nn.Module):
 
         loss = loss * extract(self.p2_loss_weight, t, loss.shape)
 
-        return loss.mean()
+        x0_pred = self.predict_start_from_noise_new(x, t, model_out)
+        return loss.mean(), {'model_out': model_out, 'x0_pred': x0_pred}
 
     def forward(
-        self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None
+        self, x_start, hand_condition, padding_mask=None, newPoints=None, hand_raw=None, gt_contact=None
     ):
         """
         Forward pass for training.
@@ -745,43 +732,59 @@ class CondGaussianDiffusion(nn.Module):
         bs = x_start.shape[0]
         t = torch.randint(0, self.num_timesteps, (bs,), device=x_start.device).long()
 
-        # (BPS representation) Encode object geometry to low dimensional vectors.
-        # if self.opt.condition.bps:
-        #     # BS = bps_cond.shape[0]
-        #     # bps_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
-        #     bps_cond = self.encode_bps_feature(newPoints)
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
-        # else:
-        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
-
         noise = torch.randn_like(x_start)
         xt = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        cond = self.get_cond(hand_condition, xt, newPoints, hand_raw)
-        curr_loss = self.p_losses(
+        cond = self.get_cond(hand_condition, xt, t, newPoints, hand_raw)
+        curr_loss, info = self.p_losses(
             x_start, cond, t, noise=noise, padding_mask=padding_mask
         )
 
-        return curr_loss
+        loss = 0
+        loss += curr_loss.mean()
+        losses = {'diffusion': curr_loss.mean()}
+        # add other losses
+        if self.opt.loss.w_contact > 0:
+            x0_pred = info['x0_pred']
+            B, T, _ = x0_pred.shape
+            x0_pred_raw = self.denormalize_data(x0_pred)
+            wTo_pred = self.decode_dict(x0_pred_raw)['wTo']
+            wTo_pred = geom_utils.se3_to_matrix_v2(wTo_pred)  # (B, T, 4, 4)
+            wTo_pred = wTo_pred.reshape(B*T, 4, 4)
+            oPoints_exp = newPoints[None].repeat(1, T, 1, 1).reshape(B*T, -1, 3)
+            wPoints = mesh_utils.apply_transform(oPoints_exp, wTo_pred)  # (B*T, P, 3)
+            P = wPoints.shape[1]             
+            wHands = hand_raw.reshape(B*T, -1, 3) # (B*T, J, 3)
+            J_2 = wHands.shape[-2]
 
-    # def get_cond_v2(self, hand_condition, xt, newPoints):
+            dist = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)[0]  # (B*T, J*2, )
+            min_dist = dist.reshape(B, T, 2, J_2 // 2)
+            contact_loss = min_dist * gt_contact[..., None]
+            contact_loss = contact_loss.mean()
 
-    #     left_right = hand_condition.split(hand_condition.shape[-1] // 2, dim=-1)
-        
-    #     # TODO: Implement get_cond_v2 method
-    #     cond = self._get_bps_cond(hand_condition, left_right, None, newPoints)
+            loss += self.opt.loss.w_contact * contact_loss
+            losses['contact'] = contact_loss
 
-    def _get_bps_cond(self, orig_condition, wJoints, wTo_pred, newPoints):
+        losses['Total'] = loss
+        return loss, losses
+
+    def _get_bps_cond(self, orig_condition, wJoints, xt, newPoints, t):
         if self.opt.condition.bps == 2:
+            denorm_x = self.denormalize_data(xt)
+            out = self.decode_dict(denorm_x)
+            wTo_pred = out["wTo"]
 
             hand = self.encode_hand_sensor_feature(
                 wJoints, wTo_pred, newPoints
-            )  # (B, T, J*3*2)
-            bps_cond = self.encode_bps_feature(newPoints)
+            )  # (B, T, J*3*2) # per step hand sensor feature
+            B, = t.shape
+            mask = t <= self.opt.bps_per_t_start
+            hand = hand * mask.reshape(B, 1, 1)
+
+            bps_cond = self.encode_bps_feature(newPoints) 
             cond = torch.cat([orig_condition, hand], dim=-1)
             cond = torch.cat([cond, bps_cond], dim=-2)  
-            assert False, "well something is wrong"
+            # assert False, "well something is wrong"
         elif self.opt.condition.bps == 1:
             bps_cond = self.encode_bps_feature(newPoints)
             cond = torch.cat([orig_condition, bps_cond], dim=-2)  # (B, T, (2*D) + 1024*3)
@@ -796,35 +799,10 @@ class CondGaussianDiffusion(nn.Module):
         return cond
         
 
-    def get_cond(self, hand_condition, xt, newPoints, wHands):
-        # print("TODO: designate another token")
-        wTo_pred = self.denormalize_data(xt)
-        
-        cond = self._get_bps_cond(hand_condition, wHands, wTo_pred, newPoints)
+    def get_cond(self, hand_condition, xt, t, newPoints, wHands):        
+        cond = self._get_bps_cond(hand_condition, wHands, xt, newPoints, t)
         return cond
 
-        # print("TODO: if output hands, chagne this, and also take care of normalization! make sure in the same space!!!" )
-        # if self.opt.condition.bps == 2:
-
-        #     wTo_pred = self.denormalize_data(xt)
-        #     hand = self.encode_hand_sensor_feature(
-        #         wHands, wTo_pred, newPoints
-        #     )  # (B, T, J*3*2)
-        #     bps_cond = self.encode_bps_feature(newPoints)
-        #     hand_condition = torch.cat([hand_condition, hand], dim=-1)
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
-
-        # elif self.opt.condition.bps == 1:
-        #     bps_cond = self.encode_bps_feature(newPoints)
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
-        # else:
-        #     bs = hand_condition.shape[0]
-        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(
-        #         hand_condition.device
-        #     )
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
-
-        # return cond
 
     def encode_bps(self, newPoints):
         newCom = newPoints.mean(dim=1)  # (1, 3)
@@ -837,7 +815,11 @@ class CondGaussianDiffusion(nn.Module):
             custom_basis=obj_bps.repeat(obj_trans.shape[0], 1, 1)
             + obj_trans[:, None, :],
         )["deltas"]  # T X N X 3
-        return bps_object_geo
+        if self.opt.get("legacy_bps", True):
+            logging.warning("Using legacy BPS, ignore newCom")
+            return bps_object_geo
+        return bps_object_geo + newCom[:, None, :]
+        # return bps_object_geo
 
     def encode_bps_feature(self, newPoints):
         bs = newPoints.shape[0]
@@ -857,7 +839,6 @@ class CondGaussianDiffusion(nn.Module):
         """
         B, T, J_3 = wHands.shape
         J = J_3 // 3
-        # print("J", J, "J_3", J_3)
 
         P = oPoints.shape[1]
         wTo = geom_utils.se3_to_matrix_v2(wTo)  # (B, T, 4, 4)
@@ -868,7 +849,6 @@ class CondGaussianDiffusion(nn.Module):
         dist, idx, wNn = pt3d_ops.knn_points(
             wHands.reshape(B * T, J, 3), wPoints, return_nn=True
         )
-        # print("wNn", wNn.shape, "wHands", wHands.shape)
         wNn = wNn.reshape(B, T, J, 3)
 
         coord = wNn - wHands.reshape(B, T, J, 3)
@@ -878,14 +858,14 @@ class CondGaussianDiffusion(nn.Module):
         #
         bs = wHands.shape[0]
         T = wHands.shape[1]
-        coord = self.encode_hand_sensor(wHands, wTo, oPoints)
-        hand_sensor_feature = self.hand_sensor_encoder(coord)
+        wCoord = self.encode_hand_sensor(wHands, wTo, oPoints)  # this is delta from wHands
+        hand_sensor_feature = self.hand_sensor_encoder(wCoord)
 
         return hand_sensor_feature
 
     def prep_bps_data(self):
         n_obj = 1024
-        r_obj = 1.0
+        r_obj = 0.25
         if not os.path.exists(self.bps_path):
             bps_obj = sample_sphere_uniform(n_points=n_obj, radius=r_obj).reshape(
                 1, -1, 3
@@ -912,6 +892,9 @@ class CondGaussianDiffusion(nn.Module):
         x_cond,
         padding_mask=None,
         guide=False,
+        rtn_x_list=False,
+        newPoints=None,
+        hand_raw=None,
         **kwargs,
 
         # noise=None,
@@ -944,41 +927,18 @@ class CondGaussianDiffusion(nn.Module):
 
         obs = self.get_obs(guide=guide, batch=kwargs.get('obs', {}), shape=shape)
         kwargs['obs'] = obs
-        # if guide:
-        #     batch = kwargs['obs']
-        #     x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
-        #     if self.opt.guide.hint == "reproj_cd":
-        #         b, T = shape[:2]
-        #         ind_list = []
-        #         kP = 1000
-        #         for t in range(T):
-        #             inds = torch.randperm(x2d.shape[2])[:kP]
-        #             ind_list.append(inds)
-        #         ind_list = torch.stack(ind_list, dim=0).to(x_cond.device)  # (T, kP)
-        #         ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
-        #         print('index', ind_list_exp.shape, x2d.shape)
-        #         x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
-
-        #     obs = {
-        #         "x": se3_to_wxyz_xyz(batch['target_raw']),
-        #         "newPoints": batch['newPoints'],
-        #         "wTc": se3_to_wxyz_xyz(batch['wTc']),
-        #         "intr": batch['intr'],
-        #         "x2d": x2d,
-        #     }
-        #     kwargs['obs'] = obs
-        #     print('set obs',)
         ts = quadratic_ts()
+        x_list = []
         for i in tqdm(range(len(ts) - 1)):
             print(f"Sampling {i}/{len(ts) - 1}")
             t = ts[i]
             t_next = ts[i + 1]
 
             # denoise
-            model_output = self.denoise_fn(x_t_packed, torch.tensor([t], device=device).expand((b,)), x_cond, padding_mask)
+            c = self.get_cond(x_cond, x_t_packed, t, newPoints, hand_raw)
+            model_output = self.denoise_fn(x_t_packed, torch.tensor([t], device=device).expand((b,)), c, padding_mask,)
             x_0_packed_pred = self.predict_start_from_noise_new(x_t_packed, t=t, noise=model_output)
 
-            print(alpha_bar_t.shape, alpha_t.shape)
             sigma_t = torch.cat(
                 [
                     torch.zeros((1,), device=device),
@@ -999,9 +959,14 @@ class CondGaussianDiffusion(nn.Module):
                 )
                 + sigma_t[t] * torch.randn(x_0_packed_pred.shape, device=device)
             )
+            if rtn_x_list:
+                x_list.append((x_t_packed.clone(), t))
+
 
         if self.opt.post_guidance and kwargs.get('guide', False):
             x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+        if rtn_x_list:
+            return x_t_packed, x_list
         return x_t_packed
 
     def decode_dict(self, target_raw):

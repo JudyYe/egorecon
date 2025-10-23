@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
-
+import imageio
+import cv2
+from tqdm import tqdm
 import hydra
 import torch
 import wandb
@@ -16,6 +18,34 @@ from ..manip.model.guidance_optimizer_jax import (
     wxyz_xyz_to_se3,
 )
 from .trainer_proof_of_idea import Trainer as BaseTrainer
+import os.path as osp
+
+
+def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
+    video_list = []
+    for i,(x, t) in enumerate(tqdm(x_list)):
+        x_raw = model.denormalize_data(x)
+        f_pref = f"{pref}_process_{i:04d}"
+        log_dict = gen_vis_res(model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref)
+        print(log_dict[f"{f_pref}vis_pred"]._path, t)
+        video_list.append((log_dict[f"{f_pref}vis_pred"], t))
+    
+    print(video_list)
+    # read and concat these videos
+    frames = []
+    for video, i in video_list:
+        # wandb.Video()._path
+        video = video._path
+        save_dir = osp.dirname(video)
+        image_list = imageio.mimread(video)
+        # print text 
+        for frame in image_list:
+            cv2.putText(frame, f"Frame {i}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        frames.extend(image_list)
+
+    save_dir = osp.join(save_dir, f"{pref}_process.mp4")
+    imageio.mimwrite(save_dir, frames, fps=30)
+
 
 
 def gen_vis_res(model, viz_off, opt, step, batch, output, pref):
@@ -103,20 +133,21 @@ class Trainer(BaseTrainer):
 
         # with autocast(device_type='cuda', enabled=self.amp):
         with autocast(enabled=self.amp):
-            val_loss_diffusion = self.model(
+            val_loss, losses = self.model(
                 object_motion,
                 cond,
                 padding_mask=padding_mask,
                 newPoints=val_data_dict["newPoints"],
                 hand_raw=val_data_dict["hand_raw"],
+                gt_contact=val_data_dict["contact"],
             )
 
-        val_loss = val_loss_diffusion
         if self.use_wandb:
-            val_log_dict = {
-                "Validation/Loss/Total Loss": val_loss.item(),
-                "Validation/Loss/Diffusion Loss": val_loss_diffusion.item(),
-            }
+            # val_log_dict = {
+            #     "Validation/Loss/Total Loss": val_loss.item(),
+            #     "Validation/Loss/Diffusion Loss": val_loss_diffusion.item(),
+            # }
+            val_log_dict = {f'Validation/Loss/{k}': v.item() for k, v in losses.items()}
             wandb.log(val_log_dict, step=self.step)
 
         bs_for_vis = len(val_data_dict["object_id"])

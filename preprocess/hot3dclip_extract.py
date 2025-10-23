@@ -39,6 +39,25 @@ from pytorch3d.structures import Meshes
 # "obj_{i}_wTo": [T, 4, 4],
 # "obj_{i}_wTo_valid": [T, ],
 
+def rotate_90(clip_path, **kwargs):
+    clip_name = os.path.basename(clip_path).split(".tar")[0]
+    cur_image_dir = os.path.join(args.preprocess_dir.split('-rot90')[0], clip_name)
+    dst_image_dir = os.path.join(args.preprocess_dir, clip_name)
+    query = osp.join(dst_image_dir, '*.jpg')
+    image_paths = glob(query)
+    if len(image_paths) == len(glob(os.path.join(cur_image_dir, '*.jpg'))):
+        print('already rotated')
+        return
+    print(query, len(image_paths), len(glob(os.path.join(cur_image_dir, '*.jpg'))))
+
+    os.makedirs(dst_image_dir, exist_ok=True)
+    
+    for image_path in glob(os.path.join(cur_image_dir, '*.jpg')):
+        image = cv2.imread(image_path)
+        image = np.rot90(image, k=3)
+        cv2.imwrite(os.path.join(dst_image_dir, os.path.basename(image_path)), image)
+    return dst_image_dir
+
 
 def extract_image_one_clip(clip_path, **kwargs):
     """
@@ -224,6 +243,9 @@ def get_one_clip(clip_path, vis=False):
 
 
 def vis_meta(meta, image_list, vis_dir, num=-1):
+    if isinstance(meta, str):
+        meta = dict(np.load(meta, allow_pickle=True))
+
     os.makedirs(vis_dir, exist_ok=True)
     intrinsic = meta["intrinsic"]
 
@@ -279,7 +301,20 @@ def vis_meta(meta, image_list, vis_dir, num=-1):
             ),
         )
         for uid in meta["objects"]:
-            T_w_o = meta[f"obj_{uid}_wTo"][t]
+            new_k = f"obj_{uid}_wTo"
+            
+            # new_k = k.replace("uid", "obj_")
+            # new_k = new_k.replace("gt_valid", "wTo_valid")
+            # new_meta[new_k] = meta[k]
+
+            k = new_k.replace("obj_", "uid")
+            k = k.replace("wTo_valid", "gt_valid")
+
+            if new_k not in meta:
+                new_k = k
+                
+            # T_w_o = meta[f"obj_{uid}_wTo"][t]
+            T_w_o = meta[new_k][t]
             mesh_file = osp.join(args.object_models_dir, f"obj_{uid}.glb")
 
             # Check if object has contact with any hand
@@ -288,11 +323,11 @@ def vis_meta(meta, image_list, vis_dir, num=-1):
             if contact_key in meta:
                 contact_lr = meta[contact_key][t]  # Shape: (2,)
                 has_any_contact = np.any(contact_lr)
-            if t > 0:
+            if t > 0 and contact_key in meta:
                 prev_any_contact = np.any(meta[contact_key][t-1])
             
 
-            if t == 0 or has_any_contact != prev_any_contact:
+            if t == 0 or contact_key in meta and (has_any_contact != prev_any_contact):
             #     rr.log(
             #         f"world/object_pose/{uid}",
             #         rr.Asset3D(
@@ -358,7 +393,7 @@ def vis_meta(meta, image_list, vis_dir, num=-1):
             vertices = mesh.verts_packed().cpu().numpy()
             any_contact = False
             for uid in meta["objects"]:
-                if meta[f"obj_{uid}_contact_lr"][t][h]:
+                if f"obj_{uid}_contact_lr" in meta and meta[f"obj_{uid}_contact_lr"][t][h]:
                     any_contact = True
                     break
             if any_contact:
@@ -580,6 +615,7 @@ def make_own_split():
     return 
 
 
+
 mano_model_folder = "hot3d/hot3d/mano_v1_2/models"
 
 
@@ -611,7 +647,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
     vis_dir = "outputs/vis_hot3d_clips_preprocess/"
 
-    batch_preprocess(extract_image_one_clip)
+    
+    # meta_file = "/move/u/yufeiy2/HaWoR/example/clip-002354-rot90/hawor_gtTrue.npz"
+    # meta = dict(np.load(meta_file, allow_pickle=True))
+    # vis_meta(meta, None, osp.join(vis_dir, 'hawor'))
+
+
+    # meta_file = "data/HOT3D-CLIP/preprocess/clip-002354.npz"
+    # meta = dict(np.load(meta_file, allow_pickle=True))
+    # vis_meta(meta, None, osp.join(vis_dir, 'gt'))
+
+
+    # batch_preprocess(extract_image_one_clip)
+    batch_preprocess(rotate_90)
 
     # find_missing_contact()
     # patch_contact()
@@ -625,4 +673,7 @@ if __name__ == "__main__":
     # Uncomment and modify the path to test:
 
     # clip_path = osp.join(args.clips_dir, "train_aria", "clip-002240.tar")
+    # rotate_90(clip_path)
     # extract_image_one_clip(clip_path)
+
+
