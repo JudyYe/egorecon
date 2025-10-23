@@ -351,6 +351,8 @@ class HandToObjectDataset(Dataset):
         seq_list = json.load(open(self.split_file))[self.split]
 
         for seq in seq_list:
+            if seq not in self.processed_data:
+                continue
             filtered_data[seq] = {}
             if single_object:
                 # 225397651484143 : bowl
@@ -578,8 +580,9 @@ class HandToObjectDataset(Dataset):
                         windows.append(window_data)
 
         os.makedirs(osp.dirname(cache_name), exist_ok=True)
-        with open(cache_name, "wb") as f:
-            pickle.dump(windows, f)
+        if save_cache:
+            with open(cache_name, "wb") as f:
+                pickle.dump(windows, f)
         return windows
 
     def window_check(self, window_data):
@@ -1106,8 +1109,8 @@ def vis_clip(opt):
 
     pt3d_viz = Pt3dVisualizer(
         exp_name="vis_traj",
-        save_dir="outputs/debug_vis",
-        mano_models_dir="assets/mano",
+        save_dir=osp.join("outputs/debug_vis", opt.expname),
+        mano_models_dir=opt.paths.mano_dir,
         object_mesh_dir=opt.paths.object_mesh_dir,
     )
 
@@ -1124,7 +1127,7 @@ def vis_clip(opt):
         # single_demo="P0001_624f2ba9",
         # single_object="225397651484143",
         sampling_strategy="random",
-        split=opt.datasets.split,
+        split=opt.traindata.trainsplit,
         split_seed=42,  # Ensure reproducible splits
         noise_scheme="syn",
         split_file=opt.traindata.split_file,
@@ -1132,6 +1135,9 @@ def vis_clip(opt):
         opt=opt,
         data_cfg=opt.traindata,
     )
+    from jutils import hand_utils
+    wrapper = hand_utils.ManopthWrapper()
+
     train_dataset.set_metadata()
     video_list = []
     dataloader = torch.utils.data.DataLoader(
@@ -1171,17 +1177,8 @@ def vis_clip(opt):
             device
         )
         right_hand_meshes.textures = mesh_utils.pad_texture(right_hand_meshes, "blue")
-        # newPoints_mesh = plot_utils.pc_to_cubic_meshes(newPoints[:, :1000])
-        # image_list = pt3d_viz.log_training_step(
-        #     left_hand_meshes,
-        #     right_hand_meshes,
-        #     wTo_list,
-        #     color_list,
-        #     newPoints_mesh,
-        #     step=b,
-        #     pref="debug_vis_clip",
-        #     save_to_file=False,
-        # )
+        
+        
         image_list = pt3d_viz.log_hoi_step(
             left_hand_meshes,
             right_hand_meshes,
@@ -1198,7 +1195,8 @@ def vis_clip(opt):
     video_list = torch.cat(video_list, axis=0)
     image_utils.save_gif(
         video_list.unsqueeze(1),
-        f"outputs/debug_vis_{opt.coord}/video_{cnt}",
+        osp.join("outputs/debug_vis", opt.expname, f"video_{cnt}"),
+        # f"outputs/debug_vis_{opt.coord}/video_{cnt}",
         fps=30,
         ext=".mp4",
     )
@@ -1239,7 +1237,8 @@ def create_norm_starts():
 
 # Global configuration variables
 th = 0.05
-use_cache = True
+use_cache = False # True
+save_cache = False # True
 aug_cano = True
 # aug_world = False
 
