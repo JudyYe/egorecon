@@ -75,29 +75,39 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         save_file = osp.join(
             model_cfg.exp_dir, opt.test_folder, f"test_guided_{b:04d}.pkl"
         )
-        with open(save_file, "wb") as f:
-            pickle.dump(
-                {
-                    "x_list": info["x_list"],
-                    "wJoints": sample["hand_raw"],
-                    "newPoints": sample["newPoints"],
-                    "wTo": guided_object_pred_raw,
-                    "batch": sample,
-                },
-                f,
-            )
-        print(f"Saved to {save_file}")
+        # with open(save_file, "wb") as f:
+        #     pickle.dump(
+        #         {
+        #             "x_list": info["x_list"],
+        #             "wJoints": sample["hand_raw"],
+        #             "newPoints": sample["newPoints"],
+        #             "wTo": guided_object_pred_raw,
+        #             "batch": sample,
+        #         },
+        #         f,
+        #     )
+        # print(f"Saved to {save_file}")
 
         # # vis x_list
-        # vis_gen_process(
-        #     info["x_list"],
-        #     diffusion_model,
-        #     viz_off,
-        #     model_cfg,
-        #     step=0,
-        #     batch=sample,
-        #     pref=f"test_guided_{b:04d}_process",
-        # )
+        vis_gen_process(
+            info["x_list"],
+            diffusion_model,
+            viz_off,
+            model_cfg,
+            step=0,
+            batch=sample,
+            pref=f"test_guided_{b:04d}_xt",
+        )
+
+        vis_gen_process(
+            info["x_0_packed_pred"],
+            diffusion_model,
+            viz_off,
+            model_cfg,
+            step=0,
+            batch=sample,
+            pref=f"test_guided_{b:04d}_x0",
+        )
 
         # print(guided_object_pred_raw.shape)
         metrics_guided = compute_wTo_error(

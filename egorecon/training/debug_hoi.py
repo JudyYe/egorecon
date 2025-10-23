@@ -68,8 +68,8 @@ def debug(opt):
         wHands = mesh_utils.join_scene(wHands)
 
         print(wNN.shape, wJoints.shape)
-        # image_list = vis(wObj_exp, wHands, wNN, wJoints)
-        # image_utils.save_gif(image_list, f"outputs/debug_handsensor/vis_hand_cond_{i:04d}", text_list=[[f"T={t}"] * T], ext='.mp4', max_size=512*8)
+        image_list = vis(wObj_exp, wHands, wNN, wJoints)
+        image_utils.save_gif(image_list, f"outputs/debug_handsensor/vis_hand_cond_x0_{i:04d}", text_list=[[f"T={t}"] * T], ext='.mp4', max_size=512*8)
         # VisorVisualizer.vis_w_visor(wObj_exp, wHands, wNN, wJoints)
 
 
@@ -161,4 +161,5 @@ def vis_bps(opt):
     # VisorVisualizer.vis_bps(delta[:, :min_points], (newCom + bps)[:, :min_points], newMesh)
     return 
 if __name__ == "__main__":
-    vis_bps()
+    # vis_bps()
+    debug()

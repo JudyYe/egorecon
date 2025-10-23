@@ -35,7 +35,7 @@ python -m egorecon.training.trainer_hoi  -m    \
   hand_rep=joint   \
   traindata=hotclip_mini   \
   condition.bps=2,1   \
-  loss.w_contact=0.1,1,0 \
+  loss.w_contact=10 \
   general.eval_every=2000 general.vis_every=2000 general.train_num_steps=50000   general.save_and_sample_every=\${general.vis_every} \
   general.rerun=true general.wandb=true   \
   +engine=move

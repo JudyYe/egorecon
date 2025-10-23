@@ -398,7 +398,7 @@ class CondGaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(
-        self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, newPoints=None, hand_raw=None, **kwargs
+        self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, newPoints=None, hand_raw=None, rtn_info=False, **kwargs
     ):
         b, *_, device = *x.shape, x.device
         x_cond = self.get_cond(x_cond, x, t, newPoints, hand_raw)
@@ -421,7 +421,10 @@ class CondGaussianDiffusion(nn.Module):
         noise = torch.randn_like(x)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        if rtn_info:
+            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, {'mean': model_mean, 'x0': x_start}
+        else:
+            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
     def guide_jax(self, x_start, model_kwargs):
         x_start_raw = self.denormalize_data(x_start)
@@ -522,25 +525,33 @@ class CondGaussianDiffusion(nn.Module):
 
         obs = self.get_obs(kwargs.get('guide', False), kwargs.get('obs', {}), shape)
         kwargs['obs'] = obs
-        x_list = []
+        rtn = {'x_list': [], 'x_0_packed_pred': []}
         for i in tqdm(
             reversed(range(0, self.num_timesteps)),
             desc="sampling loop time step",
             total=self.num_timesteps,
         ):
-            x = self.p_sample(
+            p_rtn = self.p_sample(
                 x,
                 torch.full((b,), i, device=device, dtype=torch.long),
                 x_cond,
                 padding_mask=padding_mask,
+                rtn_info=rtn_x_list,
                 **kwargs,
             )
-            x_list.append((x.clone(), i))
+            if rtn_x_list:
+                x = p_rtn[0]
+                x_info = p_rtn[1]
+                rtn['x_list'].append((x.clone(), i))
+                rtn['x_0_packed_pred'].append((x_info['x0'].clone(), i))
+            else:
+                x = p_rtn
+
         if self.opt.post_guidance and kwargs.get('guide', False):
             x = self.guide_jax(x, model_kwargs=kwargs)
 
         if rtn_x_list:
-            return x, x_list
+            return x, rtn
         return x  # BS X T X D
 
     def get_obs(self, guide, batch, shape):
@@ -591,14 +602,13 @@ class CondGaussianDiffusion(nn.Module):
         )
         if rtn_x_list:
             motion = rtn[0]
-            x_list = rtn[1]
         else:
             motion = rtn
 
         motion_raw = self.denormalize_data(motion)
         info = {"motion": motion_raw}
         if rtn_x_list:
-            info["x_list"] = x_list
+            info.update(rtn[1])
         return motion_raw, info
         # return motion_raw, {"motion": motion}
 
@@ -928,7 +938,8 @@ class CondGaussianDiffusion(nn.Module):
         obs = self.get_obs(guide=guide, batch=kwargs.get('obs', {}), shape=shape)
         kwargs['obs'] = obs
         ts = quadratic_ts()
-        x_list = []
+        # x_list = []
+        rtn = {'x_list': [], 'x_0_packed_pred': []}
         for i in tqdm(range(len(ts) - 1)):
             print(f"Sampling {i}/{len(ts) - 1}")
             t = ts[i]
@@ -960,13 +971,14 @@ class CondGaussianDiffusion(nn.Module):
                 + sigma_t[t] * torch.randn(x_0_packed_pred.shape, device=device)
             )
             if rtn_x_list:
-                x_list.append((x_t_packed.clone(), t))
+                rtn['x_list'].append((x_t_packed.clone(), t))
+                rtn['x_0_packed_pred'].append((x_0_packed_pred.clone(), t))
 
 
         if self.opt.post_guidance and kwargs.get('guide', False):
             x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
         if rtn_x_list:
-            return x_t_packed, x_list
+            return x_t_packed, rtn
         return x_t_packed
 
     def decode_dict(self, target_raw):
