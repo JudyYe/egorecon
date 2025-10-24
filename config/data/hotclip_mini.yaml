@@ -8,3 +8,10 @@ meta_file: ${paths.data_dir}/cache/metadata_theta.pkl
 
 trainsplit: minitest
 testsplit: minitest
+
+shelf:
+  - ${..data_root_folder}/HOT3D-CLIP/preprocess/dataset_contact_patched_hawor_gtcamTrue.pkl
+  - ${..data_root_folder}/HOT3D-CLIP/preprocess/dataset_contact_patched_hawor_gtcamFalse.pkl
+
+syn: 
+  - ${..data_root_folder}/cache/noise_stats_hand.pkl

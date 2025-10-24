@@ -262,6 +262,7 @@ class Trainer(object):
                 )  # [1] - sequence length
 
                 ######### add occlusion mask for traj repr, with some schedules
+                print("TODO! add mask to cond!")
                 # mask_prob = 0.5
                 # max_infill_ratio = 0.1
                 # prob = random.uniform(0, 1)

@@ -1,6 +1,7 @@
-[] off-the-shelf obs pipeline
-
-[]some are black??
+[] add off-the-shelf obs pipeline p(O, H, C | \hat H)
+[] make sure test are there 
+[] add hand motion rep as joint + theta
+[]some are black?? and nan? 
 
 [] hand_rep: jonit+hA? 
 [] bps: hand surface instead of joints? 
@@ -41,23 +42,23 @@ python -m egorecon.training.trainer_hoi  -m    \
   traindata=hotclip_mini   \
   condition.bps=2   \
   loss.w_contact=1 \
-  loss.w_rel_contact=.1,0 \
+  loss.w_rel_contact=0.1,0,0.01 \
   loss.w_smoothness=0.1 \
   general.eval_every=2000 general.vis_every=2000 general.train_num_steps=50000   general.save_and_sample_every=\${general.vis_every} \
-  general.rerun=true general.wandb=true   \
+  general.wandb=true   \
   +engine=move
 
 
 -
 
 python -m egorecon.training.trainer_hoi  -m    \
-  expname=fix_bps/bps\${condition.bps}_contact\${output.contact}_\${hand_rep}_w\${loss.w_contact}_\${loss.w_smoothness}   \
+  expname=fix_bps/bps\${condition.bps}_contact\${output.contact}_\${hand_rep}_w\${loss.w_contact}_\${loss.w_smoothness}_\${loss.w_rel_contact}   \
   experiment=obj_only   \
   dyn_only=true   output.contact=true   \
   hand_rep=joint   \
   condition.bps=2   \
-  loss.w_contact=10 loss.w_smoothness=0.1 \
-  general.rerun=true general.wandb=true   \
+  loss.w_contact=1 loss.w_smoothness=0.1 loss.w_rel_contact=0,0.01 \
+  general.wandb=true   \
   +engine=move
 
 

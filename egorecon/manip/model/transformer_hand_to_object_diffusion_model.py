@@ -400,6 +400,7 @@ class CondGaussianDiffusion(nn.Module):
     def p_sample(
         self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, newPoints=None, hand_raw=None, rtn_info=False, **kwargs
     ):
+        print("Deactiveate hand_raw")
         b, *_, device = *x.shape, x.device
         x_cond = self.get_cond(x_cond, x, t, newPoints, hand_raw)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
@@ -591,6 +592,7 @@ class CondGaussianDiffusion(nn.Module):
         rtn_x_list=False,
         **kwargs,
     ):
+        print("Deactiveate hand_raw")
         rtn = self.sample(
             x_start,
             hand_condition,
@@ -600,6 +602,8 @@ class CondGaussianDiffusion(nn.Module):
             rtn_x_list=rtn_x_list,
             **kwargs,
         )
+
+        print("Deactiveate hand_raw")
         if rtn_x_list:
             motion = rtn[0]
         else:
@@ -633,6 +637,7 @@ class CondGaussianDiffusion(nn.Module):
             cond_mask: optional mask for conditional generation
             padding_mask: BS X 1 X (T+1) - mask for variable sequence lengths
         """
+        print("Deactiveate hand_raw")
         # self.denoise_fn.eval()
         self.eval()
         # cond = self.get_cond(hand_condition, x_start, newPoints, hand_raw)
@@ -664,6 +669,7 @@ class CondGaussianDiffusion(nn.Module):
             **kwargs,
         )
         # BS X T X D
+        print("Deactiveate hand_raw")
 
         # self.denoise_fn.train()
         self.train()
@@ -740,6 +746,7 @@ class CondGaussianDiffusion(nn.Module):
             cond_mask: optional conditioning mask
             padding_mask: BS X 1 X (T+1) - optional padding mask
         """
+        print("Deactiveate hand_raw")
         bs = x_start.shape[0]
         t = torch.randint(0, self.num_timesteps, (bs,), device=x_start.device).long()
 
@@ -982,6 +989,7 @@ class CondGaussianDiffusion(nn.Module):
 
         Same usage as p_sample_loop().
         """
+        print("Deactiveate hand_raw")
         device = x_cond.device
         alpha_bar_t = torch.cat([torch.ones((1, ), device=device), self.alphas_cumprod], dim=0)
         alpha_t = 1 - self.betas

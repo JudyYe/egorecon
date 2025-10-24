@@ -26,6 +26,7 @@ class HandWrapper(nn.Module):
                 num_pca_comps=15,
             ),
         }
+        self._sided_mano_models = sided_mano_models
         self.sided_mano_models = nn.ModuleDict(sided_mano_models)
 
     def joint2verts_faces(

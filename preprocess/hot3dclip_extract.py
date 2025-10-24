@@ -1,3 +1,4 @@
+from fire import Fire
 import open3d as o3d
 import argparse
 import json
@@ -604,20 +605,26 @@ def merge_preprocess():
 
 from copy import deepcopy
 from jutils import hand_utils
+
+
 # def patch_shelf_pred(num=20, debug=True):
-def patch_shelf_pred(num=-1, debug=False):    
+def patch_shelf_pred(
+    num=-1, debug=False, shelf_name="hawor_gtcamFalse", orig_name="dataset_contact"
+):
     mano_model_path = args.mano_model_dir
     # data_file = osp.join(args.preprocess_dir, "dataset_contact_mini.pkl")
-    data_file = osp.join(args.preprocess_dir, "dataset_contact.pkl")
+    data_file = osp.join(args.preprocess_dir, orig_name + ".pkl")
     with open(data_file, "rb") as f:
         data = pickle.load(f)
 
     wrapper = hand_utils.ManopthWrapper(mano_model_path, ncomps=15, use_pca=True)
-    wrapper_left = hand_utils.ManopthWrapper(mano_model_path, ncomps=15, use_pca=True, side="left")
+    wrapper_left = hand_utils.ManopthWrapper(
+        mano_model_path, ncomps=15, use_pca=True, side="left"
+    )
     hand_wrapper = HandWrapper(mano_model_path)
 
-    gt_false_shelf_dir = osp.join(args.clips_dir, "hawor_gtcamFalse")
-    gt_true_shelf_dir = osp.join(args.clips_dir, "hawor_gtcamTrue")
+    gt_false_shelf_dir = osp.join(args.clips_dir, shelf_name)
+    # gt_true_shelf_dir = osp.join(args.clips_dir, "hawor_gtcamTrue")
 
     gt_false_shelf_list = set(glob(osp.join(gt_false_shelf_dir, "*.npz")))
     # gt_true_shelf_list = set(glob(osp.join(gt_true_shelf_dir, "*.npz")))
@@ -625,9 +632,11 @@ def patch_shelf_pred(num=-1, debug=False):
     data_patch = {}
     data_copy = {}
     data_copy_copy = {}
-    for s, seq in enumerate(data.keys()):
+    not_ready_list = []
+    for s, seq in enumerate(tqdm(data.keys())):
         if num > 0 and s >= num:
             break
+        
         if debug:
             data_copy[seq] = data[seq]
             data_copy_copy[seq] = deepcopy(data[seq])
@@ -649,25 +658,50 @@ def patch_shelf_pred(num=-1, debug=False):
             seq_shelf["left_hand_valid"] = np.zeros((T,), dtype=bool)
             seq_shelf["right_hand_valid"] = np.zeros((T,), dtype=bool)
             seq_shelf["ready"] = False
+            not_ready_list.append(seq)
 
         else:
             seq_shelf["ready"] = True
             gtfalse_shelf = dict(np.load(gtfalse_shelf_file, allow_pickle=True))
-            print("Existing keys", gtfalse_shelf.keys())
+            left_non_zero_row = ~(gtfalse_shelf["left_hand_theta"] == 0).all(axis=-1)
+            if left_non_zero_row.sum() > gtfalse_shelf["left_hand_valid"].sum():
+                print('left', seq, left_non_zero_row.sum(), gtfalse_shelf["left_hand_valid"].sum())
+            gtfalse_shelf["left_hand_valid"] = gtfalse_shelf["left_hand_valid"] & left_non_zero_row
+
+            right_non_zero_row = ~(gtfalse_shelf["right_hand_theta"] == 0).all(axis=-1) 
+            if right_non_zero_row.sum() != gtfalse_shelf["right_hand_valid"].sum():
+                print('right', seq, right_non_zero_row.sum(), gtfalse_shelf["right_hand_valid"].sum())
+            gtfalse_shelf["right_hand_valid"] = gtfalse_shelf["right_hand_valid"] & right_non_zero_row
+
+            seq_shelf["left_hand_valid"] = gtfalse_shelf["left_hand_valid"]
+            seq_shelf["right_hand_valid"] = gtfalse_shelf["right_hand_valid"]
 
             # akward convert
-            left_hand_theta = wrapper.pca_to_pose(torch.FloatTensor(gtfalse_shelf["left_hand_theta"][..., 6:]), add_mean=True)  - wrapper.hand_mean   # original_hA
-            left_hand_theta = wrapper_left.pose_to_pca(left_hand_theta, ncomps=15) 
+            left_hand_theta = (
+                wrapper.pca_to_pose(
+                    torch.FloatTensor(gtfalse_shelf["left_hand_theta"][..., 6:]),
+                    add_mean=True,
+                )
+                - wrapper.hand_mean
+            )  # original_hA
+            left_hand_theta = wrapper_left.pose_to_pca(left_hand_theta, ncomps=15)
             # print(left_hand_theta.numpy() - gtfalse_shelf["left_hand_theta"][..., 6:])
             gtfalse_shelf["left_hand_theta"][..., 6:] = left_hand_theta.numpy()
 
-            right_hand_theta = wrapper.pca_to_pose(torch.FloatTensor(gtfalse_shelf["right_hand_theta"][..., 6:]), add_mean=True) - wrapper.hand_mean   
+            right_hand_theta = (
+                wrapper.pca_to_pose(
+                    torch.FloatTensor(gtfalse_shelf["right_hand_theta"][..., 6:]),
+                    add_mean=True,
+                )
+                - wrapper.hand_mean
+            )
             right_hand_theta = wrapper.pose_to_pca(right_hand_theta, ncomps=15)
             # print(right_hand_theta.numpy() - gtfalse_shelf["right_hand_theta"][..., 6:])
             gtfalse_shelf["right_hand_theta"][..., 6:] = right_hand_theta.numpy()
 
-            # you need to align two world coordinate first! 
+            # you need to align two world coordinate first!
             align_world_coordinate(data[seq], gtfalse_shelf, hand_wrapper)
+
 
             for key in key_list:
                 seq_shelf[key] = gtfalse_shelf[key]
@@ -675,7 +709,7 @@ def patch_shelf_pred(num=-1, debug=False):
         for key in seq_shelf.keys():
             if torch.is_tensor(seq_shelf[key]):
                 seq_shelf[key] = seq_shelf[key].cpu().numpy()
-                
+
             if debug:
                 if seq_shelf["ready"]:
                     data[seq][key] = seq_shelf[key]
@@ -688,73 +722,109 @@ def patch_shelf_pred(num=-1, debug=False):
         save_file = osp.join(args.preprocess_dir, "dataset_test_slam.pkl")
         with open(save_file, "wb") as f:
             pickle.dump(data_copy, f)
-        
+
         save_file = osp.join(args.preprocess_dir, "dataset_test_copy.pkl")
         with open(save_file, "wb") as f:
             pickle.dump(data_copy_copy, f)
     else:
-        save_file = osp.join(args.preprocess_dir, "dataset_contact_patched_camFalse.pkl")
+        save_file = osp.join(
+            args.preprocess_dir, f"{orig_name}_patched_{shelf_name}.pkl"
+        )
         with open(save_file, "wb") as f:
             pickle.dump(data_patch, f)
 
     print(f"Saved to {save_file}")
 
+    print(f"Not ready list: {not_ready_list}")
+    error_file = osp.join(args.preprocess_dir, f"not_ready_{shelf_name}.txt")
+    with open(error_file, "w") as f:
+        for seq in not_ready_list:
+            f.write(f"{seq}\n")
+
+
+def split_dataset(shelf_name):
+    split_file = osp.join(args.clips_dir, "sets/split.json")
+    split = json.load(open(split_file, "r"))
+    test_list = split["test"]
+
+    error_file = osp.join(args.preprocess_dir, f"not_ready_{shelf_name}.txt")
+    with open(error_file, "r") as f:
+        error_list = f.readlines()
+    error_list = [line.strip() for line in error_list]
+    for seq in error_list:
+        if seq in test_list:
+            print(seq)
+    return
+
+
 from jutils import geom_utils
-def align_world_coordinate(data, gtfalse_shelf,hand_wrapper):
+
+
+def align_world_coordinate(data, gtfalse_shelf, hand_wrapper):
     """
     Find the optimal rigid transformation w2Tw1 that aligns two sets of camera poses.
-    
+
     Given:
     - w1Tc: (T, 4, 4) camera poses in world coordinate system 1
     - w2Tc: (T, 4, 4) camera poses in world coordinate system 2
-    
+
     Find w2Tw1 such that: w2Tc ≈ w2Tw1 @ w1Tc
-    
+
     This uses SVD-based Procrustes analysis to find the optimal rigid transformation.
-    
+
     Args:
         data: dict containing 'wTc' key with ground truth poses (T, 4, 4)
         gtfalse_shelf: dict containing 'wTc' key with predicted poses (T, 4, 4)
-    
+
     Returns:
         w2Tw1: (4, 4) rigid transformation matrix
     """
-    w2Tc_gt = torch.FloatTensor(data['wTc'])  # (T, 4, 4)
-    w1Tc_pred = torch.FloatTensor(gtfalse_shelf['wTc'])  # (T, 4, 4)
+    w2Tc_gt = torch.FloatTensor(data["wTc"])  # (T, 4, 4)
+    w1Tc_pred = torch.FloatTensor(gtfalse_shelf["wTc"])  # (T, 4, 4)
 
-    # also see this: 
+    # also see this:
     w2Tw1 = w2Tc_gt @ geom_utils.inverse_rt_v2(w1Tc_pred)
 
     w1Tc = w1Tc_pred
     w2Tc = w2Tc_gt
-    R1 = w1Tc[..., :3, :3]           # (T,3,3)
-    t1 = w1Tc[..., :3,  3]           # (T,3)
+    R1 = w1Tc[..., :3, :3]  # (T,3,3)
+    t1 = w1Tc[..., :3, 3]  # (T,3)
     invR1 = R1.transpose(-1, -2)
     invt1 = -(invR1 @ t1.unsqueeze(-1)).squeeze(-1)
 
     R2 = w2Tc[..., :3, :3]
-    t2 = w2Tc[..., :3,  3]
+    t2 = w2Tc[..., :3, 3]
 
-    Rt = R2 @ invR1                   # (T,3,3)
+    Rt = R2 @ invR1  # (T,3,3)
     dt = t2 + (R2 @ invt1.unsqueeze(-1)).squeeze(-1)
 
-    M = Rt.sum(dim=0)                # (3,3)
+    M = Rt.sum(dim=0)  # (3,3)
     U, S, Vh = torch.linalg.svd(M)
-    R = U @ torch.diag(torch.tensor([1.0, 1.0, torch.det(U @ Vh).item()], device=U.device)) @ Vh
+    R = (
+        U
+        @ torch.diag(
+            torch.tensor([1.0, 1.0, torch.det(U @ Vh).item()], device=U.device)
+        )
+        @ Vh
+    )
 
     t = dt.mean(dim=0)
 
     w2Tw1 = torch.eye(4, device=w1Tc.device, dtype=w1Tc.dtype)
     w2Tw1[:3, :3] = R
-    w2Tw1[:3,  3] = t
-        
+    w2Tw1[:3, 3] = t
+
     # Verify the alignment quality
     w2Tc_aligned = w2Tw1.unsqueeze(0) @ w1Tc_pred  # (1, 4, 4) @ (T, 4, 4) -> (T, 4, 4)
     alignment_error = torch.norm(w2Tc_aligned - w2Tc_gt, dim=(1, 2)).mean()
-    print(f"Mean alignment error: {alignment_error.item():.6f}")
-    
-    left_mano_params_dict = hand_wrapper.para2dict(gtfalse_shelf["left_hand_theta"], gtfalse_shelf["left_hand_shape"])
-    right_mano_params_dict = hand_wrapper.para2dict(gtfalse_shelf["right_hand_theta"], gtfalse_shelf["right_hand_shape"])
+    # print(f"Mean alignment error: {alignment_error.item():.6f}")
+
+    left_mano_params_dict = hand_wrapper.para2dict(
+        gtfalse_shelf["left_hand_theta"], gtfalse_shelf["left_hand_shape"]
+    )
+    right_mano_params_dict = hand_wrapper.para2dict(
+        gtfalse_shelf["right_hand_theta"], gtfalse_shelf["right_hand_shape"]
+    )
     # w2 is GT frame
     _, cano_left_mano_params_dict = cano_seq_mano(
         canoTw=w2Tw1,
@@ -771,7 +841,7 @@ def align_world_coordinate(data, gtfalse_shelf,hand_wrapper):
 
     gt_left_theta, gt_left_shape = hand_wrapper.dict2para(cano_left_mano_params_dict)
     gt_right_theta, gt_right_shape = hand_wrapper.dict2para(cano_right_mano_params_dict)
-    
+
     gtfalse_shelf["left_hand_theta"] = gt_left_theta
     gtfalse_shelf["left_hand_shape"] = gt_left_shape
     gtfalse_shelf["right_hand_theta"] = gt_right_theta
@@ -781,26 +851,26 @@ def align_world_coordinate(data, gtfalse_shelf,hand_wrapper):
     return gtfalse_shelf
 
 
-def align_world_coordinate_robust(data, gtfalse_shelf, method='svd'):
+def align_world_coordinate_robust(data, gtfalse_shelf, method="svd"):
     """
     Robust version of align_world_coordinate with multiple alignment methods.
-    
+
     Args:
         data: dict containing 'wTc' key with ground truth poses (T, 4, 4)
         gtfalse_shelf: dict containing 'wTc' key with predicted poses (T, 4, 4)
         method: 'svd', 'umeyama', or 'horn'
-    
+
     Returns:
         w2Tw1: (4, 4) rigid transformation matrix
     """
-    w2Tc_gt = torch.FloatTensor(data['wTc'])  # (T, 4, 4)
-    w1Tc_pred = torch.FloatTensor(gtfalse_shelf['wTc'])  # (T, 4, 4)
-    
-    if method == 'svd':
+    w2Tc_gt = torch.FloatTensor(data["wTc"])  # (T, 4, 4)
+    w1Tc_pred = torch.FloatTensor(gtfalse_shelf["wTc"])  # (T, 4, 4)
+
+    if method == "svd":
         return align_world_coordinate(data, gtfalse_shelf)
-    elif method == 'umeyama':
+    elif method == "umeyama":
         return _align_umeyama(w2Tc_gt, w1Tc_pred)
-    elif method == 'horn':
+    elif method == "horn":
         return _align_horn(w2Tc_gt, w1Tc_pred)
     else:
         raise ValueError(f"Unknown method: {method}")
@@ -813,54 +883,54 @@ def _align_umeyama(w2Tc_gt, w1Tc_pred):
     # Extract camera positions
     w2_positions = -w2Tc_gt[:, :3, :3].transpose(-2, -1) @ w2Tc_gt[:, :3, 3:4]
     w1_positions = -w1Tc_pred[:, :3, :3].transpose(-2, -1) @ w1Tc_pred[:, :3, 3:4]
-    
+
     w2_positions = w2_positions.squeeze(-1)  # (T, 3)
     w1_positions = w1_positions.squeeze(-1)  # (T, 3)
-    
+
     # Compute centroids
     w2_centroid = w2_positions.mean(dim=0)
     w1_centroid = w1_positions.mean(dim=0)
-    
+
     # Center the point clouds
     w2_centered = w2_positions - w2_centroid
     w1_centered = w1_positions - w1_centroid
-    
+
     # Compute scale factors
     w2_scale = torch.sqrt(torch.sum(w2_centered**2, dim=1).mean())
     w1_scale = torch.sqrt(torch.sum(w1_centered**2, dim=1).mean())
-    
+
     if w1_scale < 1e-6:
         return torch.eye(4, dtype=torch.float32)
-    
+
     # Normalize by scale
     w2_normalized = w2_centered / w2_scale
     w1_normalized = w1_centered / w1_scale
-    
+
     # Compute cross-covariance matrix
     H = w1_normalized.T @ w2_normalized
-    
+
     # SVD decomposition
     U, S, Vt = torch.linalg.svd(H)
-    
+
     # Compute rotation matrix
     R = Vt.T @ U.T
-    
+
     # Ensure proper rotation
     if torch.det(R) < 0:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
-    
+
     # Compute scale factor
     scale = w2_scale / w1_scale
-    
+
     # Compute translation
     t = w2_centroid - scale * R @ w1_centroid
-    
+
     # Construct transformation matrix
     w2Tw1 = torch.eye(4, dtype=torch.float32)
     w2Tw1[:3, :3] = scale * R
     w2Tw1[:3, 3] = t
-    
+
     return w2Tw1
 
 
@@ -871,57 +941,57 @@ def _align_horn(w2Tc_gt, w1Tc_pred):
     # Extract camera positions
     w2_positions = -w2Tc_gt[:, :3, :3].transpose(-2, -1) @ w2Tc_gt[:, :3, 3:4]
     w1_positions = -w1Tc_pred[:, :3, :3].transpose(-2, -1) @ w1Tc_pred[:, :3, 3:4]
-    
+
     w2_positions = w2_positions.squeeze(-1)  # (T, 3)
     w1_positions = w1_positions.squeeze(-1)  # (T, 3)
-    
+
     # Compute centroids
     w2_centroid = w2_positions.mean(dim=0)
     w1_centroid = w1_positions.mean(dim=0)
-    
+
     # Center the point clouds
     w2_centered = w2_positions - w2_centroid
     w1_centered = w1_positions - w1_centroid
-    
+
     # Compute the cross-covariance matrix
     H = w1_centered.T @ w2_centered
-    
+
     # Construct the 4x4 matrix for quaternion computation
     trace_H = torch.trace(H)
     delta = torch.tensor([H[1, 2] - H[2, 1], H[2, 0] - H[0, 2], H[0, 1] - H[1, 0]])
-    
+
     Q = torch.zeros(4, 4, dtype=torch.float32)
     Q[0, 0] = trace_H
     Q[0, 1:] = delta
     Q[1:, 0] = delta
     Q[1:, 1:] = H + H.T - torch.eye(3) * trace_H
-    
+
     # Find the eigenvector corresponding to the largest eigenvalue
     eigenvalues, eigenvectors = torch.linalg.eigh(Q)
     max_idx = torch.argmax(eigenvalues)
     quaternion = eigenvectors[:, max_idx]
-    
+
     # Convert quaternion to rotation matrix
     qw, qx, qy, qz = quaternion[0], quaternion[1], quaternion[2], quaternion[3]
-    
-    R = torch.tensor([
-        [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
-        [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
-        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
-    ], dtype=torch.float32)
-    
+
+    R = torch.tensor(
+        [
+            [1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qw * qz), 2 * (qx * qz + qw * qy)],
+            [2 * (qx * qy + qw * qz), 1 - 2 * (qx**2 + qz**2), 2 * (qy * qz - qw * qx)],
+            [2 * (qx * qz - qw * qy), 2 * (qy * qz + qw * qx), 1 - 2 * (qx**2 + qy**2)],
+        ],
+        dtype=torch.float32,
+    )
+
     # Compute translation
     t = w2_centroid - R @ w1_centroid
-    
+
     # Construct transformation matrix
     w2Tw1 = torch.eye(4, dtype=torch.float32)
     w2Tw1[:3, :3] = R
     w2Tw1[:3, 3] = t
-    
+
     return w2Tw1
-
-
-
 
 
 def make_own_split():
@@ -963,29 +1033,16 @@ mano_model_folder = "hot3d/hot3d/mano_v1_2/models"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--clips_dir", type=str, default="data/HOT3D-CLIP")
     parser.add_argument(
-        "--clips_dir",
-        type=str,
-        help="Path to a folder with clips.",
-        default="data/HOT3D-CLIP",
+        "--object_models_dir", type=str, default="data/HOT3D-CLIP/object_models_eval/"
     )
+    parser.add_argument("--mano_model_dir", type=str, default="assets/mano/")
     parser.add_argument(
-        "--object_models_dir",
-        type=str,
-        help="Path to a folder with 3D object models.",
-        default="data/HOT3D-CLIP/object_models_eval/",
+        "--preprocess_dir", type=str, default="data/HOT3D-CLIP/preprocess/"
     )
-    parser.add_argument(
-        "--mano_model_dir",
-        type=str,
-        help="Path to a folder with MANO model (MANO_RIGHT/LEFT.pkl files).",
-        default="assets/mano/",
-    )
-    parser.add_argument(
-        "--preprocess_dir",
-        type=str,
-        default="data/HOT3D-CLIP/preprocess/",
-    )
+    parser.add_argument("--shelf_name", type=str, default="hawor_gtcamFalse")
+    parser.add_argument("--orig_name", type=str, default="dataset_contact")
     args = parser.parse_args()
     vis_dir = "outputs/vis_hot3d_clips_preprocess/"
 
@@ -1009,5 +1066,5 @@ if __name__ == "__main__":
     # rotate_90(clip_path)
     # extract_image_one_clip(clip_path)
 
-
-    patch_shelf_pred()
+    patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
+    # split_dataset(args.shelf_name)
