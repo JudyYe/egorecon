@@ -468,6 +468,8 @@ class HandToObjectDataset(Dataset):
                                 "right",
                             )
                         )
+                        if np.isnan(shelf_left_positions).any():
+                            import ipdb; ipdb.set_trace()
                         shelf_left_positions_list.append(shelf_left_positions)
                         shelf_right_positions_list.append(shelf_right_positions)
                         shelf_left_params_list.append(shelf_left_params)
@@ -479,6 +481,7 @@ class HandToObjectDataset(Dataset):
                         shelf_right_valid_list.append(
                             shelf_data["right_hand"]["valid"][start_idx:end_idx]
                         )
+                    
                     window_data = {
                         "demo_id": demo_id,
                         "object_id": obj_id,
@@ -531,8 +534,8 @@ class HandToObjectDataset(Dataset):
 
     def _param2dict(self, params, shape=None):
         if shape is None:
-            shape = params[..., -15:]
-            params = params[..., :-15]
+            shape = params[..., -10:]
+            params = params[..., :-10]
         aa, pos, hA = np.split(params, [3, 6], axis=-1)
         return {
             "global_orient": aa,
@@ -809,9 +812,13 @@ class HandToObjectDataset(Dataset):
                 ],
                 dim=-1,
             ).float()  # (T, 2*D)
-            condition = condition * cond_mask
+            condition = torch.where(cond_mask > 0, condition, 0)
+            # condition = condition * cond_mask
         else:
             cond_mask = torch.ones_like(condition)
+                
+        if torch.isnan(condition).any():
+            import ipdb; ipdb.set_trace()
 
         left_hand_param = to_tensor(_legacy_to_hand_param(window["left_hand_params"]))
         right_hand_param = to_tensor(_legacy_to_hand_param(window["right_hand_params"]))
@@ -1199,9 +1206,20 @@ def create_norm_starts():
     print("saved metadata to", dst_file)
 
 
+def check_nan(data_file="/move/u/yufeiy2/egorecon/data/cache/hotclip_train_camera.npz"):
+    # data_list = np.load(data_file, allow_pickle=True)
+    data_list = pickle.load(open(data_file, "rb"))
+    for window in data_list:
+        for k, v in window.items():
+            if isinstance(v, np.ndarray):
+                if np.isnan(v).any():
+                    print(k, v[np.isnan(v)])
+                    import ipdb; ipdb.set_trace()
+
+
 # Global configuration variables
 th = 0.05
-use_cache = True  # True
+use_cache = False  # True
 save_cache = True  # True
 aug_cano = True
 # aug_world = False
@@ -1211,7 +1229,8 @@ if __name__ == "__main__":
 
     # create_mini_dataset()
     # vis_traj()
-    vis_clip()
+    # vis_clip()
+    check_nan()
 
     # create_norm_starts()
 

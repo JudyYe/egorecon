@@ -778,6 +778,20 @@ def patch_shelf_pred(
             f.write(f"{seq}\n")
 
 
+def check_nan(shelf_name="hawor_gtcamFalse"):
+    data_file = osp.join(args.preprocess_dir, f"dataset_contact_patched_{shelf_name}.pkl")
+    with open(data_file, "rb") as f:
+        data = pickle.load(f)
+    
+    for seq in data.keys():
+        for key in data[seq].keys():
+            v = data[seq][key]
+            if np.isnan(v).any():
+                idx = np.where(np.isnan(v))
+                print('nan', key, seq, v[idx[0]])
+    print("Done!")
+
+
 def split_dataset(shelf_name):
     split_file = osp.join(args.clips_dir, "sets/split.json")
     split = json.load(open(split_file, "r"))
@@ -1102,5 +1116,6 @@ if __name__ == "__main__":
     # rotate_90(clip_path)
     # extract_image_one_clip(clip_path)
 
-    patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
+    # patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
     # split_dataset(args.shelf_name)
+    check_nan(args.shelf_name)

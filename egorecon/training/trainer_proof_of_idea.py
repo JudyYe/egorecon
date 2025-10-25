@@ -351,6 +351,7 @@ class Trainer(object):
                         print("WARNING: NaN loss. Skipping to next data...")
                         nan_exists = True
                         torch.cuda.empty_cache()
+                        import ipdb; ipdb.set_trace()
                         continue
 
                     self.scaler.scale(loss / self.gradient_accumulate_every).backward()

@@ -520,9 +520,6 @@ def est_noise_use_merged_data(num=100):
 
 
 
-print("WHY TEHR IS NAN??? WHY some frame are black??? in w_motion")
-
-
 def est_noise():
     est_dir = "data/HOT3D-CLIP/hawor_gtcamTrue/"
     # est_dir = 'data/HOT3D-CLIP/hawor_gtcamFalse/'
