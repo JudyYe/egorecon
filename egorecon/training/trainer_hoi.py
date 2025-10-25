@@ -23,13 +23,15 @@ import os.path as osp
 
 def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
     video_list = []
-    for i,(x, t) in enumerate(tqdm(x_list)):
+    for i, (x, t) in enumerate(tqdm(x_list)):
         x_raw = model.denormalize_data(x)
         f_pref = f"{pref}_process_{i:04d}"
-        log_dict = gen_vis_res(model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref)
+        log_dict = gen_vis_res(
+            model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref
+        )
         print(log_dict[f"{f_pref}vis_pred"]._path, t)
         video_list.append((log_dict[f"{f_pref}vis_pred"], t))
-    
+
     print(video_list)
     # read and concat these videos
     frames = []
@@ -38,14 +40,63 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
         video = video._path
         save_dir = osp.dirname(video)
         image_list = imageio.mimread(video)
-        # print text 
+        # print text
         for frame in image_list:
-            cv2.putText(frame, f"Frame {i}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            cv2.putText(
+                frame,
+                f"Frame {i}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 0, 255),
+                2,
+            )
         frames.extend(image_list)
 
     save_dir = osp.join(save_dir, f"{pref}_process.mp4")
     imageio.mimwrite(save_dir, frames, fps=30)
 
+
+def gen_one(model, viz_off, opt, step, output, name):
+    """
+    Generate one visualization result for hand-object interaction.
+
+    Args:
+        model: The diffusion model used for decoding
+        viz_off: Pt3dVisualizer instance for visualization
+        opt: Configuration object containing hand settings
+        step: Current step number
+        output: 
+            "newMesh": The object mesh
+            "left_hand_params": The left hand parameters
+            "right_hand_params": The right hand parameters
+            "contact": The contact information
+            "wTo": The object transformation
+        name: Name of the visualization result
+    """
+    oObj = output["newMesh"]  # a Mesh??
+
+    oObj = Meshes(
+        verts=[oObj.verts_list()[0]],
+        faces=[oObj.faces_list()[0]],
+    ).to(device)
+
+    wTo = output["wTo"][0]
+    hand_meshes = model.decode_hand_mesh(
+        output["left_hand_params"][0],
+        output["right_hand_params"][0],
+        hand_rep="theta",
+    )
+    fname = viz_off.log_hoi_step(
+        *hand_meshes,
+        wTo,
+        oObj,
+        pref=name + f"_{step:07d}",
+        contact=output["contact"][0],
+    )
+    log_dict = {name: wandb.Video(fname)}
+
+    return log_dict
 
 
 def gen_vis_res(model, viz_off, opt, step, batch, output, pref):
@@ -57,9 +108,10 @@ def gen_vis_res(model, viz_off, opt, step, batch, output, pref):
         opt: Configuration object containing hand settings
         step: Current step number
         batch: Input batch data
-        output: Model output predictions
+        output: 
         pref: Prefix for visualization files
     """
+    assert False, "This function is deprecated"
     oObj = batch["newMesh"]  # a Mesh??
 
     oObj = Meshes(
@@ -111,7 +163,6 @@ class Trainer(BaseTrainer):
     def __init__(self, opt, diffusion_model, *args, **kwargs):
         super().__init__(opt, diffusion_model, *args, **kwargs)
 
-
     def validation_step(
         self,
         val_data_dict,
@@ -149,7 +200,7 @@ class Trainer(BaseTrainer):
             #     "Validation/Loss/Total Loss": val_loss.item(),
             #     "Validation/Loss/Diffusion Loss": val_loss_diffusion.item(),
             # }
-            val_log_dict = {f'Validation/Loss/{k}': v.item() for k, v in losses.items()}
+            val_log_dict = {f"Validation/Loss/{k}": v.item() for k, v in losses.items()}
             wandb.log(val_log_dict, step=self.step)
 
         bs_for_vis = len(val_data_dict["object_id"])
@@ -212,7 +263,7 @@ class Trainer(BaseTrainer):
             val_data_dict_for_vis = {
                 k: v[:bs_for_vis] for k, v in val_data_dict.items()
             }
-            log_dict = gen_vis_res(
+            log_dict = self.gen_vis_res(
                 self.model,
                 self.viz_off,
                 self.opt,
@@ -225,7 +276,7 @@ class Trainer(BaseTrainer):
                 wandb.log(log_dict, step=self.step)
 
             if sample_guide:
-                _ = gen_vis_res(
+                _ = self.gen_vis_res(
                     self.model,
                     self.viz_off,
                     self.opt,
@@ -234,7 +285,7 @@ class Trainer(BaseTrainer):
                     {"pred_raw": post_object_pred_raw[:bs_for_vis]},
                     pref=f"{pref}_post",
                 )
-                log_dict = gen_vis_res(
+                log_dict = self.gen_vis_res(
                     self.model,
                     self.viz_off,
                     self.opt,
@@ -250,13 +301,56 @@ class Trainer(BaseTrainer):
             return metrics, (object_pred_raw, guided_object_pred_raw)
         return metrics
 
-
     def test(self):
         for batch in self.val_dl:
             batch = model_utils.to_cuda(batch)
-            gen_vis_res(self.model, self.viz_off, self.opt, self.step, batch, None, pref="test")
+            self.gen_vis_res(
+                self.model, self.viz_off, self.opt, self.step, batch, None, pref="test"
+            )
         return
 
+    def gen_vis_res(self, model, viz_off, opt, step, batch, output, pref):
+        all_log_dict = {}
+        if self.opt.hand == "cond":
+            # batch_dict = {
+            #     "newMesh": batch["newMesh"],
+            #     "left_hand_params": batch["left_hand_params"],
+            #     "right_hand_params": batch["right_hand_params"],
+            #     "contact": batch["contact"],
+            #     "wTo": batch["target_raw"],
+            # }
+            target_raw = self.model.denormalize_data(batch["target"])
+            batch_dict = self.model.decode_dict(target_raw)
+            batch_dict["newMesh"] = batch["newMesh"]
+            batch_dict["contact"] = batch["contact"]
+            batch_dict["left_hand_params"] = batch["left_hand_params"]
+            batch_dict["right_hand_params"] = batch["right_hand_params"]
+
+            log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, batch_dict, pref +'_gt')
+            all_log_dict.update(log_dict)
+
+            if output is not None:
+                pred_dict = batch_dict
+                pred_dict["wTo"] = self.model.decode_dict(output["pred_raw"])["wTo"]
+                log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, pred_dict, pref +'_pred')
+                all_log_dict.update(log_dict)
+
+        elif self.opt.hand == "cond_out":
+            print("target raw shape:", batch["target_raw"].shape)
+            target_raw = self.model.denormalize_data(batch["target"])
+            batch_dict = self.model.decode_dict(target_raw)
+            batch_dict["newMesh"] = batch["newMesh"]
+            batch_dict["contact"] = batch["contact"]
+            log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, batch_dict, pref +'_gt')
+            all_log_dict.update(log_dict)
+
+            if output is not None:
+                pred_dict = self.model.decode_dict(output["pred_raw"])
+                pred_dict["newMesh"] = batch["newMesh"]
+                log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, pred_dict, pref +'_pred')
+                all_log_dict.update(log_dict)
+
+        return all_log_dict
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()

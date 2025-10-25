@@ -9,6 +9,7 @@ from jutils import geom_utils, hand_utils, mesh_utils, plot_utils
 from scipy.spatial.transform import Rotation as R
 from egorecon.manip.lafan1.utils import rotate_at_frame_w_obj
 
+
 class HandWrapper(nn.Module):
     def __init__(self, mano_dir):
         super().__init__()
@@ -51,14 +52,13 @@ class HandWrapper(nn.Module):
 
         return verts, faces
 
-    def para2dict(
-        self,
-        hand_para,
-        hand_shape=None,
-    ):
+    @staticmethod
+    def para2dict(hand_para, hand_shape=None):
         if hand_shape is None:
-            assert hand_para.shape[-1] == 3+3+15+10, f"hand_para shape: {hand_para.shape}"
-            hand_para, hand_shape = torch.split(hand_para, [3+3+15, 10], dim=-1)
+            assert hand_para.shape[-1] == 3 + 3 + 15 + 10, (
+                f"hand_para shape: {hand_para.shape}"
+            )
+            hand_para, hand_shape = torch.split(hand_para, [3 + 3 + 15, 10], dim=-1)
 
         body_params_dict = {
             "transl": hand_para[:, 3:6],
@@ -68,9 +68,12 @@ class HandWrapper(nn.Module):
         }
         return body_params_dict
 
-    def dict2para(self, body_params_dict, side="right", merge=False):
+    @staticmethod
+    def dict2para(body_params_dict, side="right", merge=False):
         if not isinstance(body_params_dict["transl"], torch.Tensor):
-            body_params_dict_pt = {k: torch.FloatTensor(v) for k, v in body_params_dict.items()}
+            body_params_dict_pt = {
+                k: torch.FloatTensor(v) for k, v in body_params_dict.items()
+            }
         else:
             body_params_dict_pt = body_params_dict
         hand_para = torch.cat(
@@ -94,8 +97,10 @@ class HandWrapper(nn.Module):
         :param side: _description_, defaults to 'right'
         """
         if hand_shape is None:
-            assert hand_para.shape[-1] == 3+3+15+10, f"hand_para shape: {hand_para.shape}"
-            hand_para, hand_shape = torch.split(hand_para, [3+3+15, 10], dim=-1)
+            assert hand_para.shape[-1] == 3 + 3 + 15 + 10, (
+                f"hand_para shape: {hand_para.shape}"
+            )
+            hand_para, hand_shape = torch.split(hand_para, [3 + 3 + 15, 10], dim=-1)
 
         pref_dim = hand_para.shape[:-1]
         hand_para = hand_para.reshape(-1, hand_para.shape[-1])
@@ -156,22 +161,26 @@ def cano_seq_mano(
             mano_params_dict_torch = {}
             for key in mano_params_dict.keys():
                 if isinstance(mano_params_dict[key], np.ndarray):
-                    mano_params_dict_torch[key] = torch.FloatTensor(mano_params_dict[key])[0:1]
+                    mano_params_dict_torch[key] = torch.FloatTensor(
+                        mano_params_dict[key]
+                    )[0:1]
                 else:
                     mano_params_dict_torch[key] = mano_params_dict[key][0:1]
-            positions_w = mano_model(**mano_params_dict_torch   ).joints  # (T, 21, 3)
+            positions_w = mano_model(**mano_params_dict_torch).joints  # (T, 21, 3)
             origin = positions_w[0, 0]  # (3, )
             rotation = R.from_rotvec(
                 mano_params_dict["global_orient"][0]
             ).as_matrix()  # (3, 3)
 
-            quat = R.from_rotvec(mano_params_dict["global_orient"]).as_quat()[:, [3, 0, 1, 2]]
+            quat = R.from_rotvec(mano_params_dict["global_orient"]).as_quat()[
+                :, [3, 0, 1, 2]
+            ]
 
             cano_pos, _, _, _, canoTw_rot = rotate_at_frame_w_obj(
                 positions_w[np.newaxis, :, np.newaxis, :],
-                quat [np.newaxis, :, np.newaxis, :],
-                positions_w[np.newaxis, ],
-                quat [np.newaxis, ],
+                quat[np.newaxis, :, np.newaxis, :],
+                positions_w[np.newaxis,],
+                quat[np.newaxis,],
             )
 
             canoTw_rot = canoTw_rot.reshape(3, 3)
@@ -179,7 +188,7 @@ def cano_seq_mano(
 
             canoTw = np.eye(4)
             canoTw[:3, :3] = canoTw_rot
-            canoTw[:3, 3] = - cano_pos[0]
+            canoTw[:3, 3] = -cano_pos[0]
             transf_matrix = canoTw
     else:
         transf_matrix = canoTw  # (4, 4)
@@ -387,20 +396,27 @@ def test_cano_seq_mano():
         print(canoPositions.shape)
 
         # extract 1st frame
-        mano_first = {key: torch.FloatTensor(value[0:1]) for key, value in cano_smplx_params_dict.items()}
+        mano_first = {
+            key: torch.FloatTensor(value[0:1])
+            for key, value in cano_smplx_params_dict.items()
+        }
 
         verts = sided_mano_models["right"](**mano_first).vertices
         print(verts.shape)
         faces = sided_mano_models["right"].faces_tensor.repeat(verts.shape[0], 1, 1)
 
-        first_mesh =Meshes(verts=verts, faces=faces).to(device) # (1, 6890, 3)
+        first_mesh = Meshes(verts=verts, faces=faces).to(device)  # (1, 6890, 3)
 
         coord = plot_utils.create_coord(device, 1, size=0.1)
 
         scene = mesh_utils.join_scene([coord, first_mesh])
         image_list = mesh_utils.render_geom_rot_v2(scene)
-        image_utils.save_gif(image_list, f"outputs/debug_cano_mano/vis_hand_cond_{seq}", fps=10, ext=".mp4")
-
+        image_utils.save_gif(
+            image_list,
+            f"outputs/debug_cano_mano/vis_hand_cond_{seq}",
+            fps=10,
+            ext=".mp4",
+        )
 
 
 def load_pickle(path):

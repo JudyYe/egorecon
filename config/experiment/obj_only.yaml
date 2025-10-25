@@ -14,6 +14,7 @@ general:
   save_and_sample_every: 20000
 
 
+
 datasets:
   t0: 300
   # one_window: true
@@ -22,8 +23,14 @@ datasets:
 
 condition: 
   noisy_obj: false
-  bps: 1
+  bps: 2
 
 dyn_only: true
 
 ds_type: w_motion
+
+output:
+  contact: true
+
+hand_rep: joint
+hand: cond

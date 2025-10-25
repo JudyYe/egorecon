@@ -13,6 +13,8 @@ general:
   eval_every: 20000
   save_and_sample_every: 20000
 
+train:
+  start_mask_step: 10000
 
 datasets:
   t0: 300
@@ -22,7 +24,6 @@ datasets:
 
 condition: 
   noisy_obj: false
-  noisy_hand: true
   bps: 2
 
 dyn_only: true
@@ -34,3 +35,9 @@ output:
 
 hand_rep: joint_theta  # theta or motion_rep or joint
 hand: cond_out
+
+
+mask_dropout:
+  one_hand: 0.2  # two hands are all masked out: 0.2*0.2 = 0.04
+  use_mask: 0.5
+  max_infill_ratio: 0.2  # 18% of the hand trajectory is masked out on average

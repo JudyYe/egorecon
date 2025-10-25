@@ -224,6 +224,9 @@ class CondGaussianDiffusion(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        self.use_hand_raw_in_cond = False
+        if opt.hand == 'cond':
+            self.use_hand_raw_in_cond = True
         self.hand_wrapper = HandWrapper(opt.paths.mano_dir)
 
         self.hand_sensor_encoder = nn.Sequential(
@@ -400,7 +403,6 @@ class CondGaussianDiffusion(nn.Module):
     def p_sample(
         self, x, t, x_cond, padding_mask=None, clip_denoised=False, guide=False, newPoints=None, hand_raw=None, rtn_info=False, **kwargs
     ):
-        print("Deactiveate hand_raw")
         b, *_, device = *x.shape, x.device
         x_cond = self.get_cond(x_cond, x, t, newPoints, hand_raw)
         model_mean, _, model_log_variance, x_start = self.p_mean_variance(
@@ -488,9 +490,6 @@ class CondGaussianDiffusion(nn.Module):
         # process hint
         batch = model_kwargs["obs"]
 
-        # # TODO: ??
-        # if not train:
-        #     scale = self.calc_grad_scale(mask_hint)
 
         for _ in range(n_guide_steps):
             loss, grad = self.gradients(x, batch)
@@ -592,7 +591,6 @@ class CondGaussianDiffusion(nn.Module):
         rtn_x_list=False,
         **kwargs,
     ):
-        print("Deactiveate hand_raw")
         rtn = self.sample(
             x_start,
             hand_condition,
@@ -603,7 +601,6 @@ class CondGaussianDiffusion(nn.Module):
             **kwargs,
         )
 
-        print("Deactiveate hand_raw")
         if rtn_x_list:
             motion = rtn[0]
         else:
@@ -637,22 +634,8 @@ class CondGaussianDiffusion(nn.Module):
             cond_mask: optional mask for conditional generation
             padding_mask: BS X 1 X (T+1) - mask for variable sequence lengths
         """
-        print("Deactiveate hand_raw")
         # self.denoise_fn.eval()
         self.eval()
-        # cond = self.get_cond(hand_condition, x_start, newPoints, hand_raw)
-
-        # # (BPS representation) Encode object geometry to low dimensional vectors.
-        # if self.opt.condition.bps:
-        #     x_cond = self.encode_bps_feature(newPoints)
-
-        #     # BS = bps_cond.shape[0]
-        #     # x_cond = self.bps_encoder(bps_cond.reshape(-1, 1024*3)).reshape(BS, 1, -1)
-        #     cond = torch.cat([hand_condition, x_cond], dim=-2)
-        # else:
-        #     bs = x_start.shape[0]
-        #     bps_cond = torch.zeros([bs, 1, hand_condition.shape[-1]]).to(hand_condition.device)
-        #     cond = torch.cat([hand_condition, bps_cond], dim=-2)
 
         if self.opt.ddim:
             sample_loop_fn = self.ddim_sample_loop
@@ -669,7 +652,6 @@ class CondGaussianDiffusion(nn.Module):
             **kwargs,
         )
         # BS X T X D
-        print("Deactiveate hand_raw")
 
         # self.denoise_fn.train()
         self.train()
@@ -746,7 +728,9 @@ class CondGaussianDiffusion(nn.Module):
             cond_mask: optional conditioning mask
             padding_mask: BS X 1 X (T+1) - optional padding mask
         """
-        print("Deactiveate hand_raw")
+        if training_info["step"] < self.opt.train.warmup or self.opt.hand == 'cond':
+            self.use_hand_raw_in_cond = True
+
         bs = x_start.shape[0]
         t = torch.randint(0, self.num_timesteps, (bs,), device=x_start.device).long()
 
@@ -761,18 +745,38 @@ class CondGaussianDiffusion(nn.Module):
         loss = 0
         loss += curr_loss.mean()
         losses = {'diffusion': curr_loss.mean()}
+
+        x0_pred = info['x0_pred']
+        B, T, _ = x0_pred.shape
+        x0_pred_raw = self.denormalize_data(x0_pred)
+        pred_dict = self.decode_dict(x0_pred_raw)
+
         # add other losses
-        if  self.opt.loss.w_contact > 0 and training_info.get('step', 0) > self.opt.train.warmup:
-            x0_pred = info['x0_pred']
-            B, T, _ = x0_pred.shape
-            x0_pred_raw = self.denormalize_data(x0_pred)
-            wTo_pred = self.decode_dict(x0_pred_raw)['wTo']
+        # consistency 
+        is_warmup = training_info.get('step', 0) > self.opt.train.warmup
+        if not is_warmup and self.opt.hand_rep == "joint_theta" and self.opt.loss.w_consistency > 0:
+            _, (left_joints_fk, right_joints_fk) = self.decode_hand_mesh(
+                pred_dict['left_hand_params'], pred_dict['right_hand_params'], hand_rep='theta', rtn_joints=True)
+            left_joints, right_joints = pred_dict['left_joints'], pred_dict['right_joints']
+
+            const_loss = (left_joints_fk.reshape(B, T, -1, 3) - left_joints.reshape(B, T, -1, 3)).norm(dim=-1).mean()
+            const_loss += (right_joints_fk.reshape(B, T, -1, 3) - right_joints.reshape(B, T, -1, 3)).norm(dim=-1).mean()
+            loss += self.opt.loss.w_consistency * const_loss
+            losses['consistency'] = const_loss
+
+        if not is_warmup and self.opt.loss.w_contact > 0:
+            wTo_pred = pred_dict['wTo']
             wTo_pred = geom_utils.se3_to_matrix_v2(wTo_pred)  # (B, T, 4, 4)
             wTo_pred = wTo_pred.reshape(B*T, 4, 4)
             oPoints_exp = newPoints[None].repeat(1, T, 1, 1).reshape(B*T, -1, 3)
             wPoints = mesh_utils.apply_transform(oPoints_exp, wTo_pred)  # (B*T, P, 3)
             P = wPoints.shape[1]             
-            wHands = hand_raw.reshape(B*T, -1, 3) # (B*T, J, 3)
+
+            if self.use_hand_raw_in_cond:
+                wHands = hand_raw.reshape(B*T, -1, 3) # (B*T, J, 3)
+            else:
+                wHands = torch.cat([pred_dict['left_joints'], pred_dict['right_joints']], dim=-1)
+                wHands = wHands.reshape(B*T, -1, 3) # (B*T, J, 3)
             J_2 = wHands.shape[-2]
 
             dist, idx, wNn = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)  # (B*T, 2*J, 3)
@@ -783,7 +787,7 @@ class CondGaussianDiffusion(nn.Module):
             loss += self.opt.loss.w_contact * contact_loss
             losses['contact'] = contact_loss
 
-        if self.opt.loss.w_rel_contact > 0 and training_info.get('step', 0) > self.opt.train.warmup:
+        if not is_warmup and self.opt.loss.w_rel_contact > 0:
             assert self.opt.loss.w_contact > 0, "w_rel_contact requires w_contact"
             # relative contact
             # wNn_next: where is the nearest point on the object moves to in the next step
@@ -818,7 +822,7 @@ class CondGaussianDiffusion(nn.Module):
             losses['rel_contact'] = rel_contact_loss
 
         # temporal smoothness: no acceleration
-        if self.opt.loss.w_smoothness > 0 and training_info.get('step', 0) > self.opt.train.warmup:
+        if not is_warmup and self.opt.loss.w_smoothness > 0:
             x0_pred = info['x0_pred']
             B, T, _ = x0_pred.shape
             x0_pred_raw = self.denormalize_data(x0_pred)
@@ -840,10 +844,15 @@ class CondGaussianDiffusion(nn.Module):
         losses['Total'] = loss
         return loss, losses
 
-    def _get_bps_cond(self, orig_condition, wJoints, xt, newPoints, t):
+    def _get_bps_cond(self, orig_condition, wJoints_depr, xt, newPoints, t):
         if self.opt.condition.bps == 2:
             denorm_x = self.denormalize_data(xt)
             out = self.decode_dict(denorm_x)
+            if self.use_hand_raw_in_cond:
+                wJoints = wJoints_depr
+            else:
+                wJoints = torch.cat([out['left_joints'], out['right_joints']], dim=-1)
+
             wTo_pred = out["wTo"]
 
             hand = self.encode_hand_sensor_feature(
@@ -989,11 +998,9 @@ class CondGaussianDiffusion(nn.Module):
 
         Same usage as p_sample_loop().
         """
-        print("Deactiveate hand_raw")
         device = x_cond.device
         alpha_bar_t = torch.cat([torch.ones((1, ), device=device), self.alphas_cumprod], dim=0)
         alpha_t = 1 - self.betas
-
 
         b = shape[0]
         x_t_packed = torch.randn(shape, device=device)
@@ -1058,7 +1065,6 @@ class CondGaussianDiffusion(nn.Module):
             dict: Dictionary containing decoded components
         """
         B, T, D = target_raw.shape
-        
         # Start with object trajectory (always first 9D)
         obj_dim = 9
         wTo = target_raw[..., :obj_dim]  # [B, T, 9]
@@ -1071,25 +1077,36 @@ class CondGaussianDiffusion(nn.Module):
         right_hand_params = None
         hand_io = self.opt.get("hand", "cond")
         hand_rep = self.opt.get("hand_rep", "joints")
-        if hand_io == "out":
+        if hand_io in ["out", "cond_out"]:
             if hand_rep == "joint":
                 # Hand joints: 21 joints * 3D * 2 hands = 126D
                 hand_dim = 21 * 3 * 2
                 hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 126]
-                left_hand, right_hand = torch.split(hand_rep, 21 * 3, dim=-1)  # [B, T, 63] each
+                left_joints, right_joints = torch.split(hand_rep, 21 * 3, dim=-1)  # [B, T, 63] each
                 
                 # Convert joints to hand parameters (this would need the inverse of joint2verts_faces_joints)
                 # For now, we'll need to implement this conversion or use a different approach
-                left_hand_params = left_hand
-                right_hand_params = right_hand
+                left_hand_params = left_joints
+                right_hand_params = right_joints
                 
             elif hand_rep == "theta":
                 # Hand theta: (3+3+15+10) * 2 = 62D
                 hand_dim = (3 + 3 + 15 + 10) * 2
                 hand_rep = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 62]
                 left_hand_params, right_hand_params = torch.split(hand_rep, hand_dim // 2, dim=-1)  # [B, T, 31] each
-            
+
+            elif hand_rep == "joint_theta":
+                hand_dim = 21 * 3 * 2 + (3 + 3 + 15 + 10) * 2
+                hand_rep_over = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 184]
+                left_hand_params_over, right_hand_params_over = torch.split(hand_rep_over, [hand_dim // 2, hand_dim // 2], dim=-1)  # [B, T, 92] each
+                left_joints, left_hand_params = torch.split(left_hand_params_over, [21*3, (3+3+15+10)], dim=-1)
+                right_joints, right_hand_params = torch.split(right_hand_params_over, [21*3, (3+3+15+10)], dim=-1)
             current_pos += hand_dim
+        else:
+            left_joints = None
+            right_joints = None
+            left_hand_params = None
+            right_hand_params = None
         
         # Extract contact information if present
         contact = None
@@ -1105,6 +1122,8 @@ class CondGaussianDiffusion(nn.Module):
             'wTo': wTo,
             'left_hand_params': left_hand_params,
             'right_hand_params': right_hand_params,
+            'left_joints': left_joints,
+            'right_joints': right_joints,
             'contact': contact,
         }
         return rtn
@@ -1115,13 +1134,17 @@ class CondGaussianDiffusion(nn.Module):
         if left_hand is not None:
             if hand_rep == "joint":
                 left_joints = left_hand
-            elif hand_rep == "theta":
+            elif hand_rep in ["theta", ]:
                 _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
+            elif hand_rep == "joint_theta":
+                left_joints = left_hand[..., :21*3]
         if right_hand is not None:
             if hand_rep == "joint":
                 right_joints = right_hand
-            elif hand_rep == "theta":
+            elif hand_rep in ["theta", ]:
                 _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
+            elif hand_rep == "joint_theta":
+                right_joints = right_hand[..., :21*3]
 
         B, T, J, _ = left_joints.shape
         left_joints = left_joints.reshape(B, T, J * 3)
@@ -1129,31 +1152,48 @@ class CondGaussianDiffusion(nn.Module):
         joints = torch.cat([left_joints, right_joints], dim=-1)
         return joints
 
-    def decode_hand_mesh(self, left_hand, right_hand, hand_rep=None):
+    def decode_hand_mesh(self, left_hand, right_hand, hand_rep=None, rtn_joints=False):
         device = left_hand.device if left_hand is not None else right_hand.device
+        pref_shape = left_hand.shape[:-1] # 
+        flat_dim = int(np.prod(pref_shape))  # product of pref_shape
+        D = left_hand.shape[-1]
         
         if hand_rep is None:
             hand_rep = self.opt.hand_rep
         if left_hand is not None:
             if hand_rep == "joint":
-                T, Jx3 = left_hand.shape
-                left_hand_meshes = plot_utils.pc_to_cubic_meshes(left_hand.reshape(T, Jx3 // 3, 3))
+                assert len(pref_shape) == 1
+                left_hand_meshes = plot_utils.pc_to_cubic_meshes(left_hand.reshape(flat_dim, D // 3, 3))
             elif hand_rep == "theta":
-                verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
+                verts, faces, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand.reshape(flat_dim, D), side='left')
                 left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+                left_joints = left_joints.reshape(*pref_shape, 21*3)
+            elif hand_rep == "joint_theta":
+                left_theta = left_hand[..., 21*3:]
+                verts, faces, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_theta.reshape(flat_dim, D), side='left')
+                left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+                left_joints = left_joints.reshape(*pref_shape, 21*3)
         else:
             left_hand_meshes = None
 
         if right_hand is not None:
             if hand_rep == "joint":
-                T, Jx3 = right_hand.shape
-                right_hand_meshes = plot_utils.pc_to_cubic_meshes(right_hand.reshape(T, Jx3 // 3, 3))
+                assert len(pref_shape) == 1
+                right_hand_meshes = plot_utils.pc_to_cubic_meshes(right_hand.reshape(flat_dim, D // 3, 3))
             elif hand_rep == "theta":
-                verts, faces, joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
+                verts, faces, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand.reshape(flat_dim, D), side='right')
+                right_joints = right_joints.reshape(*pref_shape, 21*3)
+                right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
+            elif hand_rep == "joint_theta":
+                right_theta = right_hand[..., 21*3:]
+                verts, faces, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_theta.reshape(flat_dim, D), side='right')
+                right_joints = right_joints.reshape(*pref_shape, 21*3)
                 right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
         else:
             right_hand_meshes = None
 
+        if rtn_joints:
+            return (left_hand_meshes, right_hand_meshes), (left_joints, right_joints)
         return (left_hand_meshes, right_hand_meshes)
 
 

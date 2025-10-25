@@ -1,3 +1,4 @@
+from egorecon.manip.data.utils import load_pickle
 from fire import Fire
 import open3d as o3d
 import argparse
@@ -662,21 +663,27 @@ def patch_shelf_pred(
 
         else:
             seq_shelf["ready"] = True
+            # two ways that is's not valid: all zeros--> pred_valid is corectly set to 0 nan --> should set to nan too!
+            
             gtfalse_shelf = dict(np.load(gtfalse_shelf_file, allow_pickle=True))
-            left_non_zero_row = ~(gtfalse_shelf["left_hand_theta"] == 0).all(axis=-1)
-            if left_non_zero_row.sum() > gtfalse_shelf["left_hand_valid"].sum():
-                print('left', seq, left_non_zero_row.sum(), gtfalse_shelf["left_hand_valid"].sum())
-            gtfalse_shelf["left_hand_valid"] = gtfalse_shelf["left_hand_valid"] & left_non_zero_row
-
-            right_non_zero_row = ~(gtfalse_shelf["right_hand_theta"] == 0).all(axis=-1) 
-            if right_non_zero_row.sum() != gtfalse_shelf["right_hand_valid"].sum():
-                print('right', seq, right_non_zero_row.sum(), gtfalse_shelf["right_hand_valid"].sum())
-            gtfalse_shelf["right_hand_valid"] = gtfalse_shelf["right_hand_valid"] & right_non_zero_row
+            # inplace change valid and values
+            for side in ["left", "right"]:
+                shelf_valid = gtfalse_shelf[f"{side}_hand_valid"]
+                for key in ["theta", "shape"]:
+                    v = gtfalse_shelf[f"{side}_hand_{key}"]
+                    if np.isnan(v).any():
+                        idx = np.where(np.isnan(v))
+                        shelf_valid[idx[0]] = False
+                
+                gtfalse_shelf[f"{side}_hand_valid"] = shelf_valid
+                for key in ["theta", "shape"]:
+                    shelf_valid = gtfalse_shelf[f"{side}_hand_valid"]
+                    gtfalse_shelf[f"{side}_hand_{key}"][~shelf_valid] = 0
 
             seq_shelf["left_hand_valid"] = gtfalse_shelf["left_hand_valid"]
             seq_shelf["right_hand_valid"] = gtfalse_shelf["right_hand_valid"]
 
-            # akward convert
+            # akward convert because the way we save hawor...  stupid
             left_hand_theta = (
                 wrapper.pca_to_pose(
                     torch.FloatTensor(gtfalse_shelf["left_hand_theta"][..., 6:]),
@@ -696,15 +703,22 @@ def patch_shelf_pred(
                 - wrapper.hand_mean
             )
             right_hand_theta = wrapper.pose_to_pca(right_hand_theta, ncomps=15)
-            # print(right_hand_theta.numpy() - gtfalse_shelf["right_hand_theta"][..., 6:])
             gtfalse_shelf["right_hand_theta"][..., 6:] = right_hand_theta.numpy()
+            ## akward conversion done~~
 
             # you need to align two world coordinate first!
             align_world_coordinate(data[seq], gtfalse_shelf, hand_wrapper)
 
-
             for key in key_list:
                 seq_shelf[key] = gtfalse_shelf[key]
+                if np.isnan(seq_shelf[key]).any():
+                    idx = np.where(np.isnan(seq_shelf[key]))
+                    print(seq_shelf[key][idx[0]])
+                    print(idx, seq_shelf[key][idx[0]])
+                    print(seq, key)
+                    new_data = dict(np.load(gtfalse_shelf_file, allow_pickle=True))
+                    import ipdb; ipdb.set_trace()
+
 
         for key in seq_shelf.keys():
             if torch.is_tensor(seq_shelf[key]):
@@ -732,6 +746,28 @@ def patch_shelf_pred(
         )
         with open(save_file, "wb") as f:
             pickle.dump(data_patch, f)
+        
+        for seq in data_patch.keys():
+            for key in data_patch[seq].keys():
+                v = data_patch[seq][key]
+                if np.isnan(v).any():
+                    idx = np.where(np.isnan(v))
+                    print(v[idx[0]])
+                    print(idx, v[idx[0]])
+                    print(seq, key)
+                    import ipdb; ipdb.set_trace()
+        data_recover = load_pickle(save_file)
+        for seq in data_recover.keys():
+            for side in ["left", "right"]:
+                for key in data_recover[seq][f"{side}_hand"].keys():
+                    v = data_recover[seq][f"{side}_hand"][key]
+                    if np.isnan(v).any():
+                        idx = np.where(np.isnan(v))
+                        print(v[idx[0]])
+                        print(idx, v[idx[0]])
+                        print('valid', data_recover[seq][f"{side}_hand"]["valid"][idx[0]], seq, side, key)
+                        import ipdb; ipdb.set_trace()
+
 
     print(f"Saved to {save_file}")
 

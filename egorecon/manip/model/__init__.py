@@ -10,6 +10,8 @@ def build_model(opt) -> CondGaussianDiffusion:
         hand_rep_dim = (3 + 3 + 15 + 10) * 2  # (2 X (3 + 3 + 15 + 10))
     elif hand_rep == 'joint':
         hand_rep_dim = 21 * 3 * 2  # (2 X J X 3)
+    elif hand_rep == 'joint_theta':
+        hand_rep_dim = 21 * 3 * 2 + (3 + 3 + 15 + 10) * 2  # (2 X J X 3 + 2 X (3 + 3 + 15 + 10))
     else:
         raise ValueError(f"Invalid hand representation: {hand_rep}")
 
@@ -18,6 +20,8 @@ def build_model(opt) -> CondGaussianDiffusion:
         cond_dim = hand_rep_dim
     elif hand == 'out':
         cond_dim = 0
+    elif hand == 'cond_out':
+        cond_dim = hand_rep_dim
     else:
         raise ValueError(f"Invalid hand condition: {hand}")
 
@@ -31,7 +35,8 @@ def build_model(opt) -> CondGaussianDiffusion:
     repr_dim = 9  # Output dimension (3D translation + 6D rotation)
     if hand == 'out':
         repr_dim += hand_rep_dim
-    # if opt.output.contact: 
+    if hand == 'cond_out':
+        repr_dim += hand_rep_dim
     
     if 'output' in opt and opt.output.contact:
         repr_dim += 2

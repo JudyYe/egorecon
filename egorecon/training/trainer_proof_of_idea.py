@@ -1,3 +1,4 @@
+import einops
 import pickle
 from collections import defaultdict
 from jutils import mesh_utils, geom_utils
@@ -243,6 +244,42 @@ class Trainer(object):
 
         return mask
 
+    def apply_mask_dropout(self, cond):
+        if self.step < self.opt.train.start_mask_step:
+            return cond
+
+        hand_mask = torch.ones_like(cond)
+        B, T, D = cond.shape
+        hand_mask = einops.rearrange(hand_mask, 'b t (s d) -> (b s) t d', d=D//2, s=2)
+        BB, _, DD = hand_mask.shape
+        
+        mask_prob = self.opt.mask_dropout
+        max_infill_ratio = mask_prob.max_infill_ratio
+        # one hand mask out
+        one_hand_out_mask = torch.rand(BB) < mask_prob.one_hand   # [BB]
+        hand_mask[one_hand_out_mask] = 0  # mask out all frames of one hand
+        
+        # some frame mask out
+        prob = random.uniform(0, 1)
+        if prob > 1 - mask_prob.use_mask:
+            start = (
+                torch.FloatTensor(BB).uniform_(0, T - 1).long()
+            )
+            mask_len = (
+                T
+                * torch.FloatTensor(BB).uniform_(0, 1)
+                * max_infill_ratio
+            ).long()
+            end = start + mask_len
+            end[end > T] = T
+            for bs in range(BB):
+                hand_mask[bs, start[bs] : end[bs]] = 0
+
+        hand_mask = einops.rearrange(hand_mask, '(b s) t d -> b t (s d)', s=2, d=D//2)
+        cond = cond * hand_mask
+        return cond
+
+
     def train(self):
         init_step = self.step
         for idx in tqdm(range(init_step, self.train_num_steps)):
@@ -262,9 +299,7 @@ class Trainer(object):
                 )  # [1] - sequence length
 
                 ######### add occlusion mask for traj repr, with some schedules
-                print("TODO! add mask to cond!")
-                # mask_prob = 0.5
-                # max_infill_ratio = 0.1
+                sample["condition"] = self.apply_mask_dropout(cond)
                 # prob = random.uniform(0, 1)
                 # batch_size, clip_len, _ = cond.shape
                 # if prob > 1 - mask_prob and 'traj_noisy_raw' in sample:

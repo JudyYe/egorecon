@@ -5,9 +5,9 @@ general:
   rerun: false
   wandb: false
   train_num_steps: 1_000_000
-  vis_every: 10000  # vis_every = k* eval_every  but can be divisible by eval_every
-  eval_every: 10000
-  save_and_sample_every: 10000
+  vis_every: 20000  # vis_every = k* eval_every  but can be divisible by eval_every
+  eval_every: 20000
+  save_and_sample_every: 20000
 
 
 train:
@@ -17,12 +17,13 @@ train:
   step_start_ema: 10000
   ema_update_every: 10
   warmup: 5000
+  start_mask_step: 1000000
 
 loss:
-  w_contact: 0. 
+  w_contact: 1. 
   w_rel_contact: 0.
-  w_smoothness: 0.
-
+  w_smoothness: 0.1
+  w_consistency: 0.1
   
 condition: 
   noisy_obj: true
@@ -30,7 +31,7 @@ condition:
 bps_per_t_start: 400  
 
 output:
-  contact: false
+  contact: true
 
 hand: cond  # cond / out
 hand_rep: joint  # theta or motion_rep or joint
@@ -70,6 +71,7 @@ datasets:
 
     aug_world: false
     aug_cano: true
+    use_aug_cano: 0.5
 
 
 
@@ -91,3 +93,9 @@ guide:
   hint: reproj_cd
 
 legacy_bps: false
+
+
+mask_dropout:
+  one_hand: 0.2  # two hands are all masked out: 0.2*0.2 = 0.04
+  use_mask: 0.5
+  max_infill_ratio: 0.2  # 18% of the hand trajectory is masked out on average
