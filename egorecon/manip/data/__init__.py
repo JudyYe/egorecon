@@ -47,8 +47,8 @@ def build_dataloader(
         ds,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=0, # num_workers,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=False,
         collate_fn=collate_meshes,
     )
     return dataloader, ds

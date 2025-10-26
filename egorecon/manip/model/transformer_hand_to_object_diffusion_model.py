@@ -327,7 +327,6 @@ class CondGaussianDiffusion(nn.Module):
         )
 
         # calculate p2 reweighting
-
         register_buffer(
             "p2_loss_weight",
             (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod))
@@ -753,7 +752,7 @@ class CondGaussianDiffusion(nn.Module):
 
         # add other losses
         # consistency 
-        is_warmup = training_info.get('step', 0) > self.opt.train.warmup
+        is_warmup = training_info.get('step', 0) < self.opt.train.warmup
         if not is_warmup and self.opt.hand_rep == "joint_theta" and self.opt.loss.w_consistency > 0:
             _, (left_joints_fk, right_joints_fk) = self.decode_hand_mesh(
                 pred_dict['left_hand_params'], pred_dict['right_hand_params'], hand_rep='theta', rtn_joints=True)
@@ -770,7 +769,6 @@ class CondGaussianDiffusion(nn.Module):
             wTo_pred = wTo_pred.reshape(B*T, 4, 4)
             oPoints_exp = newPoints[None].repeat(1, T, 1, 1).reshape(B*T, -1, 3)
             wPoints = mesh_utils.apply_transform(oPoints_exp, wTo_pred)  # (B*T, P, 3)
-            P = wPoints.shape[1]             
 
             if self.use_hand_raw_in_cond:
                 wHands = hand_raw.reshape(B*T, -1, 3) # (B*T, J, 3)
@@ -781,11 +779,25 @@ class CondGaussianDiffusion(nn.Module):
 
             dist, idx, wNn = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)  # (B*T, 2*J, 3)
             min_dist = dist.reshape(B, T, 2, J_2 // 2)
-            contact_loss = min_dist * gt_contact[..., None]
+            pred_contact = (pred_dict["contact"] > 0.5).float()
+            contact_loss = min_dist * pred_contact[..., None]
             contact_loss = contact_loss.mean()
 
             loss += self.opt.loss.w_contact * contact_loss
             losses['contact'] = contact_loss
+
+        if not is_warmup and self.opt.loss.w_static > 0:
+            wPoints = wPoints.reshape(B, T, -1, 3) # (B, T, P, 3)
+            wPoints_next = wPoints[:, 1:]
+            wPoints_cur = wPoints[:, :-1]
+            wPoints_diff = wPoints_next - wPoints_cur  # (B, T-1, P, 3)
+            static_loss = (wPoints_diff**2).norm(dim=-1).mean()  # (B, T-1)
+
+            static_mask = (pred_contact[:, 1:] < 0.5) & (pred_contact[:, :-1] < 0.5) 
+            static_loss = static_loss * static_mask.float()  
+            static_loss = static_loss.mean()
+            loss += self.opt.loss.w_static * static_loss
+            losses['static'] = static_loss
 
         if not is_warmup and self.opt.loss.w_rel_contact > 0:
             assert self.opt.loss.w_contact > 0, "w_rel_contact requires w_contact"
@@ -800,16 +812,8 @@ class CondGaussianDiffusion(nn.Module):
             current_rot = wTo_pred.reshape(B, T, 4, 4)[:, :-1, :3, :3].clone()
             next_rot = wTo_pred.reshape(B, T, 4, 4)[:, 1:, :3, :3].clone()
 
-            
-            # p_near_next = p_near_next.reshape(B*(T-1), J_2, 3)
-            # p_near = p_near.reshape(B*(T-1), J_2, 3)
-            # next_rot = next_rot.reshape(B*(T-1), 3, 3)
-            # current_rot = current_rot.reshape(B*(T-1), 3, 3)
-            # print(next_rot.shape, current_rot.shape, p_near.shape)  # (B, )
             rot_T_rot = next_rot @ current_rot.transpose(-1, -2)
-            # print(rot_T_rot.shape, p_near.shape)
             res = p_near_next -  p_near @ rot_T_rot.transpose(-1, -2)
-            # print(res.shape)  
             res = res.reshape(B, T-1, J_2, 3)
 
             dist_prox = torch.norm(res, dim=-1) # (B, T-1, J)
@@ -961,10 +965,7 @@ class CondGaussianDiffusion(nn.Module):
 
         self.bps = torch.load(self.bps_path)
         self.bps_torch = bps_torch()
-        # self.obj_bps = self.bps['obj']
         self.register_buffer("obj_bps", self.bps["obj"])
-
-
 
     def ddim_sample_loop(
         self,
@@ -977,21 +978,6 @@ class CondGaussianDiffusion(nn.Module):
         newPoints=None,
         hand_raw=None,
         **kwargs,
-
-        # noise=None,
-        # clip_denoised=True,
-        # denoised_fn=None,
-        # cond_fn=None,
-        # model_kwargs=None,
-        # device=None,
-        # progress=False,
-        # eta=0.0,
-        # skip_timesteps=0,
-        # init_image=None,
-        # randomize_class=False,
-        # cond_fn_with_grad=False,
-        # dump_steps=None,
-        # const_noise=False,
     ):
         """
         Generate samples from the model using DDIM.

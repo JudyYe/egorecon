@@ -1,11 +1,14 @@
+[] add pca to MANO jax.
+[] guidance pca? 
+
 [] add off-the-shelf obs pipeline p(O, H, C | \hat H)
 [] make sure test are there 
-[] add hand motion rep as joint + theta
-[]some are black?? and nan? 
 
-[] hand_rep: jonit+hA? 
-[] bps: hand surface instead of joints? 
-[] contact point on object? 
+[x] add hand motion rep as joint + theta
+[x]some are black?? and nan? 
+
+[x] hand_rep: jonit+hA? 
+[x] bps: hand surface instead of joints? 
 
 [] long seq
 [] set up quant
@@ -13,6 +16,7 @@
 
 [x] change model | TODO
 [x] norm in data, data done
+[] contact point on object? 
 
 [x] get a mini hot3d clip? 
 [x] vis: contact, vis other motion 
@@ -41,17 +45,17 @@ python -m egorecon.training.trainer_hoi  -m    \
   expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}_bps\${condition.bps}  \
   experiment=noisy_hand   \
   traindata=hotclip_train   \
-  condition.bps=1   \
+  condition.bps=1,2   \
   general.wandb=true   \
-  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=1 \
   +engine=move engine.timeout_min=2880
-  
+
 
 python -m egorecon.training.trainer_hoi  -m    \
   expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}_bps\${condition.bps}  \
   experiment=noisy_hand   \
   traindata=hotclip_train   \
-  condition.bps=1   \
+  condition.bps=1,2   \
   general.wandb=true   \
   +engine=move engine.timeout_min=2880
 
@@ -60,20 +64,19 @@ python -m egorecon.training.trainer_hoi  -m    \
 # one
 python -m egorecon.training.trainer_hoi  -m    \
   expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}  \
-  experiment=noisy_hand,obj_only   \
+  experiment=obj_only   \
   traindata=hotclip_train   \
   condition.bps=2   \
   general.wandb=true   \
-  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=1 \
   +engine=move engine.timeout_min=2880
 
 python -m egorecon.training.trainer_hoi  -m    \
   expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}  \
-  experiment=noisy_hand,obj_only   \
+  experiment=obj_only   \
   traindata=hotclip_train   \
   condition.bps=2   \
   general.wandb=true   \
-  loss.w_consistency=0.1 \
   +engine=move engine.timeout_min=2880
 
 # stronger regu

@@ -171,6 +171,7 @@ class Trainer(BaseTrainer):
         sample_guide=False,
         rtn_sample=False,
     ):
+        val_data_dict = model_utils.to_cuda(val_data_dict)
         cond = val_data_dict["condition"]
         device = cond.device
         seq_len = torch.tensor([cond.shape[1]]).to(device)

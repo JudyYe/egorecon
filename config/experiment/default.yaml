@@ -24,6 +24,7 @@ loss:
   w_rel_contact: 0.
   w_smoothness: 0.1
   w_consistency: 0.1
+  w_static: 0.1
   
 condition: 
   noisy_obj: true

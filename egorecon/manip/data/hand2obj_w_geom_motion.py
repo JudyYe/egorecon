@@ -711,8 +711,8 @@ class HandToObjectDataset(Dataset):
             window_noisy = self.add_noise_data(window)
 
         # Add geometry and random canonical augmentation, for object, nothign to do with noisy window
-        if self.opt.datasets.augument.get("aug_cano", True):
-            window, newoTo = self.augment_cano_object(window)
+        # if self.opt.datasets.augument.get("aug_cano", True):
+        window, newoTo = self.augment_cano_object(window)
 
         if self.opt.datasets.augument.get("aug_world", False):
             print(
@@ -817,12 +817,9 @@ class HandToObjectDataset(Dataset):
         else:
             cond_mask = torch.ones_like(condition)
                 
-        if torch.isnan(condition).any():
-            import ipdb; ipdb.set_trace()
-
         left_hand_param = to_tensor(_legacy_to_hand_param(window["left_hand_params"]))
         right_hand_param = to_tensor(_legacy_to_hand_param(window["right_hand_params"]))
-        return {
+        data = {
             "contact": contact,
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
             "cond_mask": cond_mask,
@@ -848,6 +845,7 @@ class HandToObjectDataset(Dataset):
             "end_idx": window["end_idx"],
             "ind": idx,
         }
+        return data
 
     def transform_wTo_traj(self, wTo, newTo):
         wTo = geom_utils.se3_to_matrix_v2(torch.FloatTensor(wTo))  # (T, 4, 4)
@@ -870,8 +868,10 @@ class HandToObjectDataset(Dataset):
         Returns:
             tuple: (updated_window, newTo)
         """
+        aug_cano = self.opt.datasets.augument.get("aug_cano", True)
+        
         if newTo is None:
-            if self.is_train and np.random.rand() < self.opt.datasets.augument.get(
+            if aug_cano and self.is_train and np.random.rand() < self.opt.datasets.augument.get(
                 "use_aug_cano", 0.5
             ):
                 newTo_rot = geom_utils.random_rotations(
@@ -883,8 +883,7 @@ class HandToObjectDataset(Dataset):
             else:
                 newTo = torch.eye(4)[None]
 
-        # newTo = torch.eye(4)[None]
-        # logging.warning('debug!!!', newTo)
+
         window["object"] = self.transform_wTo_traj(window["object"], newTo)
 
         # Load object geometry
@@ -1221,7 +1220,6 @@ def check_nan(data_file="/move/u/yufeiy2/egorecon/data/cache/hotclip_train_camer
 th = 0.05
 use_cache = True  # True
 save_cache = True  # True
-aug_cano = True
 # aug_world = False
 
 if __name__ == "__main__":

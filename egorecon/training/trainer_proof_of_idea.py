@@ -156,15 +156,9 @@ class Trainer(object):
 
     def prep_dataloader(self, window_size):
         opt = self.opt
-        if not opt.test:
-            self.prep_train_dataset(opt)
-            self.model.set_metadata(self.ds.stats)
-            self.prep_val_dataset(opt)
-        else:
-            self.prep_train_dataset(opt)
-            self.model.set_metadata(self.ds.stats)
-            self.prep_val_dataset(opt)
-            # self.model.set_metadata(self.val_ds.stats)
+        self.prep_train_dataset(opt)
+        self.model.set_metadata(self.ds.stats)
+        self.prep_val_dataset(opt)
 
     def prep_train_dataset(self, opt):
         dl, ds = build_dataloader(
@@ -173,7 +167,7 @@ class Trainer(object):
             is_train=True,
             shuffle=not opt.test,
             batch_size=self.batch_size,
-            num_workers=10,
+            num_workers=4,
         )
         self.dl = cycle(dl)
         self.ds = ds
@@ -282,6 +276,8 @@ class Trainer(object):
 
     def train(self):
         init_step = self.step
+        # sample = next(self.dl)
+        # sample = model_utils.to_cuda(sample)
         for idx in tqdm(range(init_step, self.train_num_steps)):
             self.optimizer.zero_grad()
 
@@ -289,42 +285,21 @@ class Trainer(object):
                 False  # If met nan in loss or gradient, need to skip to next data.
             )
             for i in range(self.gradient_accumulate_every):
+                # print('DEBUG')
                 sample = next(self.dl)
-                sample = model_utils.to_cuda(sample)
+                cuda_list = ["condition", "target", "hand_raw", "newPoints", "contact"]
+                for k in cuda_list:
+                    sample[k] = sample[k].cuda()
 
-                object_motion = sample["target"].cuda()
-                cond = sample["condition"].cuda()
+                # sample = model_utils.to_cuda(sample)
+                object_motion = sample["target"]
+                cond = sample["condition"]
                 seq_len = torch.tensor([cond.shape[1]]).to(
                     device
                 )  # [1] - sequence length
 
                 ######### add occlusion mask for traj repr, with some schedules
                 sample["condition"] = self.apply_mask_dropout(cond)
-                # prob = random.uniform(0, 1)
-                # batch_size, clip_len, _ = cond.shape
-                # if prob > 1 - mask_prob and 'traj_noisy_raw' in sample:
-                #     traj_feat_dim = sample["traj_noisy_raw"].shape[-1]
-                #     start = (
-                #         torch.FloatTensor(batch_size).uniform_(0, clip_len - 1).long()
-                #     )
-                #     mask_len = (
-                #         clip_len
-                #         * torch.FloatTensor(batch_size).uniform_(0, 1)
-                #         * max_infill_ratio
-                #     ).long()
-                #     end = start + mask_len
-                #     end[end > clip_len] = clip_len
-                #     mask_traj = torch.ones(batch_size, clip_len).to(device)  # [bs, t]
-                #     for bs in range(batch_size):
-                #         mask_traj[bs, start[bs] : end[bs]] = 0
-                #     mask_traj_exp = mask_traj.unsqueeze(-1).repeat(
-                #         1, 1, traj_feat_dim
-                #     )  # [bs, t, 4]
-                #     cond[:, :, -traj_feat_dim:] = (
-                #         cond[:, :, -traj_feat_dim:] * mask_traj_exp
-                #     )
-                # else:
-                # mask_traj = torch.ones(batch_size, clip_len).to(device)
 
                 # Extract data from sample and move to device
                 # Generate padding mask
@@ -559,6 +534,7 @@ class Trainer(object):
         sample_guide=False,
         rtn_sample=False,
     ):
+        val_data_dict = model_utils.to_cuda(val_data_dict)
         cond = val_data_dict["condition"]
         device = cond.device
         seq_len = torch.tensor([cond.shape[1]]).to(device)
