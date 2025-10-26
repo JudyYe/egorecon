@@ -9,8 +9,8 @@ defaults:
   - paths: move.yaml
   - hydra: default.yaml
   - experiment: hoi
-  - traindata: hotclip_train.yaml
-  - testdata: hotclip_mini.yaml
+  - traindata: hotclip_train
+  - testdata: hotclip_mini
 
 
 # This is just a placeholder to create the 'traindata' config node.

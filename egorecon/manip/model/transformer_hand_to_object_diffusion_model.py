@@ -858,7 +858,7 @@ class CondGaussianDiffusion(nn.Module):
             hand = self.encode_hand_sensor_feature(
                 wJoints, wTo_pred, newPoints
             )  # (B, T, J*3*2) # per step hand sensor feature
-            B, = t.shape
+            B = orig_condition.shape[0]
             mask = t <= self.opt.bps_per_t_start
             hand = hand * mask.reshape(B, 1, 1)
 
@@ -1015,9 +1015,10 @@ class CondGaussianDiffusion(nn.Module):
             t = ts[i]
             t_next = ts[i + 1]
 
+            t_pt = torch.full((b,), t, device=device, dtype=torch.long)
             # denoise
-            c = self.get_cond(x_cond, x_t_packed, t, newPoints, hand_raw)
-            model_output = self.denoise_fn(x_t_packed, torch.tensor([t], device=device).expand((b,)), c, padding_mask,)
+            c = self.get_cond(x_cond, x_t_packed, t_pt, newPoints, hand_raw)
+            model_output = self.denoise_fn(x_t_packed, t_pt, c, padding_mask,)
             x_0_packed_pred = self.predict_start_from_noise_new(x_t_packed, t=t, noise=model_output)
 
             sigma_t = torch.cat(

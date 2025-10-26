@@ -72,6 +72,18 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             rtn_x_list=True,
         )
 
+        tmp_file = "outputs/tmp.pkl"
+
+        with open(tmp_file, "wb") as f:
+            pickle.dump(
+                {
+                    "sample": sample,
+                    "pred_raw": guided_object_pred_raw,
+                },
+                f,
+            )
+        assert False
+
         save_file = osp.join(
             model_cfg.exp_dir, opt.test_folder, f"test_guided_{b:04d}.pkl"
         )
@@ -89,25 +101,25 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         # print(f"Saved to {save_file}")
 
         # # vis x_list
-        vis_gen_process(
-            info["x_list"],
-            diffusion_model,
-            viz_off,
-            model_cfg,
-            step=0,
-            batch=sample,
-            pref=f"test_guided_{b:04d}_xt",
-        )
+        # vis_gen_process(
+        #     info["x_list"],
+        #     diffusion_model,
+        #     viz_off,
+        #     model_cfg,
+        #     step=0,
+        #     batch=sample,
+        #     pref=f"test_guided_{b:04d}_xt",
+        # )
 
-        vis_gen_process(
-            info["x_0_packed_pred"],
-            diffusion_model,
-            viz_off,
-            model_cfg,
-            step=0,
-            batch=sample,
-            pref=f"test_guided_{b:04d}_x0",
-        )
+        # vis_gen_process(
+        #     info["x_0_packed_pred"],
+        #     diffusion_model,
+        #     viz_off,
+        #     model_cfg,
+        #     step=0,
+        #     batch=sample,
+        #     pref=f"test_guided_{b:04d}_x0",
+        # )
 
         # print(guided_object_pred_raw.shape)
         metrics_guided = compute_wTo_error(
@@ -182,36 +194,6 @@ def main(opt):
     test_guided_generation(diffusion_model, dl, opt)
 
     return
-
-
-
-# @hydra.main(config_path="../../config", config_name="test", version_base=None)
-# @slurm_engine()
-# def debug(opt):
-#     diffusion_model = build_model_from_ckpt(opt)
-#     set_test_cfg(opt, diffusion_model.opt)
-
-#     pkl_file = 'outputs/hoi/contactTrue_joint_obj/eval/test_guided_0001.pkl'
-#     with open(pkl_file, 'rb') as f:
-#         data = pickle.load(f)
-
-#     x_list = data['x_list']
-#     wJoints = data['wJoints']
-#     newPoints = data['newPoints']
-#     wTo = data['wTo']
-#     batch = data['batch']
-
-#     for i, (xt, t) in enumerate(x_list):
-#         denorm_xt = diffusion_model.denormalize_data(xt)
-#         out = diffusion_model.decode_dict(denorm_xt)
-#         wTo_pred = out['wTo']
-#         coord = diffusion_model.encode_hand_sensor(wJoints, wTo_pred, newPoints)  # o-h (B, T, J*3) # per step hand sensor feature  
-#         B, T, J_3 = wJoints.shape
-
-#         wNN = coord + wJoints  # (B, T, J, 3)
-
-
-# def vis()
 
 
 

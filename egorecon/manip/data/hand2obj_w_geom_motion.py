@@ -1219,7 +1219,7 @@ def check_nan(data_file="/move/u/yufeiy2/egorecon/data/cache/hotclip_train_camer
 
 # Global configuration variables
 th = 0.05
-use_cache = False  # True
+use_cache = True  # True
 save_cache = True  # True
 aug_cano = True
 # aug_world = False

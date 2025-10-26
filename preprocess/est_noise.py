@@ -363,49 +363,6 @@ def generate_noisy_hand_traj(clean_vec, hand_noise_dict, traj_std):
     return noisy_vec
 
 
-def generate_noisy_smplx(cano_smplx_params_dict, smplx_noise_dict, traj_std):
-    noise_std_params_dict = {'global_orient': noise_std_smplx_global_rot,
-                                      'transl': noise_std_smplx_trans,
-                                      'body_pose': noise_std_smplx_body_rot,
-                                      'betas': noise_std_smplx_betas,}
-    self.load_noise = False
-    if self.input_noise and (not self.sep_noise):
-        cano_smplx_params_dict_noisy = {}
-        for param_name in ['transl', 'body_pose', 'betas', 'global_orient']:
-            if param_name == 'transl' or param_name == 'betas':
-                if self.load_noise:
-                    noise_1 = self.loaded_smplx_noise_dict[param_name][i*self.spacing]
-                else:
-                    noise_1 = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=cano_smplx_params_dict[param_name].shape)
-                cano_smplx_params_dict_noisy[param_name] = cano_smplx_params_dict[param_name] + noise_1
-                if param_name not in smplx_noise_dict.keys():
-                    smplx_noise_dict[param_name] = []
-                smplx_noise_dict[param_name].append(noise_1)
-            elif param_name == 'global_orient':
-                global_orient_mat = R.from_rotvec(cano_smplx_params_dict['global_orient'])  # [145, 3, 3]
-                global_orient_angle = global_orient_mat.as_euler('zxy', degrees=True)
-                if self.load_noise:
-                    noise_global_rot = self.loaded_smplx_noise_dict[param_name][i*self.spacing]
-                else:
-                    noise_global_rot = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=global_orient_angle.shape)
-                global_orient_angle_noisy = global_orient_angle + noise_global_rot
-                cano_smplx_params_dict_noisy[param_name] = R.from_euler('zxy', global_orient_angle_noisy, degrees=True).as_rotvec()
-                if param_name not in smplx_noise_dict.keys():
-                    smplx_noise_dict[param_name] = []
-                smplx_noise_dict[param_name].append(noise_global_rot)  #  [145, 3] in euler angle
-            elif param_name == 'body_pose':
-                body_pose_mat = R.from_rotvec(cano_smplx_params_dict['body_pose'].reshape(-1, 3))
-                body_pose_angle = body_pose_mat.as_euler('zxy', degrees=True)  # [145*21, 3]
-                if self.load_noise:
-                    noise_body_pose_rot = self.loaded_smplx_noise_dict[param_name][i*self.spacing].reshape(-1, 3)
-                else:
-                    noise_body_pose_rot = np.random.normal(loc=0.0, scale=self.noise_std_params_dict[param_name], size=body_pose_angle.shape)
-                body_pose_angle_noisy = body_pose_angle + noise_body_pose_rot
-                cano_smplx_params_dict_noisy[param_name] = R.from_euler('zxy', body_pose_angle_noisy, degrees=True).as_rotvec().reshape(-1, 21, 3)
-                if param_name not in smplx_noise_dict.keys():
-                    smplx_noise_dict[param_name] = []
-                smplx_noise_dict[param_name].append(noise_body_pose_rot.reshape(-1, 21, 3))  # [145, 21, 3]  in euler angle
-
 def generate_noisy_trajectory(clean_vec, traj_std, frame_std):
     """Generate synthetic noisy trajectories.
 

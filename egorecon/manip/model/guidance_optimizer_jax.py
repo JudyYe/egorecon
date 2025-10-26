@@ -110,6 +110,20 @@ def do_guidance_optimization(
     return optimized_traj_torch, debug_info
 
 
+
+class _SmplhSingleHandPosesVar(
+    jaxls.Var[jax.Array],
+    default_factory=lambda: jnp.concatenate(
+        [jnp.ones((15, 1)), jnp.zeros((15, 3))], axis=-1
+    ),
+    retract_fn=lambda val, delta: (
+        jaxlie.SO3(val) @ jaxlie.SO3.exp(delta.reshape(15, 3))
+    ).wxyz,
+    tangent_dim=15 * 3,
+):
+    """Variable containing local joint poses for one hand of a SMPL-H human."""
+
+
 class _SE3TrajectoryVar(
     jaxls.Var[jax.Array],
     default_factory=lambda: jnp.array(
@@ -317,6 +331,31 @@ def _optimize(
     # We'll populate a list of factors (cost terms)
     factors = list[jaxls.Cost]()
 
+
+    def do_forward_kinematics(
+        vals: jaxls.VarValues,
+        left_hand: _SmplhSingleHandPosesVar | None = None,
+        right_hand: _SmplhSingleHandPosesVar | None = None,
+        output_frame: Literal["world", "root"] = "world",
+    ):
+        """Helper for computing forward kinematics from variables."""
+        assert (left_hand is None) == (right_hand is None)
+
+        posed = shaped_body.with_pose(
+            T_world_root=jaxlie.SE3.identity().wxyz_xyz,
+            local_quats=jnp.concatenate(
+                [vals[var], vals[left_hand], vals[right_hand]], axis=-2
+            ),
+        )  
+
+        if output_frame == "world":
+            T_world_root = (
+                jaxlie.SE3(posed.Ts_world_joint[14]).inverse()
+            )
+            return posed.with_new_T_world_root(T_world_root.wxyz_xyz)
+        elif output_frame == "root":
+            return posed
+
     def cost_with_args(*args):
         """Decorator for appending to the factor list."""
 
@@ -378,16 +417,6 @@ def _optimize(
             dist2 = dist_residual(guidance_params.body_quat_smoothness_weight, jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
 
             return jnp.concatenate([dist1, dist2])
-            # return jnp.concatenate(
-            #     [
-            #         guidance_params.body_quat_delta_smoothness_weight
-            #         * (curdelt.inverse() @ nexdelt).log().flatten(),
-            #         guidance_params.body_quat_smoothness_weight
-            #         * (jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]))
-            #         .log()
-            #         .flatten(),
-            #     ]
-            # )
 
         # smoothness on velocity
         @cost_with_args(
@@ -544,18 +573,11 @@ def _optimize(
             joints_traj_current = joints_traj_current.reshape(-1, 3)
             joints_traj_next = joints_traj_next.reshape(-1, 3)
 
-            left_cur, right_cur = joints_traj_current[:21], joints_traj_current[21:]
-            left_next, right_next = joints_traj_next[:21], joints_traj_next[21:]
-            
             J = joints_traj_current.shape[0]
 
             # minimal pairwise distance 
             dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_current[None, :, :], axis=-1)  # (P, J)
             dist_next = jnp.linalg.norm(next_points[:, None] - joints_traj_next[None, :, :], axis=-1)  # (P, J)
-            contact_cur = jnp.min(jnp.min(dist_cur.reshape(-1,  2, J//2), axis=0), axis=-1)  # (2,)
-            contact_next = jnp.min(jnp.min(dist_next.reshape(-1,  2, J//2), axis=0), axis=-1)  # (2,)  # P, J//2, 2? 2, J?? 
-
-            th = guidance_params.contact_th
 
             # is_contact = (contact_cur < th) & (contact_next < th)  # (2,)
             # array((0, 1))
@@ -932,7 +954,21 @@ def wxyz_xyz_to_se3(wxyz_xyz):
     wxyz, tsl = torch.split(wxyz_xyz, [4, 3], dim=-1)
     mat = geom_utils.rot_cvt.quaternion_to_matrix(wxyz)
     return geom_utils.matrix_to_se3_v2(geom_utils.rt_to_homo(mat, tsl))
-     
+
+
+
+from . import fncmano_jax
+from pathlib import Path
+def test_fk():
+    save = pickle.load(open("outputs/tmp.pkl", "rb"))
+    batch = save["batch"]
+    pred_raw = save["pred_raw"]  # (BS, T, D)
+    
+
+    
+    shaped_body = fncmano_jax.MANOModel.load(Path("assets/mano/MANO_RIGHT.npz"))
+    var = jaxls.VarValues.make([shaped_body.with_value(jnp.zeros((1, 7)))])
 
 if __name__ == "__main__":
-    Fire(test_optimization)
+    # Fire(test_optimization)
+    Fire(test_fk)

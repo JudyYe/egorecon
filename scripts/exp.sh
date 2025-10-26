@@ -36,13 +36,24 @@ spoon: 225397651484143
 
 python -m preprocess.est_noise
 
+-
 python -m egorecon.training.trainer_hoi  -m    \
-  expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}  \
-  experiment=obj_only   \
-  condition.bps=2   \
-  general.eval_every=1000 general.vis_every=1000 general.train_num_steps=10000   general.save_and_sample_every=\${general.vis_every} \
-  loss.w_consistency=0.1 \
-  traindata=hotclip_mini   \
+  expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}_bps\${condition.bps}  \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  condition.bps=1   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 \
+  +engine=move engine.timeout_min=2880
+  
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}_bps\${condition.bps}  \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  condition.bps=1   \
+  general.wandb=true   \
+  +engine=move engine.timeout_min=2880
 
 
 
