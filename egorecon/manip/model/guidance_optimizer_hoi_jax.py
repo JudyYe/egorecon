@@ -102,13 +102,16 @@ def do_forward_kinematics_mano(
     shaped = mano_model.with_shape(betas)
     
     # Convert to quaternions - assume hand_pose is already rotation vectors
-    hand_quats = SO3.exp(hand_pose).wxyz
+
+    # hand_quats = SO3.exp(hand_pose).wxyz
     
     # Apply pose
     posed = shaped.with_pose(
         global_orient=global_orient,
         transl=transl,
-        local_quats=hand_quats,
+        # local_quats=hand_quats,
+        pca=hand_pose,
+        add_mean=True,
     )
     
     # Apply LBS
@@ -117,6 +120,26 @@ def do_forward_kinematics_mano(
     return mesh.verts, mesh.joints, mesh.faces
 
 
+def draw_hand_joints_with_numbers(joints, name, verts, faces):
+    ## plot them, display numbers {i} besides joints
+
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    for i, joint in enumerate(joints):
+        ax.text(joint[0], joint[1], joint[2], f"{i}")
+        ax.scatter(joint[0], joint[1], joint[2], color='red')
+
+    # draw meshes in the same figure using matplotlib
+    verts = verts.cpu().numpy()
+    faces = faces.cpu().numpy()
+
+    # plt.plot_trisurf(verts[:, 0], verts[:, 1], verts[:, 2], faces)
+    
+    plt.show()
+    plt.savefig(f"outputs/hand_joints_{name}.png")
+    
+    
 
 from jutils import hand_utils, model_utils
 def test_fk():
@@ -134,18 +157,22 @@ def test_fk():
     # Parse parameters
     global_orient = right_params[:, :, :3]
     transl = right_params[:, :, 3:6]
+    hand_pose = right_params[:, :, 6:21]
     pca = right_params[:, :, 6:21]
-    hand_pose = wrapper.pca_to_pose(pca[0])    # (BS, T, 45)
-    hand_pose = hand_pose.reshape(B, T, 15, 3)
-
+    hA = wrapper.pca_to_pose(pca[0])    # (BS, T, 45)
+    hA = hA.reshape(B, T, 15, 3)
     betas = right_params[:, :, 21:31]
-    
+
     # PyTorch forward pass
     right_verts, right_faces, right_joints = hand_wrapper.hand_para2verts_faces_joints(
-        right_params[0, 0:1], side="right"
+        right_params[0, 0:1], side="right", my_order=True,
     )
+    draw_hand_joints_with_numbers(right_joints.reshape(21, 3), 'smplx', right_verts, right_faces)  # (21, 3)
 
-    _, right_joints = wrapper(None, hand_pose[0, 0:1].reshape(1, 45), global_orient[0, 0:1], transl[0, 0:1], th_betas=betas[0, 0:1])
+    my_meshes, right_joints_my = wrapper(None, hA[0, 0:1].reshape(1, 45), global_orient[0, 0:1], transl[0, 0:1], th_betas=betas[0, 0:1])
+    print(right_joints_my - right_joints)
+    print(right_verts - my_meshes.verts_padded())
+    draw_hand_joints_with_numbers(right_joints_my.reshape(21, 3), 'my', my_meshes.verts_padded(), my_meshes.faces_padded())  # (21, 3)
     
     # Load JAX MANO model
     mano_model_jax = fncmano_jax.MANOModel.load(Path("assets/mano/MANO_RIGHT.pkl"))

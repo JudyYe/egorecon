@@ -38,6 +38,10 @@ class MANOModel:
     """Canonical mesh verts."""
     shapedirs: Float[Array, "verts 3 n_betas"]
     """Shape bases."""
+    hands_components: Float[Array, "n_pca_components 45"] | None = None
+    """PCA components for hand pose compression."""
+    hands_mean: Float[Array, "45"] | None = None
+    """Mean hand pose in rotation vector space."""
 
     @staticmethod
     def load(npz_path: Path, side: str='right') -> MANOModel:
@@ -57,6 +61,15 @@ class MANOModel:
         mano_params = {k: _normalize_dtype(v) for k, v in mano_params.items()}
         kintree_table = mano_params["kintree_table"][0] 
         kintree_table[0] = -1
+        
+        # Load PCA components if available
+        hands_components = None
+        hands_mean = None
+        if "hands_components" in mano_params:
+            hands_components = jnp.array(mano_params["hands_components"])
+        if "hands_mean" in mano_params:
+            hands_mean = jnp.array(mano_params["hands_mean"])
+        
         return MANOModel(
             side=side,
             faces=jnp.array(mano_params["f"]),
@@ -67,6 +80,8 @@ class MANOModel:
             posedirs=jnp.array(mano_params["posedirs"]),
             v_template=jnp.array(mano_params["v_template"]),
             shapedirs=jnp.array(mano_params["shapedirs"]),
+            hands_components=hands_components,
+            hands_mean=hands_mean,
         )
 
     def with_shape(
@@ -118,18 +133,63 @@ class MANOShaped:
         self,
         global_orient: Float[Array | onp.ndarray, "... 3"],
         transl: Float[Array | onp.ndarray, "... 3"],
-        local_quats: Float[Array | onp.ndarray, "... 15 4"],
+        local_quats: Float[Array | onp.ndarray, "... 15 4"] = None,
+        pca: Float[Array | onp.ndarray, "... 15"] = None,
+        add_mean: bool = True,
     ) -> MANOShapedAndPosed:
         """Pose the MANO model.
 
         Args:
             global_orient: Root rotation in axis-angle format
             transl: Translation in world space
-            local_quats: 15 hand joint quaternions
+            local_quats: 15 hand joint quaternions (optional)
+            pca: PCA coefficients for hand pose (optional). If provided, will be converted to quaternions.
+            add_mean: Whether to add the mean hand pose when converting from PCA
 
         Returns:
             MANOShapedAndPosed with poses applied
         """
+        # Convert PCA to quaternions if provided
+        if pca is not None:
+            if local_quats is not None:
+                raise ValueError("Cannot specify both local_quats and pca")
+            
+            # Ensure pca is a JAX array
+            pca = jnp.asarray(pca)
+            
+            # Check if PCA components are available
+            if self.body_model.hands_components is None or self.body_model.hands_mean is None:
+                raise ValueError("PCA components not loaded in MANO model. Use local_quats instead.")
+            
+            # Convert PCA coefficients to rotation vectors
+            # pca shape: (..., 15)
+            # hands_components shape: (15, 45)
+            # hands_mean shape: (45,)
+            
+            # Project PCA coefficients to full rotation vector space
+            # R = mean + pca @ components (following SMPLX convention)
+            # einsum('...pc,pc->...p', pca, components) where p=15 (pca components), c=45 (rotation vector dims)
+            D = pca.shape[-1]
+            print(f"pca shape: {pca.shape}, hands_components shape: {self.body_model.hands_components.shape}")
+            rotation_vecs = einsum(
+                pca,
+                self.body_model.hands_components[:D],
+                "... n_components, n_components rotvec -> ... rotvec",
+            )  # (..., 45)
+            
+            # Add mean if requested
+            if add_mean:
+                rotation_vecs = rotation_vecs + self.body_model.hands_mean
+            
+            # Reshape to (..., 15, 3) - 15 joints, 3D rotation vectors
+            rotation_vecs = rotation_vecs.reshape(*pca.shape[:-1], 15, 3)
+            
+            # Convert rotation vectors to quaternions
+            local_quats = jaxlie.SO3.exp(rotation_vecs).wxyz  # (..., 15, 4)
+            print(f"local_quats shape: {local_quats.shape}")
+        elif local_quats is None:
+            raise ValueError("Must provide either local_quats or pca")
+        
         return MANOShapedAndPosed(
             shaped_model=self,
             global_orient=global_orient,

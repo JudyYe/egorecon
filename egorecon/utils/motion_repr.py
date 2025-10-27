@@ -29,6 +29,37 @@ class HandWrapper(nn.Module):
         }
         self._sided_mano_models = sided_mano_models
         self.sided_mano_models = nn.ModuleDict(sided_mano_models)
+    
+    @property
+    def smplx2mano(self):
+        return [
+            0,
+            13,
+            14,
+            15,
+            16,
+            1,
+            2,
+            3,
+            17,
+            4,
+            5,
+            6,
+            18,
+            10,
+            11,
+            12,
+            19,
+            7,
+            8,
+            9,
+            20,
+        ]
+        
+    @property
+    def mano2smplx(self):
+        smplx2mano = self.smplx2mano
+        return [smplx2mano.index(i) for i in range(21)]
 
     def joint2verts_faces(
         self,
@@ -90,7 +121,9 @@ class HandWrapper(nn.Module):
         else:
             return hand_para, hand_shape
 
-    def hand_para2verts_faces_joints(self, hand_para, hand_shape=None, side="right"):
+    def hand_para2verts_faces_joints(
+        self, hand_para, hand_shape=None, side="right", my_order=False
+    ):
         """
         :param hand_para: (B, T, 3+3+15)
         :param hand_shape: (B, T, 10)
@@ -127,6 +160,10 @@ class HandWrapper(nn.Module):
         hand_verts = hand_verts.reshape(*pref_dim, -1, 3)
         hand_faces = hand_faces.reshape(*pref_dim, -1, 3)
         hand_joints = hand_joints.reshape(*pref_dim, *hand_joints.shape[-2:])
+
+        if my_order:
+            # order by
+            hand_joints = hand_joints[..., self.smplx2mano, :]
 
         return hand_verts, hand_faces, hand_joints
 

@@ -1,6 +1,11 @@
 [] add pca to MANO jax.
 [] guidance pca? 
 
+
+
+
+
+
 [] add off-the-shelf obs pipeline p(O, H, C | \hat H)
 [] make sure test are there 
 
