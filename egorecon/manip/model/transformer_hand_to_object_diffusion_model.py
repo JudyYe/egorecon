@@ -19,9 +19,14 @@ from tqdm.auto import tqdm
 from egorecon.utils.motion_repr import HandWrapper
 
 from ..data.utils import get_norm_stats
-from .guidance_optimizer_jax import (do_guidance_optimization, project,
+# from .guidance_optimizer_jax import (do_guidance_optimization, project,
+#                                      se3_to_wxyz_xyz, wxyz_xyz_to_se3)
+from .guidance_optimizer_hoi_jax import (do_guidance_optimization, project,
                                      se3_to_wxyz_xyz, wxyz_xyz_to_se3)
 from .transformer_module import Decoder
+
+import fncmano_jax
+from pathlib import Path
 
 
 def exists(x):
@@ -224,6 +229,9 @@ class CondGaussianDiffusion(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        self.left_mano_model_jax = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
+        self.right_mano_model_jax = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
+
         self.use_hand_raw_in_cond = False
         if opt.hand == 'cond':
             self.use_hand_raw_in_cond = True
@@ -432,15 +440,26 @@ class CondGaussianDiffusion(nn.Module):
         x_start_raw = self.denormalize_data(x_start)
         x_dict = self.decode_dict(x_start_raw)
 
-        x_0_pred, _ = do_guidance_optimization(
-            traj=se3_to_wxyz_xyz(x_start),
+        # x_0_pred, _ = do_guidance_optimization(
+        #     traj=se3_to_wxyz_xyz(x_start),
+        #     obs=model_kwargs['obs'],
+        #     guidance_mode=self.opt.guide.hint,
+        #     phase="inner",
+        #     verbose=True,
+        #     # verbose=False,
+        # )
+        # x_0_pred = wxyz_xyz_to_se3(x_0_pred)
+
+        pred_dict, _ = do_guidance_optimization(
+            pred_dict=x_dict,
             obs=model_kwargs['obs'],
+            left_mano_model=self.left_mano_model_jax,
+            right_mano_model=self.right_mano_model_jax,
             guidance_mode=self.opt.guide.hint,
             phase="inner",
             verbose=True,
-            # verbose=False,
         )
-        x_0_pred = wxyz_xyz_to_se3(x_0_pred)
+
 
         x_start_opt = self.normalize_data(x_0_pred)
         return x_start_opt
@@ -556,27 +575,39 @@ class CondGaussianDiffusion(nn.Module):
     def get_obs(self, guide, batch, shape):
         obs = {}
         if guide:
-            x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
-            if self.opt.guide.hint == "reproj_cd":
-                b, T = shape[:2]
-                ind_list = []
-                kP = 1000
-                for t in range(T):
-                    inds = torch.randperm(x2d.shape[2])[:kP]
-                    ind_list.append(inds)
-                ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
-                ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
-                x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
+            # x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
+            x2d = project(batch['wTc'], batch['intr'], batch['newPoints'], batch['wTo'], ndc=True)
+            # if self.opt.guide.hint == "reproj_cd":
+            b, T = shape[:2]
+            ind_list = []
+            kP = 1000
+            for t in range(T):
+                inds = torch.randperm(x2d.shape[2])[:kP]
+                ind_list.append(inds)
+            ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
+            ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
+            x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
+
+            j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=True)
 
             obs = {
-                "contact": batch['contact'],
-                "x": se3_to_wxyz_xyz(batch['target_raw']),
                 "newPoints": batch['newPoints'],
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,
-                "joints_traj": batch["hand_raw"]
+                "contact": batch['contact'],
+                "j3d": batch['hand_raw'].reshape(b, T, -1, 3),
+                "j2d": j2d.reshape(b, T, -1, 2),
             }
+            # obs = {
+            #     "contact": batch['contact'],
+            #     "x": se3_to_wxyz_xyz(batch['target_raw']),
+            #     "newPoints": batch['newPoints'],
+            #     "wTc": se3_to_wxyz_xyz(batch['wTc']),
+            #     "intr": batch['intr'],
+            #     "x2d": x2d,
+            #     "joints_traj": batch["hand_raw"]
+            # }
         return obs
 
     @torch.no_grad()

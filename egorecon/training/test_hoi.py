@@ -9,11 +9,14 @@ from jutils import model_utils
 from move_utils.slurm_utils import slurm_engine
 from omegaconf import OmegaConf
 from ..manip.model import build_model
-from ..manip.model.guidance_optimizer_jax import (
+from ..manip.model.guidance_optimizer_hoi_jax import (
     do_guidance_optimization,
-    se3_to_wxyz_xyz,
-    wxyz_xyz_to_se3,
 )
+# from ..manip.model.guidance_optimizer_jax import (
+#     do_guidance_optimization,
+#     se3_to_wxyz_xyz,
+#     wxyz_xyz_to_se3,
+# )
 from .trainer_hoi import gen_vis_res, vis_gen_process
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
@@ -72,17 +75,17 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             rtn_x_list=True,
         )
 
-        tmp_file = "outputs/tmp.pkl"
+        # tmp_file = "outputs/tmp.pkl"
 
-        with open(tmp_file, "wb") as f:
-            pickle.dump(
-                {
-                    "sample": sample,
-                    "pred_raw": guided_object_pred_raw,
-                },
-                f,
-            )
-        assert False
+        # with open(tmp_file, "wb") as f:
+        #     pickle.dump(
+        #         {
+        #             "sample": sample,
+        #             "pred_raw": guided_object_pred_raw,
+        #         },
+        #         f,
+        #     )
+        # # assert False
 
         save_file = osp.join(
             model_cfg.exp_dir, opt.test_folder, f"test_guided_{b:04d}.pkl"
@@ -121,6 +124,9 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         #     pref=f"test_guided_{b:04d}_x0",
         # )
 
+        left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
+        right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
+
         # print(guided_object_pred_raw.shape)
         metrics_guided = compute_wTo_error(
             guided_object_pred_raw, sample["target_raw"], sample["object_id"]
@@ -142,18 +148,28 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             obs = diffusion_model.get_obs(
                 guide=True, batch=sample, shape=guided_object_pred_raw.shape
             )
-            post_object_pred_raw, _ = do_guidance_optimization(
-                traj=se3_to_wxyz_xyz(guided_object_pred_raw),
+
+            # post_object_pred_raw, _ = do_guidance_optimization(
+            #     traj=se3_to_wxyz_xyz(guided_object_pred_raw),
+            #     obs=obs,
+            #     guidance_mode=opt.guide.hint,
+            #     phase="post",
+            #     verbose=True,
+            # )
+            pred_dict, _ = do_guidance_optimization(
+                pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
                 obs=obs,
+                left_mano_model=left_mano_model,
+                right_mano_model=right_mano_model,
                 guidance_mode=opt.guide.hint,
                 phase="post",
                 verbose=True,
             )
-            post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
-            metrics_post = compute_wTo_error(
-                post_object_pred_raw, sample["target_raw"], sample["object_id"]
-            )
-            metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
+            # post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
+            # metrics_post = compute_wTo_error(
+            #     post_object_pred_raw, sample["target_raw"], sample["object_id"]
+            # )
+            # metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
 
             gen_vis_res(
                 diffusion_model,
