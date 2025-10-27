@@ -44,8 +44,9 @@ class MANOModel:
     """Mean hand pose in rotation vector space."""
 
     @staticmethod
-    def load(npz_path: Path, side: str='right') -> MANOModel:
+    def load(mano_dir: Path, side: str='right') -> MANOModel:
         # mano_params: dict[str, onp.ndarray] = onp.load(npz_path, allow_pickle=True)
+        npz_path = mano_dir / f"MANO_{side.upper()}.pkl"
         with open(npz_path, 'rb') as mano_file:
             mano_params = pickle.load(mano_file, encoding='latin1')
         for k, v in mano_params.items():

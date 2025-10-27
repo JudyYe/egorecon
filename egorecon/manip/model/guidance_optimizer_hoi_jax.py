@@ -152,7 +152,9 @@ def test_fk():
     wrapper = hand_utils.ManopthWrapper().to(device)
 
     # golden standard
-    right_params = batch["right_hand_params"]  # (BS, T, 3+3+15+10)
+    # right_params = batch["right_hand_params"]  # (BS, T, 3+3+15+10)
+    side = "left"
+    right_params = batch[f"{side}_hand_params"] 
     B, T, D = right_params.shape
     # Parse parameters
     global_orient = right_params[:, :, :3]
@@ -165,17 +167,20 @@ def test_fk():
 
     # PyTorch forward pass
     right_verts, right_faces, right_joints = hand_wrapper.hand_para2verts_faces_joints(
-        right_params[0, 0:1], side="right", my_order=True,
+        right_params[0, 0:1], side=side, my_order=True,
     )
     draw_hand_joints_with_numbers(right_joints.reshape(21, 3), 'smplx', right_verts, right_faces)  # (21, 3)
 
-    my_meshes, right_joints_my = wrapper(None, hA[0, 0:1].reshape(1, 45), global_orient[0, 0:1], transl[0, 0:1], th_betas=betas[0, 0:1])
-    print(right_joints_my - right_joints)
-    print(right_verts - my_meshes.verts_padded())
-    draw_hand_joints_with_numbers(right_joints_my.reshape(21, 3), 'my', my_meshes.verts_padded(), my_meshes.faces_padded())  # (21, 3)
+    # my_meshes, right_joints_my = wrapper(None, hA[0, 0:1].reshape(1, 45), global_orient[0, 0:1], transl[0, 0:1], th_betas=betas[0, 0:1])
+    # print(right_joints_my - right_joints)
+    # print(right_verts - my_meshes.verts_padded())
+    # draw_hand_joints_with_numbers(right_joints_my.reshape(21, 3), 'my', my_meshes.verts_padded(), my_meshes.faces_padded())  # (21, 3)
     
     # Load JAX MANO model
-    mano_model_jax = fncmano_jax.MANOModel.load(Path("assets/mano/MANO_RIGHT.pkl"))
+    mano_model_jax = fncmano_jax.MANOModel.load(
+        mano_dir=Path("assets/mano"),
+        side=side,
+        )
     
     # Convert to numpy
     global_orient_np = global_orient[0].numpy()
