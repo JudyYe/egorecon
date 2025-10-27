@@ -18,11 +18,13 @@ from jax import numpy as jnp
 from jaxtyping import Float, Int
 
 
+
+
 @jdc.pytree_dataclass
 class MANOModel:
     """The MANO human hand model."""
 
-    side: str
+    side: Int[Array, ""]
     faces: Int[Array, "faces 3"]
     """Vertex indices for mesh faces."""
     J_regressor: Float[Array, "joints+1 verts"]
@@ -70,7 +72,8 @@ class MANOModel:
             hands_components = jnp.array(mano_params["hands_components"])
         if "hands_mean" in mano_params:
             hands_mean = jnp.array(mano_params["hands_mean"])
-        
+        side= 1 if side == "right" else 0
+        side = jnp.array([side])
         return MANOModel(
             side=side,
             faces=jnp.array(mano_params["f"]),
@@ -171,7 +174,6 @@ class MANOShaped:
             # R = mean + pca @ components (following SMPLX convention)
             # einsum('...pc,pc->...p', pca, components) where p=15 (pca components), c=45 (rotation vector dims)
             D = pca.shape[-1]
-            print(f"pca shape: {pca.shape}, hands_components shape: {self.body_model.hands_components.shape}")
             rotation_vecs = einsum(
                 pca,
                 self.body_model.hands_components[:D],
@@ -187,7 +189,6 @@ class MANOShaped:
             
             # Convert rotation vectors to quaternions
             local_quats = jaxlie.SO3.exp(rotation_vecs).wxyz  # (..., 15, 4)
-            print(f"local_quats shape: {local_quats.shape}")
         elif local_quats is None:
             raise ValueError("Must provide either local_quats or pca")
         
@@ -215,7 +216,7 @@ class MANOShapedAndPosed:
     local_quats: Float[Array, "... 15 4"]
     """Local joint orientations (15 hand joints)."""
 
-    def lbs(self) -> MANOMesh:
+    def lbs(self, mano_order=False) -> MANOMesh:
         """Apply linear blend skinning and return vertices and faces.
 
         Returns:
@@ -277,10 +278,7 @@ class MANOShapedAndPosed:
         T_all = T_joints
 
         # Build joint positions for blend deformation
-        joint_positions = jnp.concatenate(
-            [self.shaped_model.joints_zero[None, :, :]],
-            axis=1,
-        )
+        joint_positions = self.shaped_model.joints_zero[None, :, :]
 
         # Blend vertices
         verts_offset = verts_with_blend[..., None, :] - joint_positions
@@ -301,15 +299,25 @@ class MANOShapedAndPosed:
         joints_final = jnp.concatenate([Ts_world_joint[..., 4:7]], axis=0) + self.transl[..., None, :]
 
         # Add fingertip vertices as joints
-        if self.shaped_model.body_model.side == 'right':
-            tips = verts_final[..., [745, 317, 444, 556, 673], :]
-        else:
-            tips = verts_final[..., [745, 317, 445, 556, 673], :]
+        # Use jnp.where to handle the conditional without tracing issues
+        side = self.shaped_model.body_model.side
+        tips_right = verts_final[..., [745, 317, 444, 556, 673], :]
+        tips_left = verts_final[..., [745, 317, 445, 556, 673], :]
+        # side is an array, convert to boolean for jnp.where
+        is_right = side == 1  # This creates a boolean array
+        # jnp.where expects same shape arrays, but we have different shaped outputs
+        # So we need to handle this differently by using the index directly
+        tips = jnp.where(
+            jnp.broadcast_to(is_right, tips_right.shape), 
+            tips_right, 
+            tips_left
+        )
 
         joints_final = jnp.concatenate([joints_final, tips], axis=-2)
         # Reorder joints to match MANO convention
-        idx = [0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18, 10, 11, 12, 19, 7, 8, 9, 20]
-        joints_final = joints_final[..., idx, :]
+        if mano_order:
+            idx = [0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18, 10, 11, 12, 19, 7, 8, 9, 20]
+            joints_final = joints_final[..., idx, :]
 
         return MANOMesh(
             posed_model=self,

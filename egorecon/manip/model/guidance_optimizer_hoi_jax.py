@@ -1,221 +1,312 @@
-"""Optimize SE3 trajectories using Levenberg-Marquardt."""
+"""Optimize hand parameters to match target joints."""
 
 from __future__ import annotations
-from jaxlie import SO3
-
-from fire import Fire
 import os
-import pickle
 
 # Need to play nice with PyTorch!
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 import time
 from functools import partial
 from typing import Literal, cast
 
 import jax
 import jax_dataclasses as jdc
+import jaxlie
 import jaxls
-import numpy as np
 import numpy as onp
 import torch
 from jax import numpy as jnp
-from jutils import geom_utils, mesh_utils, plot_utils
-
-# from jaxtyping import Float  # Not used in this minimal implementation
-from torch import Tensor
-from typing_extensions import assert_never
-
-from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-from egorecon.visualization.rerun_visualizer import RerunVisualizer
-import jaxlie
-
-
-
-class _SmplhSingleHandPosesVar(
-    jaxls.Var[jax.Array],
-    default_factory=lambda: jnp.concatenate(
-        [jnp.ones((15, 1)), jnp.zeros((15, 3))], axis=-1
-    ),
-    retract_fn=lambda val, delta: (
-        jaxlie.SO3(val) @ jaxlie.SO3.exp(delta.reshape(15, 3))
-    ).wxyz,
-    tangent_dim=15 * 3,
-):
-    """Variable containing local joint poses for one hand of a SMPL-H human."""
-
-
-class _SE3TrajectoryVar(
-    jaxls.Var[jax.Array],
-    default_factory=lambda: jnp.array(
-        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    ),  # Identity quaternion + zero translation
-    retract_fn=lambda val, delta: (
-        jaxlie.SE3(val) @ jaxlie.SE3.exp(delta)
-    ).wxyz_xyz,  # SE3 retraction
-    tangent_dim=6,  # 6D tangent space (3 for translation + 3 for rotation)
-):
-    """Variable containing SE3 trajectory as wxyz_xyz format [qw, qx, qy, qz, x, y, z]."""
-
-
-def se3_to_wxyz_xyz(se3):
-    tsl, rot6d = torch.split(se3, [3, 6], dim=-1)
-    mat = geom_utils.rotation_6d_to_matrix(rot6d)
-    wxyz = geom_utils.rot_cvt.matrix_to_quaternion(mat)
-
-    return torch.cat([wxyz, tsl], dim=-1)
-
-def wxyz_xyz_to_se3(wxyz_xyz):
-    wxyz, tsl = torch.split(wxyz_xyz, [4, 3], dim=-1)
-    mat = geom_utils.rot_cvt.quaternion_to_matrix(wxyz)
-    return geom_utils.matrix_to_se3_v2(geom_utils.rt_to_homo(mat, tsl))
-
 
 from . import fncmano_jax
 from pathlib import Path
-from egorecon.utils.motion_repr import HandWrapper
 
 
+class _HandParamsVar(
+    jaxls.Var[jax.Array],
+    default_factory=lambda: jnp.zeros((31,)),  # global_orient(3) + transl(3) + hand_pose(15) + betas(10)
+    retract_fn=lambda val, delta: val + delta,  # Simple addition for free parameters
+    tangent_dim=31,
+):
+    """Variable containing hand parameters."""
+
+
+@jdc.pytree_dataclass
+class HandGuidanceParams:
+    joint_weight: float = 1.0
+    lambda_initial: float = 0.1
+    max_iters: jdc.Static[int] = 50
+
+
+def do_guidance_optimization_hand(
+    pred_dict: dict,
+    obs: dict,
+    left_mano_model: fncmano_jax.MANOModel,
+    right_mano_model: fncmano_jax.MANOModel,
+    guidance_params: HandGuidanceParams | None = None,
+    verbose: bool = True,
+) -> dict:
+    """Optimize hand parameters to match target joints."""
+    if guidance_params is None:
+        guidance_params = HandGuidanceParams()
+
+    # Extract parameters
+    left_hand_params = pred_dict["left_hand_params"]  # (B, T, 31)
+    right_hand_params = pred_dict["right_hand_params"]  # (B, T, 31)
+    target_joints = obs["j3d"]  # (B, T, 42, 3)
+
+    # Split target joints into left and right
+    target_left_joints = target_joints[..., :21, :]  # (B, T, 21, 3)
+    target_right_joints = target_joints[..., 21:, :]  # (B, T, 21, 3)
+
+    # Convert to JAX
+    left_hand_jax = cast(jax.Array, left_hand_params.numpy(force=True))
+    right_hand_jax = cast(jax.Array, right_hand_params.numpy(force=True))
+    target_left_jax = cast(jax.Array, target_left_joints.numpy(force=True))
+    target_right_jax = cast(jax.Array, target_right_joints.numpy(force=True))
+
+    # Optimize both hands independently
+    optimized_left, _ = _optimize_vmapped_hand(
+        mano_model=left_mano_model,
+        hand_params=left_hand_jax,
+        target_joints=target_left_jax,
+        guidance_params=guidance_params,
+        verbose=verbose,
+    )
+
+    optimized_right, _ = _optimize_vmapped_hand(
+        mano_model=right_mano_model,
+        hand_params=right_hand_jax,
+        target_joints=target_right_jax,
+        guidance_params=guidance_params,
+        verbose=verbose,
+    )
+
+    # Convert back to torch
+    optimized_left_torch = (
+        torch.from_numpy(onp.array(optimized_left))
+        .to(left_hand_params.dtype)
+        .to(left_hand_params.device)
+    )
+    optimized_right_torch = (
+        torch.from_numpy(onp.array(optimized_right))
+        .to(right_hand_params.dtype)
+        .to(right_hand_params.device)
+    )
+
+    return {
+        "left_hand_params": optimized_left_torch,
+        "right_hand_params": optimized_right_torch,
+    }
+
+
+@jdc.jit
+def _optimize_vmapped_hand(
+    mano_model: fncmano_jax.MANOModel,
+    hand_params: jax.Array,
+    target_joints: jax.Array,
+    guidance_params: HandGuidanceParams,
+    verbose: jdc.Static[bool],
+) -> tuple[jax.Array, dict]:
+    """Vectorized optimization over batch and time."""
+    return jax.vmap(
+            partial(
+                _optimize_single_hand,
+                mano_model=mano_model,
+                guidance_params=guidance_params,
+                verbose=verbose,
+            )
+    )(hand_params=hand_params, target_joints=target_joints)
+
+
+def _optimize_single_hand(
+    mano_model: fncmano_jax.MANOModel,
+    hand_params: jax.Array,  # (T, 31,)
+    target_joints: jax.Array,  # (T, 21, 3)
+    guidance_params: HandGuidanceParams,
+    verbose: bool,
+) -> jax.Array:
+    """Optimize hand parameters for a single frame."""
+    # Parse hand parameters
+    # Structure: [global_orient(3), transl(3), hand_pose(15), betas(10)]
+    betas = hand_params[..., -10:]
+
+    # Build forward kinematics function
+    shaped = mano_model.with_shape(jnp.mean(betas, axis=0))  # (10,)
+
+    def do_forward_kinematics(vals: jaxls.VarValues, var: _HandParamsVar):
+        """Helper to compute forward kinematics from variable values."""
+        # Extract parameters from variable
+        params = vals[var]
+        g_orient = params[:3]
+        trans = params[3:6]
+        h_pose = params[6:21]
+
+        # Forward kinematics
+        posed = shaped.with_pose(
+            global_orient=g_orient,
+            transl=trans,
+            pca=h_pose,
+            add_mean=True,
+        )
+        mesh = posed.lbs()
+        return mesh
+
+    # Create cost factors
+    factors = list[jaxls.Cost]()
+
+    def cost_with_args(*args):
+        """Decorator for appending cost factors."""
+
+        def inner(cost_func):
+            factors.append(jaxls.Cost(cost_func, args))
+            return cost_func
+
+        return inner
+
+    timesteps = hand_params.shape[0]
+    # Joint matching cost
+    @cost_with_args(_HandParamsVar(jnp.arange(timesteps)), target_joints)
+    def joint_cost(
+        vals: jaxls.VarValues,
+        var: _HandParamsVar,
+        target: jax.Array,
+    ) -> jax.Array:
+        """Cost for matching predicted joints to target joints."""
+        mesh = do_forward_kinematics(vals, var)
+        predicted_joints = mesh.joints  # First 21 joints
+
+        # Compute residual
+        residual = predicted_joints - target  # (21, 3)
+
+        return guidance_params.joint_weight * residual.flatten()
+
+    # Set up optimization problem
+    var_hand = _HandParamsVar(jnp.arange(timesteps))
+    graph = jaxls.LeastSquaresProblem(costs=factors, variables=[var_hand]).analyze()
+
+    # Solve
+    solutions = graph.solve(
+        initial_vals=jaxls.VarValues.make([var_hand.with_value(hand_params)]),
+        linear_solver="conjugate_gradient",
+        trust_region=jaxls.TrustRegionConfig(lambda_initial=guidance_params.lambda_initial),
+        termination=jaxls.TerminationConfig(max_iterations=guidance_params.max_iters),
+        verbose=verbose,
+    )
+    out_hand_params = solutions[_HandParamsVar]
+    assert out_hand_params.shape == (timesteps, 31)
+
+
+    return out_hand_params, {}
+
+
+
+# Forward kinematics helper for external use
 def do_forward_kinematics_mano(
     mano_model: fncmano_jax.MANOModel,
-    global_orient: jnp.ndarray,  # (T, 3)
-    transl: jnp.ndarray,  # (T, 3)
-    hand_pose: jnp.ndarray,  # (T, 15) - PCA components
-    betas: jnp.ndarray,  # (T, 10) or (1, 10)
+    global_orient: jnp.ndarray,  # (..., 3)
+    transl: jnp.ndarray,  # (..., 3)
+    hand_pose: jnp.ndarray,  # (..., 15) - PCA components
+    betas: jnp.ndarray,  # (..., 10)
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Perform forward kinematics on MANO model.
-    
-    Args:
-        mano_model: MANO model
-        global_orient: Root rotation in axis-angle (..., 3)
-        transl: Translation vector (..., 3)
-        hand_pose: Hand pose in PCA space (..., 15)
-        betas: Shape parameters (..., 10)
-        
-    Returns:
-        vertices: (..., 778, 3) mesh vertices
-        joints: (..., 16, 3) joint positions
-        faces: (F, 3) face indices
-    """
-    # Apply shape
+    """Perform forward kinematics on MANO model."""
     shaped = mano_model.with_shape(betas)
-    
-    # Convert to quaternions - assume hand_pose is already rotation vectors
-
-    # hand_quats = SO3.exp(hand_pose).wxyz
-    
-    # Apply pose
     posed = shaped.with_pose(
         global_orient=global_orient,
         transl=transl,
-        # local_quats=hand_quats,
         pca=hand_pose,
         add_mean=True,
     )
-    
-    # Apply LBS
     mesh = posed.lbs()
-    
     return mesh.verts, mesh.joints, mesh.faces
 
 
-def draw_hand_joints_with_numbers(joints, name, verts, faces):
-    ## plot them, display numbers {i} besides joints
+# Test function
+from fire import Fire
+import pickle
+from jutils import image_utils, model_utils, hand_utils
+from omegaconf import OmegaConf
+from . import build_model
 
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    for i, joint in enumerate(joints):
-        ax.text(joint[0], joint[1], joint[2], f"{i}")
-        ax.scatter(joint[0], joint[1], joint[2], color='red')
 
-    # draw meshes in the same figure using matplotlib
-    verts = verts.cpu().numpy()
-    faces = faces.cpu().numpy()
+def test_optimization(save_dir="outputs/debug_guidance"):
+    """Test the hand optimization."""
+    device = "cuda:0"
+    opt_file = "outputs/noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2/opt.yaml"
+    opt = OmegaConf.load(opt_file)
 
-    # plt.plot_trisurf(verts[:, 0], verts[:, 1], verts[:, 2], faces)
-    
-    plt.show()
-    plt.savefig(f"outputs/hand_joints_{name}.png")
-    
-    
-
-from jutils import hand_utils, model_utils
-def test_fk():
     save = pickle.load(open("outputs/tmp.pkl", "rb"))
     batch = save["sample"]
     batch = model_utils.to_cuda(batch, "cpu")
 
-    device = batch["right_hand_params"].device
-    hand_wrapper = HandWrapper(Path("assets/mano"))
-    wrapper = hand_utils.ManopthWrapper().to(device)
+    pred = save["pred_raw"]
+    model = build_model(opt)
+    model.to(device)
+    pred_dict = model.decode_dict(pred)
 
-    # golden standard
-    # right_params = batch["right_hand_params"]  # (BS, T, 3+3+15+10)
-    side = "left"
-    right_params = batch[f"{side}_hand_params"] 
-    B, T, D = right_params.shape
-    # Parse parameters
-    global_orient = right_params[:, :, :3]
-    transl = right_params[:, :, 3:6]
-    hand_pose = right_params[:, :, 6:21]
-    pca = right_params[:, :, 6:21]
-    hA = wrapper.pca_to_pose(pca[0])    # (BS, T, 45)
-    hA = hA.reshape(B, T, 15, 3)
-    betas = right_params[:, :, 21:31]
+    B, T, J_3 = batch["hand_raw"].shape
 
-    # PyTorch forward pass
-    right_verts, right_faces, right_joints = hand_wrapper.hand_para2verts_faces_joints(
-        right_params[0, 0:1], side=side, my_order=True,
+    obs = {
+        "j3d": batch["hand_raw"].reshape(B, T, -1, 3),
+        "contact": pred_dict["contact"],
+    }
+
+    left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
+    right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
+
+    # Optimize
+    guidance_params = HandGuidanceParams(joint_weight=1.0, max_iters=50)
+    pred_opt = do_guidance_optimization_hand(
+        pred_dict=pred_dict,
+        obs=obs,
+        guidance_params=guidance_params,
+        left_mano_model=left_mano_model,
+        right_mano_model=right_mano_model,
+        verbose=True,
     )
-    draw_hand_joints_with_numbers(right_joints.reshape(21, 3), 'smplx', right_verts, right_faces)  # (21, 3)
 
-    # my_meshes, right_joints_my = wrapper(None, hA[0, 0:1].reshape(1, 45), global_orient[0, 0:1], transl[0, 0:1], th_betas=betas[0, 0:1])
-    # print(right_joints_my - right_joints)
-    # print(right_verts - my_meshes.verts_padded())
-    # draw_hand_joints_with_numbers(right_joints_my.reshape(21, 3), 'my', my_meshes.verts_padded(), my_meshes.faces_padded())  # (21, 3)
-    
-    # Load JAX MANO model
-    mano_model_jax = fncmano_jax.MANOModel.load(
-        mano_dir=Path("assets/mano"),
-        side=side,
-        )
-    
-    # Convert to numpy
-    global_orient_np = global_orient[0].numpy()
-    transl_np = transl[0].numpy()
-    hand_pose_np = hand_pose[0].numpy()
-    betas_np = betas[0].numpy()
+    # Visualize
+    from jutils import mesh_utils
+    batch = model_utils.to_cuda(batch, device)
+    # pred_opt = model_utils.to_cuda(pred_opt, device)
+    pred_dict = model_utils.to_cuda(pred_dict, device)
 
-    # JAX forward pass
-    # vmap over T-axis
-    jax_verts, jax_joints, jax_faces = do_forward_kinematics_mano(
-        mano_model_jax,
-        global_orient=global_orient_np[0],
-        transl=transl_np[0],
-        hand_pose=hand_pose_np[0],
-        betas=betas_np[0],
+    pred_hand_meshes = model.decode_hand_mesh(
+        pred_dict["left_hand_params"][0],
+        pred_dict["right_hand_params"][0],
+        hand_rep="theta",
     )
-    
-    # Compare results
-    print(f"PyTorch vertices shape: {right_verts.shape}")
-    print(f"JAX vertices shape: {jax_verts.shape}")
-    print(f"PyTorch joints shape: {right_joints.shape}")
-    print(f"JAX joints shape: {jax_joints.shape}")
-    
-    # Check if results are close
-    vert_diff = np.abs(right_verts.numpy()[0] - jax_verts)
-    joint_diff = np.abs(right_joints.numpy()[0] - jax_joints)
-    
-    print(f"\nMax vertex difference: {vert_diff.max():.6f}")
-    print(f"Mean vertex difference: {vert_diff.mean():.6f}")
-    print(f"Max joint difference: {joint_diff.max():.6f}")
-    print(f"Mean joint difference: {joint_diff.mean():.6f}")
-    
+    pred_hand_meshes = mesh_utils.join_scene(pred_hand_meshes)
 
+    gt_hand_meshes = model.decode_hand_mesh(
+        batch["left_hand_params"][0],
+        batch["right_hand_params"][0],
+        hand_rep="theta",
+    )
+    gt_hand_meshes = mesh_utils.join_scene(gt_hand_meshes)
+
+    opt_hand_meshes = model.decode_hand_mesh(
+        pred_opt["left_hand_params"][0],
+        pred_opt["right_hand_params"][0],
+        hand_rep="theta",
+    )
+    opt_hand_meshes = mesh_utils.join_scene(opt_hand_meshes)
+
+    pred_hand_meshes.textures = mesh_utils.pad_texture(pred_hand_meshes, "blue")
+    gt_hand_meshes.textures = mesh_utils.pad_texture(gt_hand_meshes, "red")
+    opt_hand_meshes.textures = mesh_utils.pad_texture(opt_hand_meshes, "yellow")
+
+    scene = mesh_utils.join_scene([pred_hand_meshes, gt_hand_meshes, opt_hand_meshes])
+    image_list = mesh_utils.render_geom_rot_v2(scene, time_len=1)
+    image_list = torch.stack(image_list, axis=0)
+    time_len, T, C, H, W = image_list.shape
+    image_utils.save_gif(
+        image_list.reshape(time_len * T, 1, C, H, W),
+        f"{save_dir}/guided_hands",
+        fps=30,
+        ext=".mp4",
+    )
 
 
 if __name__ == "__main__":
-    # Fire(test_optimization)
-    Fire(test_fk)
+    Fire(test_optimization)
