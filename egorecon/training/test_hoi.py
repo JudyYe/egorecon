@@ -1,3 +1,5 @@
+import numpy as np
+from glob import glob
 import pickle
 import os
 import os.path as osp
@@ -41,6 +43,7 @@ def build_model_from_ckpt(opt):
     return diffusion_model
 
 
+
 @torch.no_grad()
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
     model_cfg = diffusion_model.opt
@@ -56,6 +59,8 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
+        index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
+
         sample = batch = model_utils.to_cuda(batch)
 
         seq_len = torch.tensor([sample["condition"].shape[1]]).to(device)
@@ -69,7 +74,6 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             padding_mask = None
         padding_mask = None            
 
-        metrics = {}
         for i in range(0):
             guided_object_pred_raw, info = diffusion_model.sample_raw(
                 torch.randn_like(sample["target"]),
@@ -103,6 +107,8 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             hand_raw=sample["hand_raw"],
             rtn_x_list=True,
         )
+        save_prediction(diffusion_model.decode_dict(guided_object_pred_raw), index, osp.join(model_cfg.exp_dir, opt.test_folder, "guided", f"{index}.pkl"))
+
 
         if opt.vis_x:
             gen_vis_hoi_res(
@@ -115,8 +121,8 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 pref=f"test_guided_{b:04d}",
             )
 
+        # save for debug
         # tmp_file = "outputs/tmp.pkl"
-
         # with open(tmp_file, "wb") as f:
         #     pickle.dump(
         #         {
@@ -126,33 +132,6 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         #         f,
         #     )
         # # assert False
-
-        save_file = osp.join(
-            model_cfg.exp_dir, opt.test_folder, f"test_guided_{b:04d}.pkl"
-        )
-        # with open(save_file, "wb") as f:
-        #     pickle.dump(
-        #         {
-        #             "x_list": info["x_list"],
-        #             "wJoints": sample["hand_raw"],
-        #             "newPoints": sample["newPoints"],
-        #             "wTo": guided_object_pred_raw,
-        #             "batch": sample,
-        #         },
-        #         f,
-        #     )
-        # print(f"Saved to {save_file}")
-
-        # # vis x_list
-        # vis_gen_process(
-        #     info["x_list"],
-        #     diffusion_model,
-        #     viz_off,
-        #     model_cfg,
-        #     step=0,
-        #     batch=sample,
-        #     pref=f"test_guided_{b:04d}_xt",
-        # )
 
         if opt.vis_x0_list:
             vis_gen_process(
@@ -168,21 +147,6 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
         right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
 
-        # print(guided_object_pred_raw.shape)
-        # metrics_guided = compute_wTo_error(
-        #     guided_object_pred_raw, sample["target_raw"], sample["object_id"]
-        # )
-        # metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
-
-        # gen_vis_res(
-        #     diffusion_model,
-        #     viz_off,
-        #     model_cfg,
-        #     step=0,
-        #     batch=sample,
-        #     output={"pred_raw": guided_object_pred_raw},
-        #     pref=f"test_guided_{b:04d}",
-        # )
 
         if opt.post_guidance:
             # directly guide object_pred_raw
@@ -190,13 +154,6 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 guide=True, batch=sample, shape=guided_object_pred_raw.shape
             )
 
-            # post_object_pred_raw, _ = do_guidance_optimization(
-            #     traj=se3_to_wxyz_xyz(guided_object_pred_raw),
-            #     obs=obs,
-            #     guidance_mode=opt.guide.hint,
-            #     phase="post",
-            #     verbose=True,
-            # )
             post_pred_dict, _ = do_guidance_optimization(
                 pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
                 obs=obs,
@@ -208,8 +165,8 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             )
             post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
             pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
-            pred_dict["newMesh"] = sample["newMesh"]
             if opt.vis_x:
+                pred_dict["newMesh"] = sample["newMesh"]
                 gen_one(
                     diffusion_model,
                     viz_off,
@@ -219,23 +176,52 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                     output=pred_dict,
                     name=f"test_post_{b:04d}",
                 )
-            # post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
-            # metrics_post = compute_wTo_error(
-            #     post_object_pred_raw, sample["target_raw"], sample["object_id"]
-            # )
-            # metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
+            
+            save_prediction(post_pred_dict, index, osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"))
 
-            # gen_vis_res(
-            #     diffusion_model,
-            #     viz_off,
-            #     model_cfg,
-            #     step=0,
-            #     batch=sample,
-            #     output={"pred_raw": post_object_pred_raw},
-            #     pref=f"test_post_{b:04d}",
-            # )
 
-        # Generate visualization for the guided prediction
+def save_prediction(pred_dict, index, fname):
+    os.makedirs(osp.dirname(fname), exist_ok=True)
+    to_save = {}
+    for key in ["wTo", "left_hand_params", "right_hand_params", "contact", "left_joints", "right_joints"]:
+        value = pred_dict.get(key, None)
+        if value is not None:
+            to_save[key] = value.detach().cpu().numpy()
+    to_save["index"] = index
+
+    with open(fname, "wb") as f:
+        pickle.dump(to_save, f)
+    print(f"Saved to {fname}")
+
+
+def aggregate_prediction(opt):
+    if opt.dir is None:
+        save_dir = osp.join(opt.exp_dir, opt.test_folder)
+    else:
+        save_dir = opt.dir
+    pred_list = glob(osp.join(save_dir,  "*.pkl"))
+    # for hand, ignore object id
+    seq_dict = {}
+    for pred_file in pred_list:
+        with open(pred_file, "rb") as f:
+            pred_dict = pickle.load(f)
+        index = pred_dict["index"]
+        seq = index.split("_")[0]
+
+        for k, v in pred_dict.items():
+            if isinstance(v, np.ndarray) and v.shape[0] == 1:
+                pred_dict[k] = v[0]
+        seq_dict[seq] = pred_dict
+
+        print(pred_dict["right_hand_params"].shape)
+
+
+    save_file = osp.dirname(save_dir) + ".pkl"
+    with open(save_file, "wb") as f:    
+        pickle.dump(seq_dict, f)
+    return 
+
+
 
 
 def set_test_cfg(opt, model_cfg):
@@ -251,24 +237,27 @@ def set_test_cfg(opt, model_cfg):
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
 @slurm_engine()
 def main(opt):
-    diffusion_model = build_model_from_ckpt(opt)
-    set_test_cfg(opt, diffusion_model.opt)
-
-    torch.manual_seed(123)
-
-    dl, ds = build_dataloader(
-        opt.testdata,
-        diffusion_model.opt,
-        is_train=False,
-        shuffle=True,
-        batch_size=1,
-        num_workers=1,
-    )
 
     if opt.test_mode == "guided":
+        diffusion_model = build_model_from_ckpt(opt)
+        set_test_cfg(opt, diffusion_model.opt)
+
+        torch.manual_seed(123)
+
+        dl, ds = build_dataloader(
+            opt.testdata,
+            diffusion_model.opt,
+            is_train=False,
+            shuffle=True,
+            batch_size=1,
+            num_workers=1,
+        )
+        print(opt.sample,)
         test_guided_generation(diffusion_model, dl, opt)
-    elif opt.test_mode == "long_guided":
-        test_long_guided_generation(diffusion_model, dl, opt)
+
+    elif opt.test_mode == 'aggregate':
+        aggregate_prediction(opt)
+
 
     return
 

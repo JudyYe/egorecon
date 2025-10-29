@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - default.yaml
+  
+sample: ddim
+
+datasets:
+  window: 120
+  # use_cache: false
+  # save_cache: false

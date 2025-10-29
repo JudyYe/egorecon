@@ -136,7 +136,7 @@ class JaxGuidanceParams:
             max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
                 use_j2d=True,
-                use_hand_smoothness=True,
+                use_hand_smoothness=False,
                 use_j3d=False,
                 use_contact_obs=False,
                 use_static=False,
@@ -418,7 +418,6 @@ def _optimize(
 
         return inner
 
-    print("INSIDE", left_hand_params.shape, right_hand_params.shape, target_j2d.shape, target_wTc.shape, target_intr.shape)
     # Create a single variable for the entire trajectory (much more efficient!)
     var_traj = _SE3TrajectoryVar(jnp.arange(timesteps))
     var_left_params = _LeftHandParamsVar(jnp.arange(timesteps))
@@ -452,7 +451,6 @@ def _optimize(
 
             j2d_pred = project_jax_pinhole(wJoints_traj, target_wTc, target_intr, ndc=ndc)
             diff = j2d_pred - target_j2d  # (J, 2)
-            print('j2d', diff.shape, j2d_pred.shape, target_j2d.shape)
             diff = guidance_params.j2d_weight * diff.flatten()
             return diff
             
@@ -570,7 +568,6 @@ def _optimize(
 
             left_acc_012 = left_vel_12 - left_vel_01
             right_acc_012 = right_vel_12 - right_vel_01
-            print('left_acc_012', left_acc_012.shape, right_acc_012.shape)
 
             diff = jnp.concatenate([left_acc_012, right_acc_012], axis=0)
             diff = guidance_params.hand_acc_weight * diff.flatten()
@@ -1093,7 +1090,6 @@ def test_optimization(save_dir="outputs/debug_guidance_hoi"):
         wPoints=batch["hand_raw"].reshape(B, T, -1, 3),
         ndc=ndc,
     )
-    print('j2d', j2d.shape)
 
     pred = save["pred_raw"]
     model = build_model(opt)

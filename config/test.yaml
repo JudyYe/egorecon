@@ -11,6 +11,7 @@ defaults:
   - experiment: hoi
   - traindata: hotclip_train
   - testdata: hotclip_mini
+  - eval: ddim_long
 
 
 # This is just a placeholder to create the 'traindata' config node.
@@ -19,36 +20,38 @@ defaults:
 
 
 # task name, determines output directory path
-expname: ft
+expname: dev/tmp
 exp_dir: ${paths.output_dir}/${expname}
 ngpu: 1
 log: wandb
 
 # set False to skip model training
-train: True
+train: false
 
 # evaluate on test set, using best model weights achieved during training
 # lightning chooses best weights based on the metric specified in checkpoint callback
 test: true
 test_folder: eval
 
-post_guidance: true
-inner_guidance: true
-# simply provide checkpoint path to resume training
-ckpt: ${exp_dir}/weights/${ckpt_index}
-ckpt_index: null
+dir: null
 
-# seed for random number generators in pytorch, numpy and python.random
-seed: null
+# post_guidance: true
+# inner_guidance: true
+# # simply provide checkpoint path to resume training
+# ckpt: ${exp_dir}/weights/${ckpt_index}
+# ckpt_index: null
 
-sample: ddim_long
-datasets:
-  window: 150
+# # seed for random number generators in pytorch, numpy and python.random
+# seed: null
 
-test_mode: guided
-legacy_mask: false
-vis_x0_list: false
-vis_x: true
+# # sample: ddim_long
+# # datasets:
+# #   window: 150
 
-test_num: 100
+# test_mode: guided
+# legacy_mask: false
+# vis_x0_list: false
+# vis_x: true
+
+# test_num: 100
 

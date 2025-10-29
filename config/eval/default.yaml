@@ -1,0 +1,25 @@
+# @package _global_
+
+
+post_guidance: true
+inner_guidance: true
+# simply provide checkpoint path to resume training
+ckpt: ${exp_dir}/weights/${ckpt_index}
+ckpt_index: null
+
+# seed for random number generators in pytorch, numpy and python.random
+seed: null
+
+sample: ddim
+datasets:
+  window: 120
+  use_cache: true
+  save_cache: false
+
+test_mode: guided
+legacy_mask: false
+vis_x0_list: false
+vis_x: true
+
+test_num: 100
+

@@ -1,3 +1,4 @@
+from fire import Fire
 import os
 import os.path as osp
 import json
@@ -14,20 +15,33 @@ device = "cuda"
 data_dir = "/move/u/yufeiy2/data/HOT3D-CLIP"
 
 mano_model_path = "assets/mano"
+
+
 def get_hand_joints(seq, hand_wrapper: HandWrapper):
     if "left_joints" not in seq:
+        if "left_hand_theta" not in seq:
+            seq["left_hand_theta"], seq["left_hand_shape"] = seq["left_hand_params"][..., :-10], seq["left_hand_params"][..., -10:]
+
         left_theta = torch.FloatTensor(seq["left_hand_theta"]).to(device)
         left_shape = torch.FloatTensor(seq["left_hand_shape"]).to(device)
-        _, _, left_joints = hand_wrapper.hand_para2verts_faces_joints(left_theta, left_shape, side="left")
+        _, _, left_joints = hand_wrapper.hand_para2verts_faces_joints(
+            left_theta, left_shape, side="left"
+        )
     else:
         left_joints = seq["left_joints"]
     if "right_joints" not in seq:
+        if "right_hand_theta" not in seq:
+            seq["right_hand_theta"], seq["right_hand_shape"] = seq["right_hand_params"][..., :-10], seq["right_hand_params"][..., -10:]
+            
         right_theta = torch.FloatTensor(seq["right_hand_theta"]).to(device)
         right_shape = torch.FloatTensor(seq["right_hand_shape"]).to(device)
-        _, _, right_joints = hand_wrapper.hand_para2verts_faces_joints(right_theta, right_shape, side="right")
+        _, _, right_joints = hand_wrapper.hand_para2verts_faces_joints(
+            right_theta, right_shape, side="right"
+        )
     else:
         right_joints = seq["right_joints"]
     return left_joints, right_joints
+
 
 def get_hotclip_split(split="test"):
     split_file = osp.join(data_dir, "sets", "split.json")
@@ -36,7 +50,16 @@ def get_hotclip_split(split="test"):
     seqs = split2sesq[split]
     return seqs
 
-def eval_hotclip(pred_file, gt_file, side="right", save_dir="outputs/", split="test", skip_not_there=False, chunk_length=100):
+
+def eval_hotclip(
+    pred_file="pred_joints.pkl",
+    gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
+    side="right",
+    save_dir=None,
+    split="test",
+    skip_not_there=False,
+    chunk_length=-1,
+):
     seqs = get_hotclip_split(split)
 
     hand_wrapper = HandWrapper(mano_model_path).to(device)
@@ -79,12 +102,30 @@ def eval_hotclip(pred_file, gt_file, side="right", save_dir="outputs/", split="t
                 end = min(T, start + chunk_length)
                 pred_chunk = pred[start:end]
                 gt_chunk = gt[start:end]
-                metrics = eval_jts(gt_chunk, pred_chunk, metric_names=["ga_jmse", "fa_jmse", "acc_norm", "pampjpe",])
+                metrics = eval_jts(
+                    gt_chunk,
+                    pred_chunk,
+                    metric_names=[
+                        "ga_jmse",
+                        "fa_jmse",
+                        "acc_norm",
+                        "pampjpe",
+                    ],
+                )
                 for name, value in metrics.items():
                     metric_list[name].append(value)
                 metric_list["index"].append(f"{seq}_{start}_{end}")
         else:
-            metrics = eval_jts(gt, pred, metric_names=["ga_jmse","fa_jmse", "acc_norm", "pampjpe",])
+            metrics = eval_jts(
+                gt,
+                pred,
+                metric_names=[
+                    "ga_jmse",
+                    "fa_jmse",
+                    "acc_norm",
+                    "pampjpe",
+                ],
+            )
             for name, value in metrics.items():
                 metric_list[name].append(value)
             metric_list["index"].append(seq)
@@ -92,20 +133,23 @@ def eval_hotclip(pred_file, gt_file, side="right", save_dir="outputs/", split="t
         # for name, value in metrics.items():
         #     metric_list[name].append(value)
 
-    # save metrics as csv, column: metrics, rows: 1st Mean, 2nd to last : each indivisual. 
+    # save metrics as csv, column: metrics, rows: 1st Mean, 2nd to last : each indivisual.
 
-    mean_metrics = {name: np.mean(value) for name, value in metric_list.items() if name != "index"}
+    mean_metrics = {
+        name: np.mean(value) for name, value in metric_list.items() if name != "index"
+    }
     mean_metrics["index"] = "Mean"
 
-    
     # pretty print mean
     print("Mean metrics:")
     for name, value in mean_metrics.items():
         if name != "index":
             print(f"{name}: {value:.4f}")
     print("-" * 100)
-    
+
     # column: index, metrics1, metrics2, ... rows: each individual sequence + mean
+    if save_dir is None:
+        save_dir = osp.join(osp.dirname(pred_file))
     os.makedirs(save_dir, exist_ok=True)
     csv_file = osp.join(save_dir, f"hand_metrics_chunk_{chunk_length}.csv")
     df = pd.DataFrame()
@@ -117,15 +161,19 @@ def eval_hotclip(pred_file, gt_file, side="right", save_dir="outputs/", split="t
     data.append(row)
     # Add individual sequence/chunk metrics
     for i in range(len(metric_list["index"])):
-        row = [metric_list["index"][i]] + [metric_list[name][i] for name in metrics_names]
+        row = [metric_list["index"][i]] + [
+            metric_list[name][i] for name in metrics_names
+        ]
         data.append(row)
     df = pd.DataFrame(data, columns=["index"] + metrics_names)
     df.to_csv(csv_file, index=False)
     print("Saved metrics to csv file: ", csv_file)
-    return 
+    return
+
 
 if __name__ == "__main__":
     split = "test"
     gt_file = "dataset_contact.pkl"
     pred_file = "pred_joints.pkl"
-    eval_hotclip(pred_file, gt_file)
+    # eval_hotclip(pred_file, gt_file)
+    Fire(eval_hotclip)
