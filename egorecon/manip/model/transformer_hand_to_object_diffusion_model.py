@@ -22,10 +22,10 @@ from ..data.utils import get_norm_stats
 # from .guidance_optimizer_jax import (do_guidance_optimization, project,
 #                                      se3_to_wxyz_xyz, wxyz_xyz_to_se3)
 from .guidance_optimizer_hoi_jax import (do_guidance_optimization, project,
-                                     se3_to_wxyz_xyz, wxyz_xyz_to_se3)
+                                     se3_to_wxyz_xyz, wxyz_xyz_to_se3, ndc)
 from .transformer_module import Decoder
 
-import fncmano_jax
+from . import fncmano_jax
 from pathlib import Path
 
 
@@ -459,80 +459,10 @@ class CondGaussianDiffusion(nn.Module):
             phase="inner",
             verbose=True,
         )
-
-
+        x_0_pred = self.encode_dict_to_params(pred_dict)
         x_start_opt = self.normalize_data(x_0_pred)
         return x_start_opt
 
-    def guide(
-        self,
-        x,
-        t,
-        model_kwargs=None,
-        t_stopgrad=-10,
-        scale=1.0,
-        n_guide_steps=10,
-        train=False,
-        min_variance=0.01,
-        ddim=False,
-        return_grad=False,
-        **kwargs,
-    ):
-        """
-        Spatial guidance
-        :param x: (B, T, J, 3) this is x_{t-1} ?!
-        """
-        model_variance = extract(self.posterior_variance, t, x.shape)
-
-        if model_variance[0, 0, 0] < min_variance:
-            model_variance = min_variance
-        if train:
-            if t[0] < 200:
-                n_guide_steps = 100
-            else:
-                n_guide_steps = 20
-        else:
-            if ddim:
-                if t[0] <= 200:
-                    n_guide_steps = 50
-                else:
-                    n_guide_steps = 10
-            else:
-                if t[0] == 0:
-                    n_guide_steps = 100000
-                elif t[0] < 10:
-                    n_guide_steps = 2  #  200
-                else:
-                    n_guide_steps = 2  # 20
-
-        # process hint
-        batch = model_kwargs["obs"]
-
-
-        for _ in range(n_guide_steps):
-            loss, grad = self.gradients(x, batch)
-            # if t[0] == 0:
-            # fname = 'outputs/tmp.pkl'
-            # if not osp.exists(fname):
-            #     wTo_pred_se3 = self.denormalize_data(x)  # (B, T, 3+6)
-            #     wTo_gt = batch['target_raw']
-            #     with open(fname, 'wb') as f:
-            #         pickle.dump({
-            #             "x": wTo_pred_se3,
-            #             'gt': wTo_gt,
-            #             'batch': batch,
-            #         }, f)
-            # assert False
-            # print('grad', scale, grad * scale, x)
-
-            grad = model_variance * grad
-
-            if t[0] >= t_stopgrad:
-                x = x - scale * grad
-
-        if return_grad:
-            return grad
-        return x.detach()
 
     @torch.no_grad()
     def p_sample_loop(self, shape, x_start, x_cond, padding_mask=None, rtn_x_list=False, **kwargs):
@@ -588,7 +518,7 @@ class CondGaussianDiffusion(nn.Module):
             ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
             x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
 
-            j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=True)
+            j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=ndc)
 
             obs = {
                 "newPoints": batch['newPoints'],
@@ -810,7 +740,7 @@ class CondGaussianDiffusion(nn.Module):
 
             dist, idx, wNn = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)  # (B*T, 2*J, 3)
             min_dist = dist.reshape(B, T, 2, J_2 // 2)
-            pred_contact = (pred_dict["contact"] > 0.5).float()
+            pred_contact = (pred_dict["contact"] > 0.5).float()  # (B, T, 2)
             contact_loss = min_dist * pred_contact[..., None]
             contact_loss = contact_loss.mean()
 
@@ -825,6 +755,7 @@ class CondGaussianDiffusion(nn.Module):
             static_loss = (wPoints_diff**2).norm(dim=-1).mean()  # (B, T-1)
 
             static_mask = (pred_contact[:, 1:] < 0.5) & (pred_contact[:, :-1] < 0.5) 
+            static_mask = static_mask[..., 0] & static_mask[..., 1]  # (B, T-1)
             static_loss = static_loss * static_mask.float()  
             static_loss = static_loss.mean()
             loss += self.opt.loss.w_static * static_loss
@@ -1069,6 +1000,37 @@ class CondGaussianDiffusion(nn.Module):
             return x_t_packed, rtn
         return x_t_packed
 
+    def encode_dict_to_params(self, pred_dict):
+        wTo = pred_dict['wTo']
+        B, T, _ = wTo.shape
+        left_hand_params = pred_dict['left_hand_params']
+        right_hand_params = pred_dict['right_hand_params']
+        contact = pred_dict['contact']
+        
+        left_joints = pred_dict.get('left_joints', None)
+        right_joints = pred_dict.get('right_joints', None)
+        
+        if self.opt.hand_rep == "joint_theta":
+            if left_joints is None:
+                _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand_params, side='left')
+                left_joints = left_joints.reshape(B, T, 21*3)
+            if right_joints is None:
+                _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand_params, side='right')
+                right_joints = right_joints.reshape(B, T, 21*3)
+
+            left_params = torch.cat([left_joints, left_hand_params], dim=-1)
+            right_params = torch.cat([right_joints, right_hand_params], dim=-1)
+            hand_rep = torch.cat([left_params, right_params], dim=-1)
+
+        x = [wTo]
+        hand_io = self.opt.get("hand", "cond")
+        if hand_io in ["out", "cond_out"]:
+            x.append(hand_rep)
+        if self.opt.output.contact:
+            x.append(contact)
+        x = torch.cat(x, dim=-1)
+        return x
+        
     def decode_dict(self, target_raw):
         """
         Decode target_raw back into its components.

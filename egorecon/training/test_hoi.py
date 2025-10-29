@@ -1,7 +1,7 @@
 import pickle
 import os
 import os.path as osp
-
+from .trainer_hoi import gen_one
 from tqdm import tqdm
 import hydra
 import torch
@@ -17,14 +17,15 @@ from ..manip.model.guidance_optimizer_hoi_jax import (
 #     se3_to_wxyz_xyz,
 #     wxyz_xyz_to_se3,
 # )
-from .trainer_hoi import gen_vis_res, vis_gen_process
+from .trainer_hoi import gen_vis_res, vis_gen_process, gen_vis_hoi_res
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
 )
 from ..manip.data import build_dataloader
 from ..utils.evaluation_metrics import compute_wTo_error
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
-
+from ..manip.model import fncmano_jax
+from pathlib import Path
 device = torch.device("cuda:0")
 
 
@@ -39,6 +40,10 @@ def build_model_from_ckpt(opt):
     diffusion_model.to(device)
     return diffusion_model
 
+
+def test_long_guided_generation():
+    
+    return 
 
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
     model_cfg = diffusion_model.opt
@@ -64,6 +69,28 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         padding_mask = tmp_mask[:, None, :]
 
         metrics = {}
+        for i in range(0):
+            guided_object_pred_raw, info = diffusion_model.sample_raw(
+                torch.randn_like(sample["target"]),
+                sample["condition"],
+                padding_mask=padding_mask,
+                guide=False,
+                obs=sample,
+                newPoints=sample["newPoints"],
+                hand_raw=sample["hand_raw"],
+                rtn_x_list=True,
+            )
+
+            pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
+            pred_dict["newMesh"] = sample["newMesh"]
+            gen_one(
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                output=pred_dict,
+                name=f"test_sample_{i}_{b:04d}",
+            )        
         guided_object_pred_raw, info = diffusion_model.sample_raw(
             torch.randn_like(sample["target"]),
             sample["condition"],
@@ -73,6 +100,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             newPoints=sample["newPoints"],
             hand_raw=sample["hand_raw"],
             rtn_x_list=True,
+        )
+
+        gen_vis_hoi_res(
+            diffusion_model,
+            viz_off,
+            model_cfg,
+            step=0,
+            batch=sample,
+            output={"pred_raw": guided_object_pred_raw},
+            pref=f"test_guided_{b:04d}",
         )
 
         # tmp_file = "outputs/tmp.pkl"
@@ -114,34 +151,34 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         #     pref=f"test_guided_{b:04d}_xt",
         # )
 
-        # vis_gen_process(
-        #     info["x_0_packed_pred"],
-        #     diffusion_model,
-        #     viz_off,
-        #     model_cfg,
-        #     step=0,
-        #     batch=sample,
-        #     pref=f"test_guided_{b:04d}_x0",
-        # )
-
-        left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
-        right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
-
-        # print(guided_object_pred_raw.shape)
-        metrics_guided = compute_wTo_error(
-            guided_object_pred_raw, sample["target_raw"], sample["object_id"]
-        )
-        metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
-
-        gen_vis_res(
+        vis_gen_process(
+            info["x_0_packed_pred"],
             diffusion_model,
             viz_off,
             model_cfg,
             step=0,
             batch=sample,
-            output={"pred_raw": guided_object_pred_raw},
-            pref=f"test_guided_{b:04d}",
+            pref=f"test_guided_{b:04d}_x0",
         )
+
+        left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
+        right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
+
+        # print(guided_object_pred_raw.shape)
+        # metrics_guided = compute_wTo_error(
+        #     guided_object_pred_raw, sample["target_raw"], sample["object_id"]
+        # )
+        # metrics.update({f"{k}_guided": v for k, v in metrics_guided.items()})
+
+        # gen_vis_res(
+        #     diffusion_model,
+        #     viz_off,
+        #     model_cfg,
+        #     step=0,
+        #     batch=sample,
+        #     output={"pred_raw": guided_object_pred_raw},
+        #     pref=f"test_guided_{b:04d}",
+        # )
 
         if opt.post_guidance:
             # directly guide object_pred_raw
@@ -156,7 +193,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             #     phase="post",
             #     verbose=True,
             # )
-            pred_dict, _ = do_guidance_optimization(
+            post_pred_dict, _ = do_guidance_optimization(
                 pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
                 obs=obs,
                 left_mano_model=left_mano_model,
@@ -165,21 +202,33 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 phase="post",
                 verbose=True,
             )
+            post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
+            pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
+            pred_dict["newMesh"] = sample["newMesh"]
+            gen_one(
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                # batch=sample,
+                output=pred_dict,
+                name=f"test_post_{b:04d}",
+            )
             # post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
             # metrics_post = compute_wTo_error(
             #     post_object_pred_raw, sample["target_raw"], sample["object_id"]
             # )
             # metrics.update({f"{k}_post": v for k, v in metrics_post.items()})
 
-            gen_vis_res(
-                diffusion_model,
-                viz_off,
-                model_cfg,
-                step=0,
-                batch=sample,
-                output={"pred_raw": post_object_pred_raw},
-                pref=f"test_post_{b:04d}",
-            )
+            # gen_vis_res(
+            #     diffusion_model,
+            #     viz_off,
+            #     model_cfg,
+            #     step=0,
+            #     batch=sample,
+            #     output={"pred_raw": post_object_pred_raw},
+            #     pref=f"test_post_{b:04d}",
+            # )
 
         # Generate visualization for the guided prediction
 

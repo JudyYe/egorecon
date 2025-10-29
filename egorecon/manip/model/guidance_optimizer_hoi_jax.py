@@ -30,7 +30,9 @@ from typing_extensions import assert_never
 from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
 from egorecon.visualization.rerun_visualizer import RerunVisualizer
 import jaxlie
-from . import build_model, fncmano_jax
+from . import fncmano_jax
+
+ndc = True
 
 
 def se3_to_wxyz_xyz(se3):
@@ -52,6 +54,8 @@ GuidanceMode = Literal[
     "with_smoothness",  # L2 + smoothness
     "reproj_cd",  # Reprojection loss with points in correspondence
     "hoi_contact",  # reprojection + HOI contact loss
+    "hand_only",
+    "object_only",
 ]
 
 
@@ -62,38 +66,44 @@ class JaxGuidanceParams:
     j3d_weight: float = 10.0
 
     use_j2d: jdc.Static[bool] = True
-    j2d_weight: float = 1.0
+    j2d_weight: float = 10.0
 
     use_contact_obs: jdc.Static[bool] = True
     contact_obs_weight: float = 1
 
+    use_static: jdc.Static[bool] = True
+    static_weight: float = 1.0
 
-    smoothness_weight: float = 0.1
-    use_smoothness: jdc.Static[bool] = False
+    use_obj_smoothness: jdc.Static[bool] = True
+    obj_vel_weight: float = 1.0
+    obj_acc_weight: float = 1.0
+
+    use_hand_smoothness: jdc.Static[bool] = True
+    hand_vel_weight: float = 1.0
+    hand_acc_weight: float = 1.0
 
     # Reprojection cost weights
     reproj_weight: float = 1.0
-    use_reproj_cd: jdc.Static[bool] = False
+    use_reproj_cd: jdc.Static[bool] = True
+
+    use_reproj_com: jdc.Static[bool] = False
 
     use_abs_contact: jdc.Static[bool] = True
     use_rel_contact: jdc.Static[bool] = True
-    contact_weight: float = 10.0
-    rel_contact_weight: float = 40.0
+    contact_weight: float = 1.0
+    rel_contact_weight: float = 1.0
 
     # smoothness weights
     tsl_weight: float = 1.0
     quat_weight: float = 1.0
 
-    body_quat_vel_smoothness_weight: float = 5.0
-    body_quat_smoothness_weight: float = 1.0
-    body_quat_delta_smoothness_weight: float = 10.0
-
-    hand_quat_smoothness_weight = 1.0
-
     contact_th: float = 0.5
 
     # Optimization parameters
-    lambda_initial: float = 0.1  # Increased for better convergence
+    lambda_initial: float = 1e4  # Increased for better convergence
+    # lambda_initial: float = 1e-4  
+    step_quality_min: float = 1e-4
+    # step_quality_min: float = 1e-5  
     max_iters: jdc.Static[int] = 50  # Increased for better convergence
 
     @staticmethod
@@ -101,27 +111,41 @@ class JaxGuidanceParams:
         mode: GuidanceMode,
         phase: Literal["inner", "post", "fp"],
     ) -> JaxGuidanceParams:
-        if mode == "simple_l2":
+        if mode == "hoi_contact":
             return JaxGuidanceParams(
-                use_smoothness=False,
+                # use_obj_smoothness=False,
                 max_iters=5
                 if phase == "inner"
-                else 20,  # Much faster for paper performance
+                else 50,  # Much faster for paper performance
             )
-        elif mode == "with_smoothness":
+        elif mode == "object_only":
+            max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
-                use_smoothness=True,
-                smoothness_weight=0.1,
-                max_iters=3
-                if phase == "inner"
-                else 5,  # Much faster for paper performance
-            )
-        elif mode == "reproj_corrsp":
+                use_j2d=False,
+                use_j3d=False,
+                use_contact_obs=False,
+                use_static=False,
+                use_reproj_com=True,
+                use_reproj_cd=False,
+                use_abs_contact=False,
+                use_rel_contact=False,
+                use_obj_smoothness=False,
+                max_iters=max_iters,
+            )            
+        elif mode == "hand_only":
+            max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
-                use_l2=False,
-                use_reproj=True,
-                reproj_weight=1.0,
-                max_iters=5 if phase == "inner" else 50,
+                use_j2d=False,
+                use_hand_smoothness=True,
+                use_j3d=False,
+                use_contact_obs=False,
+                use_static=False,
+                use_reproj_com=False,
+                use_reproj_cd=False,
+                use_abs_contact=False,
+                use_rel_contact=False,
+                use_obj_smoothness=False,
+                max_iters=max_iters,
             )
         elif mode == "reproj_cd":
             if phase == "fp":
@@ -137,7 +161,7 @@ class JaxGuidanceParams:
                 use_abs_contact=True,
                 use_rel_contact=True,
                 reproj_weight=1.0,
-                use_smoothness=True,
+                use_obj_smoothness=True,
                 max_iters=max_iters,
             )
         else:
@@ -348,6 +372,7 @@ def _optimize(
     left_shaped = left_mano_model.with_shape(jnp.mean(left_betas, axis=0))
     right_shaped = right_mano_model.with_shape(jnp.mean(right_betas, axis=0))
 
+
     def do_forward_kinematics_two_hands(
         vals: jaxls.VarValues,
         left_params: _LeftHandParamsVar,
@@ -428,9 +453,9 @@ def _optimize(
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
             wJoints_traj = joints_traj.reshape(-1, 3)
 
-            j2d_pred = project_jax_pinhole(wJoints_traj, target_wTc, target_intr, ndc=True)
-            print('j2d_pred', j2d_pred.shape, target_j2d.shape)
+            j2d_pred = project_jax_pinhole(wJoints_traj, target_wTc, target_intr, ndc=ndc)
             diff = j2d_pred - target_j2d  # (J, 2)
+            print('j2d', diff.shape, j2d_pred.shape, target_j2d.shape)
             diff = guidance_params.j2d_weight * diff.flatten()
             return diff
             
@@ -474,7 +499,86 @@ def _optimize(
             diff = guidance_params.contact_weight * diff.flatten()
             return diff
 
-    if guidance_params.use_smoothness:
+    if guidance_params.use_hand_smoothness:
+        @cost_with_args(
+            _LeftHandParamsVar(jnp.arange(timesteps - 1)),
+            _LeftHandParamsVar(jnp.arange(1, timesteps)),
+            _RightHandParamsVar(jnp.arange(timesteps - 1)),
+            _RightHandParamsVar(jnp.arange(1, timesteps)),
+        )
+        def hand_delta_smoothness_cost(
+            vals: jaxls.VarValues,
+            left_cur: _LeftHandParamsVar,
+            left_next: _LeftHandParamsVar,
+            right_cur: _RightHandParamsVar,
+            right_next: _RightHandParamsVar,
+        ) -> jax.Array:
+            l_mesh_cur, r_mesh_cur = do_forward_kinematics_two_hands(
+                vals, left_cur, right_cur
+            )
+            l_joints_cur = l_mesh_cur.joints
+            r_joints_cur = r_mesh_cur.joints
+
+            l_mesh_next, r_mesh_next = do_forward_kinematics_two_hands(
+                vals, left_next, right_next
+            )
+            l_joints_next = l_mesh_next.joints
+            r_joints_next = r_mesh_next.joints
+
+            l_delta = l_joints_next - l_joints_cur
+            r_delta = r_joints_next - r_joints_cur
+            diff = jnp.concatenate([l_delta, r_delta], axis=0)
+            diff = guidance_params.hand_vel_weight * diff.flatten()
+            return diff
+
+        @cost_with_args(
+            _LeftHandParamsVar(jnp.arange(timesteps - 2)),
+            _LeftHandParamsVar(jnp.arange(1, timesteps - 1)),
+            _LeftHandParamsVar(jnp.arange(2, timesteps)),
+            _RightHandParamsVar(jnp.arange(timesteps - 2)),
+            _RightHandParamsVar(jnp.arange(1, timesteps - 1)),
+            _RightHandParamsVar(jnp.arange(2, timesteps)),
+        )
+        def hand_vel_smoothness_cost(
+            vals: jaxls.VarValues,
+            left_t0: _LeftHandParamsVar,
+            left_t1: _LeftHandParamsVar,
+            left_t2: _LeftHandParamsVar,
+            right_t0: _RightHandParamsVar,
+            right_t1: _RightHandParamsVar,
+            right_t2: _RightHandParamsVar,
+        ) -> jax.Array:
+            left_mesh_t0, right_mesh_t0 = do_forward_kinematics_two_hands(
+                vals, left_t0, right_t0
+            )
+            left_joints_t0 = left_mesh_t0.joints
+            right_joints_t0 = right_mesh_t0.joints
+
+            left_mesh_t1, right_mesh_t1 = do_forward_kinematics_two_hands(
+                vals, left_t1, right_t1
+            )
+            left_joints_t1 = left_mesh_t1.joints
+            right_joints_t1 = right_mesh_t1.joints
+
+            left_mesh_t2, right_mesh_t2 = do_forward_kinematics_two_hands(
+                vals, left_t2, right_t2
+            )
+            left_joints_t2 = left_mesh_t2.joints
+            right_joints_t2 = right_mesh_t2.joints
+
+            left_vel_01 = left_joints_t1 - left_joints_t0
+            right_vel_01 = right_joints_t1 - right_joints_t0
+            left_vel_12 = left_joints_t2 - left_joints_t1
+            right_vel_12 = right_joints_t2 - right_joints_t1
+
+            left_acc_012 = left_vel_12 - left_vel_01
+            right_acc_012 = right_vel_12 - right_vel_01
+
+            diff = jnp.concatenate([left_acc_012, right_acc_012], axis=0)
+            diff = guidance_params.hand_acc_weight * diff.flatten()
+            return diff
+
+    if guidance_params.use_obj_smoothness:
         # smoothness on
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
@@ -486,21 +590,11 @@ def _optimize(
             next: _SE3TrajectoryVar,
         ) -> jax.Array:
             # don't be too far away from the initial pose
-            curdelt = jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(
-                init_quats[current.id]
-            )
-            nexdelt = jaxlie.SE3(vals[next]).inverse() @ jaxlie.SE3(init_quats[next.id])
-
-            dist1 = dist_residual(
-                guidance_params.body_quat_delta_smoothness_weight,
-                curdelt.inverse() @ nexdelt,
-            )
             dist2 = dist_residual(
-                guidance_params.body_quat_smoothness_weight,
+                guidance_params.obj_vel_weight,
                 jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]),
             )
-
-            return jnp.concatenate([dist1, dist2])
+            return jnp.concatenate([dist2])
 
         # smoothness on velocity
         @cost_with_args(
@@ -516,12 +610,8 @@ def _optimize(
         ) -> jax.Array:
             curdelt = jaxlie.SE3(vals[t0]).inverse() @ jaxlie.SE3(vals[t1])
             nexdelt = jaxlie.SE3(vals[t1]).inverse() @ jaxlie.SE3(vals[t2])
-            # return (
-            #     guidance_params.body_quat_vel_smoothness_weight
-            #     * (curdelt.inverse() @ nexdelt).log().flatten()
-            # )
             return dist_residual(
-                guidance_params.body_quat_vel_smoothness_weight,
+                guidance_params.obj_acc_weight,
                 curdelt.inverse() @ nexdelt,
             )
 
@@ -577,16 +667,160 @@ def _optimize(
             )
             return cost.flatten()
 
-    # if guidance_params.use_static:
-    #     @cost_with_args(
-    #         _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
-    #         _SE3TrajectoryVar(jnp.arange(1, timesteps)),
-    #         joints_traj[:-1],
-    #         joints_traj[1:],
-    #         target_newPoints[None],
-    #         target_contact[:-1],
-    #         target_contact[1:]
-    #     )
+    if guidance_params.use_rel_contact:
+        # approximate contact label
+        # smoothness on 
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+            _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+            _LeftHandParamsVar(jnp.arange(timesteps - 1)),
+            _RightHandParamsVar(jnp.arange(timesteps - 1)),
+            _LeftHandParamsVar(jnp.arange(1, timesteps)),
+            _RightHandParamsVar(jnp.arange(1, timesteps)),
+            target_newPoints[None],
+            _ContactVar(jnp.arange(timesteps - 1)),
+            _ContactVar(jnp.arange(1, timesteps)),
+        )
+        def relative_contact_cost(
+            vals: jaxls.VarValues,
+            wTo_cur: _SE3TrajectoryVar,  
+            wTo_next: _SE3TrajectoryVar,
+            left_params_cur: _LeftHandParamsVar,
+            right_params_cur: _RightHandParamsVar,
+            left_params_next: _LeftHandParamsVar,
+            right_params_next: _RightHandParamsVar,
+            target_newPoints: jax.Array,
+            contact_cur: _ContactVar,
+            contact_next: _ContactVar,
+        ) -> jax.Array:
+            wTo_cur = jaxlie.SE3(vals[wTo_cur])
+            wTo_next = jaxlie.SE3(vals[wTo_next]) 
+            contact_cur = vals[contact_cur]
+            contact_next = vals[contact_next]
+            # left_params_cur = vals[left_params_cur]
+            # right_params_cur = vals[right_params_cur]
+            # left_params_next = vals[left_params_next]
+            # right_params_next = vals[right_params_next]
+
+            # forward to get joints
+            left_mesh, right_mesh = do_forward_kinematics_two_hands(
+                vals, left_params_cur, right_params_cur
+            )
+            left_joints = left_mesh.joints
+            right_joints = right_mesh.joints
+            joints_traj_cur = jnp.concatenate([left_joints, right_joints], axis=0)
+            joints_traj_cur = joints_traj_cur.reshape(-1, 3)
+                
+            left_mesh, right_mesh = do_forward_kinematics_two_hands(
+                vals, left_params_next, right_params_next
+            )
+            left_joints = left_mesh.joints
+            right_joints = right_mesh.joints
+            joints_traj_next = jnp.concatenate([left_joints, right_joints], axis=0)
+            joints_traj_next = joints_traj_next.reshape(-1, 3)
+
+            current_points = wTo_cur @ target_newPoints
+            next_points = wTo_next @ target_newPoints  # (P, 3)
+
+            J = joints_traj_cur.shape[0]
+
+            # minimal pairwise distance 
+            dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_cur[None, :, :], axis=-1)  # (P, J)
+
+            # is_contact = (contact_cur < th) & (contact_next < th)  # (2,)
+            # array((0, 1))
+            is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
+
+            # p_near is the nearest point on the object to the current each joint
+            p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
+            p_near = current_points[p_near_ind] - joints_traj_cur # (J, 3)  # relative position to the joint
+            p_near_next = next_points[p_near_ind] - joints_traj_next # (J, 3)  # relative position to the joint
+
+            current_rot = wTo_cur.rotation()
+            next_rot = wTo_next.rotation()
+
+            # prox_next = joints_traj_next + next_rot @ current_rot.inverse() @ p_near  # (J, 3)  # relative position to the joint
+            # jax.fdebug.print('prox_next', prox_next.shape)
+            res = p_near_next - next_rot @ current_rot.inverse() @ p_near
+
+            dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
+            # print(dist_prox.shape)
+            
+            contact_cost = guidance_params.rel_contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
+
+            no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.rel_contact_weight  # (2, J//2)
+            cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
+
+            # is_static = (((contact_cur <= 0.5) & (contact_cur <= 0.5)).sum(-1) >= 2) # (1, 2)
+            # res = wTo_next.inverse() @  wTo_cur
+            # res_cost = is_static * dist_residual(guidance_params.rel_contact_weight, res)
+
+            # cost = jnp.concatenate([cost.flatten(), res_cost.flatten()])
+            return cost.flatten()
+
+    if guidance_params.use_static:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
+            _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+            _ContactVar(jnp.arange(timesteps - 1)),
+            _ContactVar(jnp.arange(1, timesteps)),
+            target_newPoints[None],
+        )
+        def static_cost(
+            vals: jaxls.VarValues,
+            wTo_cur: _SE3TrajectoryVar,
+            wTo_next: _SE3TrajectoryVar,
+            contact_cur: _ContactVar,
+            contact_next: _ContactVar,
+            target_newPoints: jax.Array,
+        ) -> jax.Array:
+            wTo_cur = jaxlie.SE3(vals[wTo_cur])
+            wTo_next = jaxlie.SE3(vals[wTo_next])
+            contact_cur = vals[contact_cur]
+            contact_next = vals[contact_next]
+            current_points = wTo_cur @ target_newPoints
+            next_points = wTo_next @ target_newPoints
+
+            wPoints_diff = (next_points - current_points)
+
+            static_mask = (contact_cur < 0.5) & (contact_next < 0.5)
+            static_mask = static_mask[0] & static_mask[1]
+            static_cost = guidance_params.static_weight * (static_mask * wPoints_diff).flatten()    
+            return static_cost
+
+    if guidance_params.use_reproj_com:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            target_x2d,
+            target_wTc,
+            target_newPoints[None],
+            target_intr[None],
+        )
+        def reprojection_cost_com(
+            vals: jaxls.VarValues,
+            var_traj: _SE3TrajectoryVar,
+            target_x2d: jax.Array,
+            target_wTc: jax.Array,
+            target_newPoints: jax.Array,
+            target_intr: jax.Array,
+        ) -> jax.Array:
+            """Reprojection cost: project object points and compare with 2D observations.
+            but target_x2d is not in correspondence, you need to find the closest point in target_x2d to the projected point.
+            """
+            current_traj = vals[var_traj]  # (7, ) - wxyz_xyz format
+
+            # inside (7,) (5000, 2) (7,) (5000, 3) (3, 3)
+            # Project object points using current trajectory
+            projected_2d = project_jax(
+                target_newPoints, current_traj, target_wTc, target_intr, ndc=ndc
+            )  # (P, 2)
+
+            pred_com = projected_2d.mean(axis=0)
+            target_com = target_x2d.mean(axis=0)
+            diff = pred_com - target_com
+
+            return guidance_params.reproj_weight * diff.flatten()
+
 
     if guidance_params.use_reproj_cd:
         assert (
@@ -619,7 +853,7 @@ def _optimize(
             # inside (7,) (5000, 2) (7,) (5000, 3) (3, 3)
             # Project object points using current trajectory
             projected_2d = project_jax(
-                target_newPoints, current_traj, target_wTc, target_intr, ndc=True
+                target_newPoints, current_traj, target_wTc, target_intr, ndc=ndc
             )
             dist, nn_idx, x2d_nn = knn_jax(projected_2d, target_x2d, k=1)
             dist2, nn_idx2, oPoints_nn = knn_jax(target_x2d, projected_2d, k=1)
@@ -649,7 +883,8 @@ def _optimize(
         ),
         linear_solver="conjugate_gradient",
         trust_region=jaxls.TrustRegionConfig(
-            lambda_initial=guidance_params.lambda_initial
+            lambda_initial=guidance_params.lambda_initial,
+            step_quality_min=guidance_params.step_quality_min
         ),
         termination=jaxls.TerminationConfig(max_iterations=guidance_params.max_iters),
         verbose=verbose,
@@ -702,6 +937,7 @@ def knn_jax(xPoints, yPoints, k=1):
 
     return dist, nn_idx, yPoints_nn
 
+
 def project_jax_pinhole(wJoints, wTc, intr, ndc=False, H=None, W=None):
     """JAX version of projection function for optimization.
     Args:
@@ -728,6 +964,7 @@ def project_jax_pinhole(wJoints, wTc, intr, ndc=False, H=None, W=None):
         iJoints = jnp.stack([x, y], axis=-1)
     return iJoints
 
+    
 def project_jax(oPoints, wTo, wTc, intr, ndc=False, H=None, W=None):
     """JAX version of projection function for optimization.
 
@@ -815,6 +1052,7 @@ def project(wTc, intr, oPoints, wTo, wPoints=None, ndc=False, H=None, W=None):
 
 
 def test_optimization(save_dir="outputs/debug_guidance_hoi"):
+    from .model import build_model
     device = "cuda:0"
     opt_file = "outputs/noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2/opt.yaml"
     opt = OmegaConf.load(opt_file)
@@ -835,7 +1073,7 @@ def test_optimization(save_dir="outputs/debug_guidance_hoi"):
         batch["intr"],
         batch["newPoints"],
         batch["wTo"],
-        ndc=True,
+        ndc=ndc,
     )  # (BS, T, P, 2)
     kP = 1000
     ind_list = []
@@ -855,7 +1093,7 @@ def test_optimization(save_dir="outputs/debug_guidance_hoi"):
         None,
         None,
         wPoints=batch["hand_raw"].reshape(B, T, -1, 3),
-        ndc=True,
+        ndc=ndc,
     )
     print('j2d', j2d.shape)
 
@@ -884,7 +1122,7 @@ def test_optimization(save_dir="outputs/debug_guidance_hoi"):
         use_reproj_cd=True,
         contact_th=0.5,
         max_iters=100,
-        use_smoothness=True,
+        use_obj_smoothness=True,
         
         use_j3d=False,
         use_j2d=True,

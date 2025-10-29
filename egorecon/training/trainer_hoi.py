@@ -17,6 +17,10 @@ from ..manip.model.guidance_optimizer_jax import (
     se3_to_wxyz_xyz,
     wxyz_xyz_to_se3,
 )
+from ..manip.model.transformer_hand_to_object_diffusion_model import (
+    CondGaussianDiffusion,
+)
+from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from .trainer_proof_of_idea import Trainer as BaseTrainer
 import os.path as osp
 
@@ -25,12 +29,15 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
     video_list = []
     for i, (x, t) in enumerate(tqdm(x_list)):
         x_raw = model.denormalize_data(x)
+        pred_dict = model.decode_dict(x_raw)
         f_pref = f"{pref}_process_{i:04d}"
-        log_dict = gen_vis_res(
-            model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref
+        pred_dict["newMesh"] = batch["newMesh"]
+        log_dict = gen_one(
+            model, viz_off, opt, step, pred_dict, name=f_pref
+            # model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref
         )
-        print(log_dict[f"{f_pref}vis_pred"]._path, t)
-        video_list.append((log_dict[f"{f_pref}vis_pred"], t))
+        print(log_dict[f"{f_pref}"]._path, t)
+        video_list.append((log_dict[f"{f_pref}"], t))
 
     print(video_list)
     # read and concat these videos
@@ -264,7 +271,7 @@ class Trainer(BaseTrainer):
             val_data_dict_for_vis = {
                 k: v[:bs_for_vis] for k, v in val_data_dict.items()
             }
-            log_dict = self.gen_vis_res(
+            log_dict = gen_vis_hoi_res(
                 self.model,
                 self.viz_off,
                 self.opt,
@@ -277,7 +284,7 @@ class Trainer(BaseTrainer):
                 wandb.log(log_dict, step=self.step)
 
             if sample_guide:
-                _ = self.gen_vis_res(
+                _ = gen_vis_hoi_res(
                     self.model,
                     self.viz_off,
                     self.opt,
@@ -286,7 +293,7 @@ class Trainer(BaseTrainer):
                     {"pred_raw": post_object_pred_raw[:bs_for_vis]},
                     pref=f"{pref}_post",
                 )
-                log_dict = self.gen_vis_res(
+                log_dict = gen_vis_hoi_res(
                     self.model,
                     self.viz_off,
                     self.opt,
@@ -305,53 +312,53 @@ class Trainer(BaseTrainer):
     def test(self):
         for batch in self.val_dl:
             batch = model_utils.to_cuda(batch)
-            self.gen_vis_res(
+            gen_vis_hoi_res(
                 self.model, self.viz_off, self.opt, self.step, batch, None, pref="test"
             )
         return
 
-    def gen_vis_res(self, model, viz_off, opt, step, batch, output, pref):
-        all_log_dict = {}
-        if self.opt.hand == "cond":
-            # batch_dict = {
-            #     "newMesh": batch["newMesh"],
-            #     "left_hand_params": batch["left_hand_params"],
-            #     "right_hand_params": batch["right_hand_params"],
-            #     "contact": batch["contact"],
-            #     "wTo": batch["target_raw"],
-            # }
-            target_raw = self.model.denormalize_data(batch["target"])
-            batch_dict = self.model.decode_dict(target_raw)
-            batch_dict["newMesh"] = batch["newMesh"]
-            batch_dict["contact"] = batch["contact"]
-            batch_dict["left_hand_params"] = batch["left_hand_params"]
-            batch_dict["right_hand_params"] = batch["right_hand_params"]
+def gen_vis_hoi_res(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: OmegaConf, step: int, batch: dict, output: dict, pref: str):
+    all_log_dict = {}
+    if opt.hand == "cond":
+        # batch_dict = {
+        #     "newMesh": batch["newMesh"],
+        #     "left_hand_params": batch["left_hand_params"],
+        #     "right_hand_params": batch["right_hand_params"],
+        #     "contact": batch["contact"],
+        #     "wTo": batch["target_raw"],
+        # }
+        target_raw = model.denormalize_data(batch["target"])
+        batch_dict = model.decode_dict(target_raw)
+        batch_dict["newMesh"] = batch["newMesh"]
+        batch_dict["contact"] = batch["contact"]
+        batch_dict["left_hand_params"] = batch["left_hand_params"]
+        batch_dict["right_hand_params"] = batch["right_hand_params"]
 
-            log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, batch_dict, pref +'_gt')
+        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref +'_gt')
+        all_log_dict.update(log_dict)
+
+        if output is not None:
+            pred_dict = batch_dict
+            pred_dict["wTo"] = model.decode_dict(output["pred_raw"])["wTo"]
+            log_dict = gen_one(model, viz_off, opt, step, pred_dict, pref +'_pred')
             all_log_dict.update(log_dict)
 
-            if output is not None:
-                pred_dict = batch_dict
-                pred_dict["wTo"] = self.model.decode_dict(output["pred_raw"])["wTo"]
-                log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, pred_dict, pref +'_pred')
-                all_log_dict.update(log_dict)
+    elif opt.hand == "cond_out":
+        print("target raw shape:", batch["target_raw"].shape)
+        target_raw = model.denormalize_data(batch["target"])
+        batch_dict = model.decode_dict(target_raw)
+        batch_dict["newMesh"] = batch["newMesh"]
+        batch_dict["contact"] = batch["contact"]
+        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref +'_gt')
+        all_log_dict.update(log_dict)
 
-        elif self.opt.hand == "cond_out":
-            print("target raw shape:", batch["target_raw"].shape)
-            target_raw = self.model.denormalize_data(batch["target"])
-            batch_dict = self.model.decode_dict(target_raw)
-            batch_dict["newMesh"] = batch["newMesh"]
-            batch_dict["contact"] = batch["contact"]
-            log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, batch_dict, pref +'_gt')
+        if output is not None:
+            pred_dict = model.decode_dict(output["pred_raw"])
+            pred_dict["newMesh"] = batch["newMesh"]
+            log_dict = gen_one(model, viz_off, opt, step, pred_dict, pref +'_pred')
             all_log_dict.update(log_dict)
 
-            if output is not None:
-                pred_dict = self.model.decode_dict(output["pred_raw"])
-                pred_dict["newMesh"] = batch["newMesh"]
-                log_dict = gen_one(self.model, self.viz_off, self.opt, self.step, pred_dict, pref +'_pred')
-                all_log_dict.update(log_dict)
-
-        return all_log_dict
+    return all_log_dict
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()

@@ -69,7 +69,7 @@ class Pt3dVisualizer:
             contact_obj_textures = mesh_utils.get_color('red').expand(B, V, 3).to(device)
             contact_left = contact[...,  0].reshape(B, 1, 1).to(device)  # (B, )
             contact_right = contact[...,  1].reshape(B, 1, 1).to(device)  # (B, )
-            contact_obj = ((contact_left + contact_right) > 0).float()
+            contact_obj = ((contact_left > 0.5) & (contact_right > 0.5)).float()
 
             left_textures = contact_left * contact_hand_textures + (1 - contact_left) * left_textures
             right_textures = contact_right * contact_hand_textures + (1 - contact_right) * right_textures

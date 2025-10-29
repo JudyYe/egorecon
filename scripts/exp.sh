@@ -45,6 +45,15 @@ spoon: 225397651484143
 
 python -m preprocess.est_noise
 
+python -m egorecon.training.test_hoi  -m  \
+  expname=noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2 \
+  ckpt_index=model-6.pt \
+  guide.hint=hand_only \
+  ddim=true \
+  test_folder=eval_\${guide.hint}_ddim\${ddim}_test \
+  testdata=hotclip_train test_num=5 \
+
+
 -
 python -m egorecon.training.trainer_hoi  -m    \
   expname=noisy_hand/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_smoothness}_bps\${condition.bps}  \
@@ -191,8 +200,7 @@ python -m egorecon.training.trainer_hoi  -m  \
 python -m egorecon.training.test_hoi  -m  \
   expname=hoi/contactTrue_theta \
   ckpt_index=model-3.pt \
-  ddim=true
-
+  ddim=true \
   ckpt=\${exp_dir}/weights/model-19.pt \
   test_folder=eval_\${guide.hint}_ddim\${ddim}
 
@@ -276,7 +284,7 @@ python -m egorecon.manip.data.hand2obj_w_geom_motion \
   experiment=hoi \
   output.contact=false hand_rep=theta hand=out traindata=hot3d_mini datasets.split=mini 
 
-python -m egorecon.manip.model.guidance_optimizer_jax
+python -m egorecon.manip.model.guidance_optimizer_hoi_jax
 7it / s  -> 5it? 
 
 python -m egorecon.training.trainer_proof_of_idea  -m  \
