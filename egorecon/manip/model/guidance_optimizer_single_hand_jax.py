@@ -207,6 +207,26 @@ def _optimize_single_hand(
     return out_hand_params, {}
 
 
+
+def vis_joints(save_dir="outputs/debug_guidance"):
+    from egorecon.utils.motion_repr import HandWrapper
+    device = "cuda:0"
+    opt_file = "outputs/noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2/opt.yaml"
+    opt = OmegaConf.load(opt_file)
+
+    save = pickle.load(open("outputs/tmp.pkl", "rb"))
+    batch = save["sample"]
+    batch = model_utils.to_cuda(batch, "cpu")
+
+    side = "left"
+    hand_wrapper = HandWrapper().to(device)
+    jax_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side=side)
+
+    
+
+
+
+    return 
 def test_optimization(save_dir="outputs/debug_guidance"):
     """Test the hand optimization."""
     device = "cuda:0"

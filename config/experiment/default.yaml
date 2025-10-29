@@ -56,6 +56,9 @@ datasets:
   split: mini
   test_split: mini
 
+  use_cache: true
+  save_cache: true
+
   augument:
     motion_threshold: 0.05
     

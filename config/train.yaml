@@ -40,4 +40,5 @@ ckpt: null
 # seed for random number generators in pytorch, numpy and python.random
 seed: null
 
-ddim: false
+# ddim: false
+sample: ddim

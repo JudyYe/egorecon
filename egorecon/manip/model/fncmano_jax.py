@@ -192,52 +192,22 @@ class MANOShaped:
         elif local_quats is None:
             raise ValueError("Must provide either local_quats or pca")
         
-        return MANOShapedAndPosed(
-            shaped_model=self,
-            global_orient=global_orient,
-            transl=transl,
-            local_quats=local_quats,
-        )
-
-
-@jdc.pytree_dataclass
-class MANOShapedAndPosed:
-    """The MANO model with shape and pose applied."""
-
-    shaped_model: MANOShaped
-    """Underlying shaped body model."""
-
-    global_orient: Float[Array, "... 3"]
-    """Root rotation in axis-angle format."""
-
-    transl: Float[Array, "... 3"]
-    """Translation vector."""
-
-    local_quats: Float[Array, "... 15 4"]
-    """Local joint orientations (15 hand joints)."""
-
-    def lbs(self, mano_order=False) -> MANOMesh:
-        """Apply linear blend skinning and return vertices and faces.
-
-        Returns:
-            MANOMesh with vertices and faces
-        """
         # Convert global_orient to quaternion
-        global_orient_quat = jaxlie.SO3.exp(self.global_orient).wxyz
+        global_orient_quat = jaxlie.SO3.exp(global_orient).wxyz
 
         # Concatenate root orientation with hand joints
         all_quats = jnp.concatenate(
-            [global_orient_quat[..., None, :], self.local_quats], axis=-2
+            [global_orient_quat[..., None, :], local_quats], axis=-2
         )  # (..., 16, 4)
 
         # Forward kinematics
-        parent_indices = self.shaped_model.body_model.parent_indices
+        parent_indices = self.body_model.parent_indices
         num_joints = parent_indices.shape[-1]
         assert num_joints == 16
 
         # Get relative transforms
         Ts_parent_child = jnp.concatenate(
-            [all_quats, self.shaped_model.t_parent_joint], axis=-1  
+            [all_quats, self.t_parent_joint], axis=-1  
         )  # (..., 16, 7)
 
         # Compute joint transforms
@@ -262,7 +232,83 @@ class MANOShapedAndPosed:
             upper=num_joints,
             body_fun=compute_joint,
             init_val=jnp.zeros_like(Ts_parent_child),
+        )        
+        return MANOShapedAndPosed(
+            shaped_model=self,
+            global_orient=global_orient,
+            transl=transl,
+            local_quats=local_quats,
+            Ts_world_joint=Ts_world_joint,
         )
+
+
+@jdc.pytree_dataclass
+class MANOShapedAndPosed:
+    """The MANO model with shape and pose applied."""
+
+    shaped_model: MANOShaped
+    """Underlying shaped body model."""
+
+    global_orient: Float[Array, "... 3"]
+    """Root rotation in axis-angle format."""
+
+    transl: Float[Array, "... 3"]
+    """Translation vector."""
+
+    local_quats: Float[Array, "... 15 4"]
+    """Local joint orientations (15 hand joints)."""
+
+    Ts_world_joint: Float[Array, "joints 7"]
+
+    def lbs(self, mano_order=False) -> MANOMesh:
+        """Apply linear blend skinning and return vertices and faces.
+
+        Returns:
+            MANOMesh with vertices and faces
+        """
+        # # Convert global_orient to quaternion
+        # global_orient_quat = jaxlie.SO3.exp(self.global_orient).wxyz
+
+        # # Concatenate root orientation with hand joints
+        # all_quats = jnp.concatenate(
+        #     [global_orient_quat[..., None, :], self.local_quats], axis=-2
+        # )  # (..., 16, 4)
+
+        # # Forward kinematics
+        # parent_indices = self.shaped_model.body_model.parent_indices
+        # num_joints = parent_indices.shape[-1]
+        # assert num_joints == 16
+
+        # # Get relative transforms
+        # Ts_parent_child = jnp.concatenate(
+        #     [all_quats, self.shaped_model.t_parent_joint], axis=-1  
+        # )  # (..., 16, 7)
+
+        # # Compute joint transforms
+        # identity = jaxlie.SE3.identity().wxyz_xyz
+        # def compute_joint(i: int, Ts_world_joint: Array) -> Array:
+        #     T_world_parent = jnp.where(
+        #         parent_indices[i] == -1,
+        #         # T_world_root,
+        #         # zeros
+        #         identity,
+        #         Ts_world_joint[..., parent_indices[i], :],
+        #     )
+        #     return Ts_world_joint.at[..., i, :].set(
+        #         (
+        #             jaxlie.SE3(T_world_parent) @ jaxlie.SE3(Ts_parent_child[..., i, :])
+        #         ).wxyz_xyz
+        #     )
+
+        # # Root + 15 hand joints
+        # Ts_world_joint = jax.lax.fori_loop(
+        #     lower=0,
+        #     upper=num_joints,
+        #     body_fun=compute_joint,
+        #     init_val=jnp.zeros_like(Ts_parent_child),
+        # )
+
+        Ts_world_joint = self.Ts_world_joint
 
         # Linear blend SKINNING 
         # Apply pose blend shapes

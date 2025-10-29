@@ -41,10 +41,7 @@ def build_model_from_ckpt(opt):
     return diffusion_model
 
 
-def test_long_guided_generation():
-    
-    return 
-
+@torch.no_grad()
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
     model_cfg = diffusion_model.opt
     viz_off = Pt3dVisualizer(
@@ -62,11 +59,15 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         sample = batch = model_utils.to_cuda(batch)
 
         seq_len = torch.tensor([sample["condition"].shape[1]]).to(device)
-        actual_seq_len = seq_len + 2
-        tmp_mask = torch.arange(model_cfg.model.window + 2, device=device).expand(
-            1, model_cfg.model.window + 2
-        ) < actual_seq_len[:, None].repeat(1, model_cfg.model.window + 2)
-        padding_mask = tmp_mask[:, None, :]
+        if model_cfg.get('legacy_mask', True):
+            actual_seq_len = seq_len + 2
+            tmp_mask = torch.arange(model_cfg.model.window + 2, device=device).expand(
+                1, model_cfg.model.window + 2
+            ) < actual_seq_len[:, None].repeat(1, model_cfg.model.window + 2)
+            padding_mask = tmp_mask[:, None, :]
+        else:
+            padding_mask = None
+        padding_mask = None            
 
         metrics = {}
         for i in range(0):
@@ -83,14 +84,15 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
 
             pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
             pred_dict["newMesh"] = sample["newMesh"]
-            gen_one(
-                diffusion_model,
-                viz_off,
-                model_cfg,
-                step=0,
-                output=pred_dict,
-                name=f"test_sample_{i}_{b:04d}",
-            )        
+            if opt.vis_x:
+                gen_one(
+                    diffusion_model,
+                    viz_off,
+                    model_cfg,
+                    step=0,
+                    output=pred_dict,
+                    name=f"test_sample_{i}_{b:04d}",
+                )        
         guided_object_pred_raw, info = diffusion_model.sample_raw(
             torch.randn_like(sample["target"]),
             sample["condition"],
@@ -102,15 +104,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             rtn_x_list=True,
         )
 
-        gen_vis_hoi_res(
-            diffusion_model,
-            viz_off,
-            model_cfg,
-            step=0,
-            batch=sample,
-            output={"pred_raw": guided_object_pred_raw},
-            pref=f"test_guided_{b:04d}",
-        )
+        if opt.vis_x:
+            gen_vis_hoi_res(
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                batch=sample,
+                output={"pred_raw": guided_object_pred_raw},
+                pref=f"test_guided_{b:04d}",
+            )
 
         # tmp_file = "outputs/tmp.pkl"
 
@@ -151,15 +154,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         #     pref=f"test_guided_{b:04d}_xt",
         # )
 
-        vis_gen_process(
-            info["x_0_packed_pred"],
-            diffusion_model,
-            viz_off,
-            model_cfg,
-            step=0,
-            batch=sample,
-            pref=f"test_guided_{b:04d}_x0",
-        )
+        if opt.vis_x0_list:
+            vis_gen_process(
+                info["x_0_packed_pred"],
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                batch=sample,
+                pref=f"test_guided_{b:04d}_x0",
+            )
 
         left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
         right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
@@ -205,15 +209,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
             pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
             pred_dict["newMesh"] = sample["newMesh"]
-            gen_one(
-                diffusion_model,
-                viz_off,
-                model_cfg,
-                step=0,
-                # batch=sample,
-                output=pred_dict,
-                name=f"test_post_{b:04d}",
-            )
+            if opt.vis_x:
+                gen_one(
+                    diffusion_model,
+                    viz_off,
+                    model_cfg,
+                    step=0,
+                    # batch=sample,
+                    output=pred_dict,
+                    name=f"test_post_{b:04d}",
+                )
             # post_object_pred_raw = wxyz_xyz_to_se3(post_object_pred_raw)
             # metrics_post = compute_wTo_error(
             #     post_object_pred_raw, sample["target_raw"], sample["object_id"]
@@ -235,8 +240,12 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
 
 def set_test_cfg(opt, model_cfg):
     model_cfg.guide.hint = opt.guide.hint
-    model_cfg.ddim = opt.ddim
+    model_cfg.sample = opt.sample
     model_cfg.post_guidance = opt.post_guidance
+
+    model_cfg.datasets.window = opt.datasets.window
+    model_cfg.datasets.use_cache = opt.datasets.use_cache
+    model_cfg.datasets.save_cache = opt.datasets.save_cache
 
 
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
@@ -256,7 +265,10 @@ def main(opt):
         num_workers=1,
     )
 
-    test_guided_generation(diffusion_model, dl, opt)
+    if opt.test_mode == "guided":
+        test_guided_generation(diffusion_model, dl, opt)
+    elif opt.test_mode == "long_guided":
+        test_long_guided_generation(diffusion_model, dl, opt)
 
     return
 

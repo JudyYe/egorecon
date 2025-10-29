@@ -15,6 +15,7 @@ general:
 
 
 datasets:
+  window: ${model.window}
   t0: 300
   # one_window: true
   split: train

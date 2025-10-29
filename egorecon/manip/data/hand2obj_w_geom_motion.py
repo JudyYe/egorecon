@@ -281,6 +281,9 @@ class HandToObjectDataset(Dataset):
         print(f"{origin_size} -> {len(self.windows)} dynamic windows")
 
     def _create_windows(self):
+        use_cache = self.opt.datasets.use_cache
+        save_cache = self.opt.datasets.save_cache
+        
         cache_name = osp.join(
             self.opt.paths.data_dir,
             "cache",

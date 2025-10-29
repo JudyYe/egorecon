@@ -597,8 +597,11 @@ class CondGaussianDiffusion(nn.Module):
         # self.denoise_fn.eval()
         self.eval()
 
-        if self.opt.ddim:
+        sample_mode = self.opt.get('sample', 'ddim')
+        if sample_mode == "ddim":
             sample_loop_fn = self.ddim_sample_loop
+        elif sample_mode == 'ddim_long':
+            sample_loop_fn = self.ddim_sample_long
         else:
             sample_loop_fn = self.p_sample_loop
         sample_res = sample_loop_fn(
@@ -829,8 +832,8 @@ class CondGaussianDiffusion(nn.Module):
             hand = hand * mask.reshape(B, 1, 1)
 
             bps_cond = self.encode_bps_feature(newPoints) 
-            cond = torch.cat([orig_condition, hand], dim=-1)
-            cond = torch.cat([cond, bps_cond], dim=-2)  
+            cond = torch.cat([orig_condition, hand], dim=-1)  # concat in feature dimension
+            cond = torch.cat([cond, bps_cond], dim=-2)    # concat in time dimension
             # assert False, "well something is wrong"
         elif self.opt.condition.bps == 1:
             bps_cond = self.encode_bps_feature(newPoints)
@@ -928,6 +931,103 @@ class CondGaussianDiffusion(nn.Module):
         self.bps = torch.load(self.bps_path)
         self.bps_torch = bps_torch()
         self.register_buffer("obj_bps", self.bps["obj"])
+
+    def ddim_sample_long(self, shape, x_start, x_cond, padding_mask=None, guide=False, rtn_x_list=False, newPoints=None, hand_raw=None, **kwargs):
+        device = x_cond.device
+        window_size = self.opt.model.window
+        overlap_size = window_size // 2
+        seq_len = x_cond.shape[1]
+        start_time = None
+        canonical_overlap_weights = (
+            torch.from_numpy(
+                np.minimum(
+                    # Make this shape /```\
+                    overlap_size,
+                    np.minimum(
+                        # Make this shape: /
+                        np.arange(1, seq_len + 1),
+                        # Make this shape: \
+                        np.arange(1, seq_len + 1)[::-1],
+                    ),
+                )
+                / overlap_size,
+            )
+            .to(device)
+            .to(torch.float32)
+        )
+        alpha_bar_t = torch.cat([torch.ones((1, ), device=device), self.alphas_cumprod], dim=0)
+        alpha_t = 1 - self.betas
+
+        b = shape[0]
+        x_t_packed = torch.randn(shape, device=device)
+
+        obs = self.get_obs(guide=guide, batch=kwargs.get('obs', {}), shape=shape)
+        kwargs['obs'] = obs
+        ts = quadratic_ts()
+        # x_list = []
+        rtn = {'x_list': [], 'x_0_packed_pred': []}
+        for i in tqdm(range(len(ts) - 1)):
+            print(f"Sampling {i}/{len(ts) - 1}")
+            t = ts[i]
+            t_next = ts[i + 1]
+
+            with torch.inference_mode():
+                # Chop everything into windows.
+                x_0_packed_pred = torch.zeros_like(x_t_packed)
+                overlap_weights = torch.zeros((1, seq_len, 1), device=x_t_packed.device)
+
+                # Denoise each window.
+                for start_t in range(0, seq_len, window_size - overlap_size):
+                    end_t = min(start_t + window_size, seq_len)
+                    assert end_t - start_t > 0
+
+                    overlap_weights_slice = canonical_overlap_weights[
+                        None, : end_t - start_t, None
+                    ]
+                    overlap_weights[:, start_t:end_t, :] += overlap_weights_slice
+
+                    t_pt = torch.full((b,), t, device=device, dtype=torch.long)
+                    # denoise
+                    c = self.get_cond(x_cond[:, start_t:end_t], x_t_packed[:, start_t:end_t], t_pt, newPoints, hand_raw[:, start_t:end_t])
+                    model_output = self.denoise_fn(x_t_packed[:, start_t:end_t], t_pt, c, None)
+                    model_x0_pred = self.predict_start_from_noise_new(x_t_packed[:, start_t:end_t], t=t, noise=model_output)
+                    x_0_packed_pred[:, start_t:end_t] += model_x0_pred * overlap_weights_slice
+                    
+            x_0_packed_pred = x_0_packed_pred / overlap_weights
+
+            sigma_t = torch.cat(
+                [
+                    torch.zeros((1,), device=device),
+                    torch.sqrt(
+                        (1.0 - alpha_bar_t[:-1]) / (1 - alpha_bar_t[1:]) * (1 - alpha_t)
+                    )
+                    * 0.8,
+                ]
+            )
+            if guide:
+                x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+            x_t_packed = (
+                torch.sqrt(alpha_bar_t[t_next]) * x_0_packed_pred
+                + (
+                    torch.sqrt(1 - alpha_bar_t[t_next] - sigma_t[t] ** 2)
+                    * (x_t_packed - torch.sqrt(alpha_bar_t[t]) * x_0_packed_pred)
+                    / torch.sqrt(1 - alpha_bar_t[t] + 1e-1)
+                )
+                + sigma_t[t] * torch.randn(x_0_packed_pred.shape, device=device)
+            )
+            if rtn_x_list:
+                rtn['x_list'].append((x_t_packed.clone(), t))
+                rtn['x_0_packed_pred'].append((x_0_packed_pred.clone(), t))
+
+
+        if self.opt.post_guidance and kwargs.get('guide', False):
+            x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+        if rtn_x_list:
+            return x_t_packed, rtn
+        return x_t_packed
+
+
+
 
     def ddim_sample_loop(
         self,

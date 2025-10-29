@@ -125,8 +125,8 @@ class JaxGuidanceParams:
                 use_j3d=False,
                 use_contact_obs=False,
                 use_static=False,
-                use_reproj_com=True,
-                use_reproj_cd=False,
+                use_reproj_com=False,
+                use_reproj_cd=True,
                 use_abs_contact=False,
                 use_rel_contact=False,
                 use_obj_smoothness=False,
@@ -135,7 +135,7 @@ class JaxGuidanceParams:
         elif mode == "hand_only":
             max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
-                use_j2d=False,
+                use_j2d=True,
                 use_hand_smoothness=True,
                 use_j3d=False,
                 use_contact_obs=False,
@@ -361,10 +361,8 @@ def _optimize(
     assert wTo.shape == (timesteps, 7)
     assert target_intr.shape == (3, 3)
     assert target_newPoints.shape == (5000, 3)
-    # assert target_x2d.shape == (120, 5000, 2)
-    assert target_x2d.shape[0] == 120
     assert target_x2d.shape[2] == 2
-    assert target_wTc.shape == (120, 7)
+    assert target_wTc.shape[-1] == 7
 
 
     left_betas = left_hand_params[..., -10:]
@@ -387,7 +385,6 @@ def _optimize(
             pca=left_params[6:21],
             add_mean=True,
         )
-        left_mesh = left_mesh.lbs()
 
         right_mesh = right_shaped.with_pose(
             global_orient=right_params[:3],
@@ -395,7 +392,6 @@ def _optimize(
             pca=right_params[6:21],
             add_mean=True,
         )
-        right_mesh = right_mesh.lbs()
 
         return left_mesh, right_mesh
 
@@ -448,6 +444,8 @@ def _optimize(
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
             )
+            left_mesh = left_mesh.lbs()
+            right_mesh = right_mesh.lbs()
             left_joints = left_mesh.joints
             right_joints = right_mesh.joints
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
@@ -500,36 +498,36 @@ def _optimize(
             return diff
 
     if guidance_params.use_hand_smoothness:
-        @cost_with_args(
-            _LeftHandParamsVar(jnp.arange(timesteps - 1)),
-            _LeftHandParamsVar(jnp.arange(1, timesteps)),
-            _RightHandParamsVar(jnp.arange(timesteps - 1)),
-            _RightHandParamsVar(jnp.arange(1, timesteps)),
-        )
-        def hand_delta_smoothness_cost(
-            vals: jaxls.VarValues,
-            left_cur: _LeftHandParamsVar,
-            left_next: _LeftHandParamsVar,
-            right_cur: _RightHandParamsVar,
-            right_next: _RightHandParamsVar,
-        ) -> jax.Array:
-            l_mesh_cur, r_mesh_cur = do_forward_kinematics_two_hands(
-                vals, left_cur, right_cur
-            )
-            l_joints_cur = l_mesh_cur.joints
-            r_joints_cur = r_mesh_cur.joints
+    #     @cost_with_args(
+    #         _LeftHandParamsVar(jnp.arange(timesteps - 1)),
+    #         _LeftHandParamsVar(jnp.arange(1, timesteps)),
+    #         _RightHandParamsVar(jnp.arange(timesteps - 1)),
+    #         _RightHandParamsVar(jnp.arange(1, timesteps)),
+    #     )
+    #     def hand_delta_smoothness_cost(
+    #         vals: jaxls.VarValues,
+    #         left_cur: _LeftHandParamsVar,
+    #         left_next: _LeftHandParamsVar,
+    #         right_cur: _RightHandParamsVar,
+    #         right_next: _RightHandParamsVar,
+    #     ) -> jax.Array:
+    #         l_mesh_cur, r_mesh_cur = do_forward_kinematics_two_hands(
+    #             vals, left_cur, right_cur
+    #         )
+    #         l_joints_cur = l_mesh_cur.Ts_world_joint[..., 4:7]
+    #         r_joints_cur = r_mesh_cur.Ts_world_joint[..., 4:7]
 
-            l_mesh_next, r_mesh_next = do_forward_kinematics_two_hands(
-                vals, left_next, right_next
-            )
-            l_joints_next = l_mesh_next.joints
-            r_joints_next = r_mesh_next.joints
+    #         l_mesh_next, r_mesh_next = do_forward_kinematics_two_hands(
+    #             vals, left_next, right_next
+    #         )
+    #         l_joints_next = l_mesh_next.Ts_world_joint[..., 4:7]
+    #         r_joints_next = r_mesh_next.Ts_world_joint[..., 4:7]
 
-            l_delta = l_joints_next - l_joints_cur
-            r_delta = r_joints_next - r_joints_cur
-            diff = jnp.concatenate([l_delta, r_delta], axis=0)
-            diff = guidance_params.hand_vel_weight * diff.flatten()
-            return diff
+    #         l_delta = l_joints_next - l_joints_cur
+    #         r_delta = r_joints_next - r_joints_cur
+    #         diff = jnp.concatenate([l_delta, r_delta], axis=0)
+    #         diff = guidance_params.hand_vel_weight * diff.flatten()
+    #         return diff
 
         @cost_with_args(
             _LeftHandParamsVar(jnp.arange(timesteps - 2)),
@@ -551,20 +549,20 @@ def _optimize(
             left_mesh_t0, right_mesh_t0 = do_forward_kinematics_two_hands(
                 vals, left_t0, right_t0
             )
-            left_joints_t0 = left_mesh_t0.joints
-            right_joints_t0 = right_mesh_t0.joints
+            left_joints_t0 = left_mesh_t0.Ts_world_joint[..., 4:7]
+            right_joints_t0 = right_mesh_t0.Ts_world_joint[..., 4:7]
 
             left_mesh_t1, right_mesh_t1 = do_forward_kinematics_two_hands(
                 vals, left_t1, right_t1
             )
-            left_joints_t1 = left_mesh_t1.joints
-            right_joints_t1 = right_mesh_t1.joints
+            left_joints_t1 = left_mesh_t1.Ts_world_joint[..., 4:7]
+            right_joints_t1 = right_mesh_t1.Ts_world_joint[..., 4:7]
 
             left_mesh_t2, right_mesh_t2 = do_forward_kinematics_two_hands(
                 vals, left_t2, right_t2
             )
-            left_joints_t2 = left_mesh_t2.joints
-            right_joints_t2 = right_mesh_t2.joints
+            left_joints_t2 = left_mesh_t2.Ts_world_joint[..., 4:7]
+            right_joints_t2 = right_mesh_t2.Ts_world_joint[..., 4:7]
 
             left_vel_01 = left_joints_t1 - left_joints_t0
             right_vel_01 = right_joints_t1 - right_joints_t0
@@ -573,6 +571,7 @@ def _optimize(
 
             left_acc_012 = left_vel_12 - left_vel_01
             right_acc_012 = right_vel_12 - right_vel_01
+            print('left_acc_012', left_acc_012.shape, right_acc_012.shape)
 
             diff = jnp.concatenate([left_acc_012, right_acc_012], axis=0)
             diff = guidance_params.hand_acc_weight * diff.flatten()
@@ -637,6 +636,8 @@ def _optimize(
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
             )
+            left_mesh = left_mesh.lbs()
+            right_mesh = right_mesh.lbs()
             left_joints = left_mesh.joints
             right_joints = right_mesh.joints
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
@@ -706,16 +707,16 @@ def _optimize(
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params_cur, right_params_cur
             )
-            left_joints = left_mesh.joints
-            right_joints = right_mesh.joints
+            left_joints = left_mesh.Ts_world_joint[..., 4:7]
+            right_joints = right_mesh.Ts_world_joint[..., 4:7]
             joints_traj_cur = jnp.concatenate([left_joints, right_joints], axis=0)
             joints_traj_cur = joints_traj_cur.reshape(-1, 3)
                 
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params_next, right_params_next
             )
-            left_joints = left_mesh.joints
-            right_joints = right_mesh.joints
+            left_joints = left_mesh.Ts_world_joint[..., 4:7]
+            right_joints = right_mesh.Ts_world_joint[..., 4:7]
             joints_traj_next = jnp.concatenate([left_joints, right_joints], axis=0)
             joints_traj_next = joints_traj_next.reshape(-1, 3)
 

@@ -303,11 +303,14 @@ class Trainer(object):
 
                 # Extract data from sample and move to device
                 # Generate padding mask
-                actual_seq_len = seq_len + 2
-                tmp_mask = torch.arange(self.window + 2, device=device).expand(
-                    1, self.window + 2
-                ) < actual_seq_len[:, None].repeat(1, self.window + 2)
-                padding_mask = tmp_mask[:, None, :]
+                if self.opt.get('legacy_mask', True):
+                    actual_seq_len = seq_len + 2
+                    tmp_mask = torch.arange(self.window + 2, device=device).expand(
+                        1, self.window + 2
+                    ) < actual_seq_len[:, None].repeat(1, self.window + 2)
+                    padding_mask = tmp_mask[:, None, :]
+                else:
+                    padding_mask = None
 
                 # with autocast(device_type='cuda', enabled=self.amp):
                 with autocast(enabled=self.amp):
@@ -539,11 +542,14 @@ class Trainer(object):
         device = cond.device
         seq_len = torch.tensor([cond.shape[1]]).to(device)
 
-        actual_seq_len = seq_len + 1
-        tmp_mask = torch.arange(self.window + 2, device=device).expand(
-            1, self.window + 2
-        ) < actual_seq_len[:, None].repeat(1, self.window + 2)
-        padding_mask = tmp_mask[:, None, :]
+        if self.opt.get('legacy_mask', True):
+            actual_seq_len = seq_len + 2
+            tmp_mask = torch.arange(self.window + 2, device=device).expand(
+                1, self.window + 2
+            ) < actual_seq_len[:, None].repeat(1, self.window + 2)
+            padding_mask = tmp_mask[:, None, :]
+        else:
+            padding_mask = None
         object_motion = val_data_dict["target"]
         cond = val_data_dict["condition"]
 

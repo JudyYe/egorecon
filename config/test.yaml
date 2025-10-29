@@ -41,6 +41,14 @@ ckpt_index: null
 # seed for random number generators in pytorch, numpy and python.random
 seed: null
 
-ddim: true
+sample: ddim_long
+datasets:
+  window: 150
+
+test_mode: guided
+legacy_mask: false
+vis_x0_list: false
+vis_x: true
 
 test_num: 100
+

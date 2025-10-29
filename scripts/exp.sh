@@ -43,15 +43,20 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
+bug:
+static loss
+paddding mask ( validation)
+can bps added to the front? 
+
 python -m preprocess.est_noise
 
 python -m egorecon.training.test_hoi  -m  \
   expname=noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2 \
   ckpt_index=model-6.pt \
   guide.hint=hand_only \
-  ddim=true \
-  test_folder=eval_\${guide.hint}_ddim\${ddim}_test \
+  test_folder=eval_\${guide.hint}_\${sample}_test \
   testdata=hotclip_train test_num=5 \
+  sample=ddim_long testdata=hotclip_mini datasets.window=150 datasets.use_cache=false datasets.save_cache=false \
 
 
 -
