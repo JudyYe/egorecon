@@ -1,13 +1,11 @@
-[] add pca to MANO jax.
-[] guidance pca? 
-
-
-
-
-
-
+[] order of condition? t? cond? 
+[] correct masking: in train, test, and dataset? previously: validation mask is wrong! (last condition is thrown away!!)
+[] set up quant
+[] noisy hand?????????? why model change soooo much? 
+  - hand yes! 
+[] jax: no lbs()
 [] add off-the-shelf obs pipeline p(O, H, C | \hat H)
-[] make sure test are there 
+
 
 [x] add hand motion rep as joint + theta
 [x]some are black?? and nan? 
@@ -15,9 +13,7 @@
 [x] hand_rep: jonit+hA? 
 [x] bps: hand surface instead of joints? 
 
-[] long seq
-[] set up quant
-
+[x] long seq
 
 [x] change model | TODO
 [x] norm in data, data done
@@ -47,6 +43,30 @@ bug:
 static loss
 paddding mask ( validation)
 can bps added to the front? 
+
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=noisy_hand_weight/hand_\${hand}_consist_w\${loss.w_consistency}_contact\${loss.w_contact}_\${loss.w_static} \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  condition.bps=2,1   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10,1 loss.w_static=10,1 \
+  +engine=move engine.timeout_min=2880
+
+
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=dev/tmp \
+  experiment=noisy_hand   \
+  traindata=hotclip_mini   \
+  condition.bps=1   \
+  loss.w_static=1 train.warmup=10 \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=1 \
+
+
 
 python -m preprocess.est_noise
 

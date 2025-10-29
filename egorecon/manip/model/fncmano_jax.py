@@ -2,6 +2,7 @@
 
 Following the same pattern as SmplhModel in egoallo/fncsmpl_jax.py
 """
+
 from __future__ import annotations
 import pickle
 
@@ -16,8 +17,6 @@ from einops import einsum
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Float, Int
-
-
 
 
 @jdc.pytree_dataclass
@@ -46,25 +45,27 @@ class MANOModel:
     """Mean hand pose in rotation vector space."""
 
     @staticmethod
-    def load(mano_dir: Path, side: str='right') -> MANOModel:
+    def load(mano_dir: Path, side: str = "right") -> MANOModel:
         # mano_params: dict[str, onp.ndarray] = onp.load(npz_path, allow_pickle=True)
         npz_path = mano_dir / f"MANO_{side.upper()}.pkl"
-        with open(npz_path, 'rb') as mano_file:
-            mano_params = pickle.load(mano_file, encoding='latin1')
+        with open(npz_path, "rb") as mano_file:
+            mano_params = pickle.load(mano_file, encoding="latin1")
         for k, v in mano_params.items():
             if not isinstance(v, onp.ndarray):
-                if k == 'J_regressor':
+                if k == "J_regressor":
                     # scipy.sparse._csc.csc_matrix -> onp.ndarray
                     mano_params[k] = onp.array(v.toarray())
-                elif k == 'shapedirs':  # shapedirs <class 'chumpy.reordering.Select'> -> onp.ndarray
+                elif (
+                    k == "shapedirs"
+                ):  # shapedirs <class 'chumpy.reordering.Select'> -> onp.ndarray
                     mano_params[k] = onp.array(v)
                 else:
                     mano_params[k] = onp.array(v)
 
         mano_params = {k: _normalize_dtype(v) for k, v in mano_params.items()}
-        kintree_table = mano_params["kintree_table"][0] 
+        kintree_table = mano_params["kintree_table"][0]
         kintree_table[0] = -1
-        
+
         # Load PCA components if available
         hands_components = None
         hands_mean = None
@@ -72,7 +73,7 @@ class MANOModel:
             hands_components = jnp.array(mano_params["hands_components"])
         if "hands_mean" in mano_params:
             hands_mean = jnp.array(mano_params["hands_mean"])
-        side= 1 if side == "right" else 0
+        side = 1 if side == "right" else 0
         side = jnp.array([side])
         return MANOModel(
             side=side,
@@ -104,13 +105,16 @@ class MANOModel:
             verts_with_shape,
             "joints verts, ... verts xyz -> ... joints xyz",
         )  # th_j
-        
+
         # Compute relative joint positions
         rel_joints = root_and_joints_pred.copy()
         root = root_and_joints_pred[..., 0:1, :]
-        rest = root_and_joints_pred[..., 1:, :] - root_and_joints_pred[..., self.parent_indices[1:], :]
+        rest = (
+            root_and_joints_pred[..., 1:, :]
+            - root_and_joints_pred[..., self.parent_indices[1:], :]
+        )
         rel_joints = jnp.concatenate([root, rest], axis=-2)
-        
+
         return MANOShaped(
             body_model=self,
             verts_zero=verts_with_shape,
@@ -157,19 +161,24 @@ class MANOShaped:
         if pca is not None:
             if local_quats is not None:
                 raise ValueError("Cannot specify both local_quats and pca")
-            
+
             # Ensure pca is a JAX array
             pca = jnp.asarray(pca)
-            
+
             # Check if PCA components are available
-            if self.body_model.hands_components is None or self.body_model.hands_mean is None:
-                raise ValueError("PCA components not loaded in MANO model. Use local_quats instead.")
-            
+            if (
+                self.body_model.hands_components is None
+                or self.body_model.hands_mean is None
+            ):
+                raise ValueError(
+                    "PCA components not loaded in MANO model. Use local_quats instead."
+                )
+
             # Convert PCA coefficients to rotation vectors
             # pca shape: (..., 15)
             # hands_components shape: (15, 45)
             # hands_mean shape: (45,)
-            
+
             # Project PCA coefficients to full rotation vector space
             # R = mean + pca @ components (following SMPLX convention)
             # einsum('...pc,pc->...p', pca, components) where p=15 (pca components), c=45 (rotation vector dims)
@@ -179,19 +188,19 @@ class MANOShaped:
                 self.body_model.hands_components[:D],
                 "... n_components, n_components rotvec -> ... rotvec",
             )  # (..., 45)
-            
+
             # Add mean if requested
             if add_mean:
                 rotation_vecs = rotation_vecs + self.body_model.hands_mean
-            
+
             # Reshape to (..., 15, 3) - 15 joints, 3D rotation vectors
             rotation_vecs = rotation_vecs.reshape(*pca.shape[:-1], 15, 3)
-            
+
             # Convert rotation vectors to quaternions
             local_quats = jaxlie.SO3.exp(rotation_vecs).wxyz  # (..., 15, 4)
         elif local_quats is None:
             raise ValueError("Must provide either local_quats or pca")
-        
+
         # Convert global_orient to quaternion
         global_orient_quat = jaxlie.SO3.exp(global_orient).wxyz
 
@@ -207,11 +216,12 @@ class MANOShaped:
 
         # Get relative transforms
         Ts_parent_child = jnp.concatenate(
-            [all_quats, self.t_parent_joint], axis=-1  
+            [all_quats, self.t_parent_joint], axis=-1
         )  # (..., 16, 7)
 
         # Compute joint transforms
         identity = jaxlie.SE3.identity().wxyz_xyz
+
         def compute_joint(i: int, Ts_world_joint: Array) -> Array:
             T_world_parent = jnp.where(
                 parent_indices[i] == -1,
@@ -232,13 +242,57 @@ class MANOShaped:
             upper=num_joints,
             body_fun=compute_joint,
             init_val=jnp.zeros_like(Ts_parent_child),
-        )        
+        )
+
+        # additional operation to get tip joints
+        tip_chain = [15, 3, 6, 12, 9]
+        side =  self.body_model.side
+
+        right_jTips = jnp.array(
+            [
+                [-0.03175219, -0.00515783, 0.01936311],
+                [-0.0247364, -0.00050561, 0.00473191],
+                [-0.02799493, -0.00097805, -0.00498385],
+                [-0.02300939, 0.00451994, -0.00858927],
+                [-0.01830482, -0.00033885, -0.01032889],
+            ]
+        )
+
+        left_jTips = jnp.array(
+            [
+                [2.3487374e-02, -5.2000638e-03, 1.9193761e-02],
+                [2.1264985e-02, -5.9239566e-05, 4.6086609e-03],
+                [2.2486329e-02, 4.2421203e-03, -3.5589859e-03],
+                [2.1557763e-02, 5.1986887e-03, -8.8222176e-03],
+                [1.2392975e-02, 9.3623251e-04, -1.1389598e-02],
+            ]
+        )
+
+        jTips = jnp.where(
+            jnp.broadcast_to(side==1, right_jTips.shape), right_jTips, left_jTips
+        )
+
+        T_world_joint_tips = Ts_world_joint[tip_chain, :]
+        Ts_world_joint_tips = jnp.concatenate(
+            [Ts_world_joint, T_world_joint_tips], axis=-2
+        )  # (21, 7)
+        Ts_world_joint_tips_transl = jaxlie.SE3.from_translation(transl) @ jaxlie.SE3(
+            Ts_world_joint_tips
+        )
+
+        zeros = jnp.zeros((16, 3))
+        jAll = jnp.concatenate([zeros, jTips], axis=0)
+
+        joint_tip_transl = Ts_world_joint_tips_transl @ jAll
+
         return MANOShapedAndPosed(
             shaped_model=self,
             global_orient=global_orient,
             transl=transl,
             local_quats=local_quats,
             Ts_world_joint=Ts_world_joint,
+            Ts_world_joint_tip_transl=Ts_world_joint_tips_transl.wxyz_xyz,
+            joint_tip_transl=joint_tip_transl,  # (21, 3)  # after translation
         )
 
 
@@ -259,6 +313,9 @@ class MANOShapedAndPosed:
     """Local joint orientations (15 hand joints)."""
 
     Ts_world_joint: Float[Array, "joints 7"]
+
+    Ts_world_joint_tip_transl: Float[Array, "joints 7"]  # after translation
+    joint_tip_transl: Float[Array, "joints 3"]  # after translation
 
     def lbs(self, mano_order=False) -> MANOMesh:
         """Apply linear blend skinning and return vertices and faces.
@@ -281,7 +338,7 @@ class MANOShapedAndPosed:
 
         # # Get relative transforms
         # Ts_parent_child = jnp.concatenate(
-        #     [all_quats, self.shaped_model.t_parent_joint], axis=-1  
+        #     [all_quats, self.shaped_model.t_parent_joint], axis=-1
         # )  # (..., 16, 7)
 
         # # Compute joint transforms
@@ -310,7 +367,7 @@ class MANOShapedAndPosed:
 
         Ts_world_joint = self.Ts_world_joint
 
-        # Linear blend SKINNING 
+        # Linear blend SKINNING
         # Apply pose blend shapes
         hand_quats = self.local_quats  # (..., 15, 4)
         verts_with_blend = self.shaped_model.verts_zero + einsum(
@@ -342,7 +399,10 @@ class MANOShapedAndPosed:
 
         # Apply translation
         verts_final = verts_transformed + self.transl[..., None, :]
-        joints_final = jnp.concatenate([Ts_world_joint[..., 4:7]], axis=0) + self.transl[..., None, :]
+        joints_final = (
+            jnp.concatenate([Ts_world_joint[..., 4:7]], axis=0)
+            + self.transl[..., None, :]
+        )
 
         # Add fingertip vertices as joints
         # Use jnp.where to handle the conditional without tracing issues
@@ -354,15 +414,35 @@ class MANOShapedAndPosed:
         # jnp.where expects same shape arrays, but we have different shaped outputs
         # So we need to handle this differently by using the index directly
         tips = jnp.where(
-            jnp.broadcast_to(is_right, tips_right.shape), 
-            tips_right, 
-            tips_left
+            jnp.broadcast_to(is_right, tips_right.shape), tips_right, tips_left
         )
 
         joints_final = jnp.concatenate([joints_final, tips], axis=-2)
         # Reorder joints to match MANO convention
         if mano_order:
-            idx = [0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18, 10, 11, 12, 19, 7, 8, 9, 20]
+            idx = [
+                0,
+                13,
+                14,
+                15,
+                16,
+                1,
+                2,
+                3,
+                17,
+                4,
+                5,
+                6,
+                18,
+                10,
+                11,
+                12,
+                19,
+                7,
+                8,
+                9,
+                20,
+            ]
             joints_final = joints_final[..., idx, :]
 
         return MANOMesh(
@@ -391,9 +471,7 @@ def broadcasting_cat(arrays: Sequence[jax.Array | onp.ndarray], axis: int) -> ja
     """Like jnp.concatenate, but broadcasts leading axes."""
     assert len(arrays) > 0
     output_dims = max(map(lambda t: len(t.shape), arrays))
-    arrays = [
-        t.reshape((1,) * (output_dims - len(t.shape)) + t.shape) for t in arrays
-    ]
+    arrays = [t.reshape((1,) * (output_dims - len(t.shape)) + t.shape) for t in arrays]
     max_sizes = [max(t.shape[i] for t in arrays) for i in range(output_dims)]
     expanded_arrays = [
         jnp.broadcast_to(

@@ -182,9 +182,10 @@ class Trainer(BaseTrainer):
         cond = val_data_dict["condition"]
         device = cond.device
         # seq_len = torch.tensor([cond.shape[1]]).to(device)
-        seq_len = val_data_dict["seq_len"].shape[1]
+        # seq_len = val_data_dict["seq_len"].shape[1]
 
         if self.opt.get('legacy_mask', True):
+            seq_len = torch.tensor([cond.shape[1]]).to(device)
             actual_seq_len = seq_len + 1
             tmp_mask = torch.arange(self.window + 2, device=device).expand(
                 1, self.window + 2

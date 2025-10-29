@@ -441,13 +441,12 @@ def _optimize(
             target_wTc: jax.Array,
             target_intr: jax.Array,
         ) -> jax.Array:
-            left_mesh, right_mesh = do_forward_kinematics_two_hands(
+            left_posed, right_posed = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
             )
-            left_mesh = left_mesh.lbs()
-            right_mesh = right_mesh.lbs()
-            left_joints = left_mesh.joints
-            right_joints = right_mesh.joints
+            left_joints = left_posed.joint_tip_transl
+            right_joints = right_posed.joint_tip_transl
+
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
             wJoints_traj = joints_traj.reshape(-1, 3)
 
@@ -633,13 +632,11 @@ def _optimize(
             target_newPoints: jax.Array,
             target_contact: jax.Array,
         ) -> jax.Array:
-            left_mesh, right_mesh = do_forward_kinematics_two_hands(
+            left_posed, right_posed = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
             )
-            left_mesh = left_mesh.lbs()
-            right_mesh = right_mesh.lbs()
-            left_joints = left_mesh.joints
-            right_joints = right_mesh.joints
+            left_joints = left_posed.joint_tip_transl
+            right_joints = right_posed.joint_tip_transl
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
 
             current_traj = jaxlie.SE3(vals[cur])

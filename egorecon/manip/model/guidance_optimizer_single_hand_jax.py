@@ -207,9 +207,25 @@ def _optimize_single_hand(
     return out_hand_params, {}
 
 
+def vis_joints(joint_list: jax.Array, save_file):
+    # plot using matplotlib in 3D, with index of joints plotted at the side
+    import matplotlib.pyplot as plt
+    import numpy as np
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    color = ['red', 'green', 'blue', 'yellow', 'purple', 'orange', 'brown', 'pink', 'gray', 'black']
+    for i, joints in enumerate(joint_list):
+        for j in range(joints.shape[0]):
+            ax.text(joints[j, 0], joints[j, 1], joints[j, 2], str(j), color=color[i])
+            ax.scatter(joints[j, 0], joints[j, 1], joints[j, 2], color=color[i])
+    os.makedirs(os.path.dirname(save_file), exist_ok=True)
+    plt.savefig(save_file)
+    plt.close()
 
-def vis_joints(save_dir="outputs/debug_guidance"):
+
+def add_joints(save_dir="outputs/debug_tip"):
     from egorecon.utils.motion_repr import HandWrapper
+    import jaxlie
     device = "cuda:0"
     opt_file = "outputs/noisy_hand/hand_cond_out_consist_w0.1_contact10_1_bps2/opt.yaml"
     opt = OmegaConf.load(opt_file)
@@ -219,14 +235,72 @@ def vis_joints(save_dir="outputs/debug_guidance"):
     batch = model_utils.to_cuda(batch, "cpu")
 
     side = "left"
-    hand_wrapper = HandWrapper().to(device)
+    # hand_wrapper = HandWrapper().to(device)
     jax_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side=side)
 
-    
 
+    jTips = onp.array([[ 2.3487374e-02, -5.2000638e-03,  1.9193761e-02],
+            [ 2.1264985e-02, -5.9239566e-05,  4.6086609e-03],
+            [ 2.2486329e-02,  4.2421203e-03, -3.5589859e-03],
+            [ 2.1557763e-02,  5.1986887e-03, -8.8222176e-03],
+            [ 1.2392975e-02,  9.3623251e-04, -1.1389598e-02]])
+    jTips = onp.array([
+        [-0.03175219, -0.00515783,  0.01936311],
+        [-0.0247364,  -0.00050561,  0.00473191],
+        [-0.02799493, -0.00097805, -0.00498385],
+        [-0.02300939,  0.00451994, -0.00858927],
+        [-0.01830482, -0.00033885, -0.01032889],
+    ])  # right
+    for t in range(0, batch[f"{side}_hand_params"].shape[1], 5):
+        global_orient = onp.random.randn(3)
+        transl = onp.random.randn(3)
 
+        hand_params = batch[f"{side}_hand_params"][0, t].cpu().numpy()
+        hand_params[:3] = global_orient
+        hand_params[3:6] = transl
+
+        # hand_params = jax.Array(hand_params)
+        shaped_model = jax_model.with_shape(hand_params[..., -10:])
+        posed_model = shaped_model.with_pose(
+            global_orient=hand_params[:3],
+            transl=hand_params[3:6],
+            pca=hand_params[6:21],
+            add_mean=True,
+        )
+        # T_world_joint[..., 4:7] += hand_params[3:6]
+        mesh = posed_model.lbs()
+        wJoints_lbs = mesh.joints  # (21, 3)
+
+        # tip_chain = [15, 3, 6, 12, 9]
+        # T_world_joint_tips = T_world_joint[tip_chain, :]
+        # T_world_joint_all = jnp.concatenate([T_world_joint, T_world_joint_tips], axis=0)  # (21, 7)
+
+        # T_world_joint = jaxlie.SE3(T_world_joint)
+        # # jJoints = T_world_joint.inverse() @ (wJoints_lbs[..., :16, :] - hand_params[3:6])  # (21, 3)
+
+        # T_world_joint_all = jaxlie.SE3(T_world_joint_all)
+
+        # T_world_joint_tips = jaxlie.SE3(T_world_joint_tips)
+        # # jTips_tmp = T_world_joint_tips.inverse() @ (wJoints_lbs[..., 16:, :] - hand_params[3:6])  # (5, 3)
+        # jTips_tmp = T_world_joint_tips.inverse() @ wJoints_lbs[..., 16:, :]  # (5, 3)
+        # print('jTips_tmp', jTips_tmp)
+        # # print('jTips_tmp', jTips_tmp - jTips)
+
+        # zeros = jnp.zeros((16, 3))
+        # jAll = jnp.concatenate([zeros, jTips], axis=0)
+        # # wJoints_T = T_world_joint @ zeros + hand_params[3:6]
+        # # wJoints_T = T_world_joint_all @ jAll + hand_params[3:6]
+        # wJoints_T = T_world_joint_all @ jAll 
+
+        # print('jJoints', jJoints)
+
+        wJoints_T = posed_model.joint_tip_transl
+
+        vis_joints([wJoints_lbs, wJoints_T+1e-3], f"{save_dir}/wJoints_lbs_{side}_{t:03d}.png")
 
     return 
+
+
 def test_optimization(save_dir="outputs/debug_guidance"):
     """Test the hand optimization."""
     device = "cuda:0"
@@ -306,4 +380,5 @@ def test_optimization(save_dir="outputs/debug_guidance"):
 
 
 if __name__ == "__main__":
-    Fire(test_optimization)
+    # Fire(test_optimization)
+    Fire(add_joints)

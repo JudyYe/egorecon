@@ -56,6 +56,7 @@ datasets:
   split: mini
   test_split: mini
 
+  window: ${model.window}
   use_cache: true
   save_cache: true
 
@@ -97,9 +98,10 @@ guide:
   hint: reproj_cd
 
 legacy_bps: false
-
+legacy_mask: false
 
 mask_dropout:
   one_hand: 0.2  # two hands are all masked out: 0.2*0.2 = 0.04
   use_mask: 0.5
   max_infill_ratio: 0.2  # 18% of the hand trajectory is masked out on average
+
