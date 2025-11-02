@@ -34,6 +34,7 @@ test: true
 test_folder: eval
 
 dir: null
+oracle_cond: false
 
 # post_guidance: true
 # inner_guidance: true

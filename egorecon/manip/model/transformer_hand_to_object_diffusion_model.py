@@ -175,7 +175,7 @@ class TransformerDiffusionModel(nn.Module):
             ).to(condition.device)
             src = torch.cat((src, padding), dim=-2)
 
-        src = torch.cat((src, condition), dim=-1)  # BS X T X (D + 2*D) = BS X T X (3*D)
+        src = torch.cat((src, condition), dim=-1)  # BS X T X (D_out+D_cond+bps?)
 
         noise_t_embed = self.time_mlp(noise_t)  # BS X d_model
         noise_t_embed = noise_t_embed[:, None, :]  # BS X 1 X d_model
@@ -422,7 +422,7 @@ class CondGaussianDiffusion(nn.Module):
         )
 
         if guide:
-            x_start = self.guide_jax(x_start, model_kwargs=kwargs)
+            x_start, info = self.guide_jax(x_start, model_kwargs=kwargs)
             model_mean = self.q_posterior(x_start=x_start, x_t=x, t=t)[0]
 
             # spatial guidance/classifier guidance
@@ -436,7 +436,7 @@ class CondGaussianDiffusion(nn.Module):
         else:
             return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
-    def guide_jax(self, x_start, model_kwargs):
+    def guide_jax(self, x_start, model_kwargs, t=None):
         x_start_raw = self.denormalize_data(x_start)
         x_dict = self.decode_dict(x_start_raw)
 
@@ -449,19 +449,26 @@ class CondGaussianDiffusion(nn.Module):
         #     # verbose=False,
         # )
         # x_0_pred = wxyz_xyz_to_se3(x_0_pred)
+        info = {}
+        if t is not None and t >= 500:
+            print(f"Inner-init guidance at t={t}")
+            phase = "inner-init"
+            pred_dict = x_dict
+        else:
+            phase = "inner"
 
-        pred_dict, _ = do_guidance_optimization(
-            pred_dict=x_dict,
-            obs=model_kwargs['obs'],
-            left_mano_model=self.left_mano_model_jax,
-            right_mano_model=self.right_mano_model_jax,
-            guidance_mode=self.opt.guide.hint,
-            phase="inner",
-            verbose=True,
-        )
+            pred_dict, info = do_guidance_optimization(
+                pred_dict=x_dict,
+                obs=model_kwargs['obs'],
+                left_mano_model=self.left_mano_model_jax,
+                right_mano_model=self.right_mano_model_jax,
+                guidance_mode=self.opt.guide.hint,
+                phase=phase,
+                verbose=True,
+            )
         x_0_pred = self.encode_dict_to_params(pred_dict)
         x_start_opt = self.normalize_data(x_0_pred)
-        return x_start_opt
+        return x_start_opt, info
 
 
     @torch.no_grad()
@@ -496,7 +503,7 @@ class CondGaussianDiffusion(nn.Module):
                 x = p_rtn
 
         if self.opt.post_guidance and kwargs.get('guide', False):
-            x = self.guide_jax(x, model_kwargs=kwargs)
+            x, info = self.guide_jax(x, model_kwargs=kwargs)
 
         if rtn_x_list:
             return x, rtn
@@ -510,24 +517,28 @@ class CondGaussianDiffusion(nn.Module):
             # if self.opt.guide.hint == "reproj_cd":
             b, T = shape[:2]
             ind_list = []
-            kP = 1000
+            kP = 100
             for t in range(T):
                 inds = torch.randperm(x2d.shape[2])[:kP]
                 ind_list.append(inds)
             ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
             ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
             x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
+            x2d_vis = ((x2d <= 1) & (x2d >= -1)).all(dim=-1).all(dim=-1)  # (B, T,)
 
             j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=ndc)
+            j2d_vis = ((j2d <= 1) & (j2d >= -1)).all(dim=-1)  # (B, T, J_2)
 
             obs = {
                 "newPoints": batch['newPoints'],
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,
+                "x2d_vis": x2d_vis.reshape(b, T, 1),
                 "contact": batch['contact'],
                 "j3d": batch['hand_raw'].reshape(b, T, -1, 3),
                 "j2d": j2d.reshape(b, T, -1, 2),
+                "j2d_vis": j2d_vis.reshape(b, T, -1),
             }
             # obs = {
             #     "contact": batch['contact'],
@@ -674,6 +685,14 @@ class CondGaussianDiffusion(nn.Module):
         loss = reduce(loss, "b ... -> b (...)", "mean")  # BS X (T*D)
 
         loss = loss * extract(self.p2_loss_weight, t, loss.shape)
+
+        loss = loss.reshape(b, timesteps, d_input)
+        obj_loss, hand_loss = loss.split([9, d_input - 9], dim=-1)
+        hand_loss = self.opt.loss.w_hand * hand_loss
+        obj_loss = self.opt.loss.w_wTo * obj_loss
+        obj_loss[..., 3:] *= self.opt.loss.w_rot
+        loss = torch.cat([obj_loss, hand_loss], dim=-1)
+
 
         x0_pred = self.predict_start_from_noise_new(x, t, model_out)
         return loss.mean(), {'model_out': model_out, 'x0_pred': x0_pred}
@@ -933,6 +952,7 @@ class CondGaussianDiffusion(nn.Module):
         self.register_buffer("obj_bps", self.bps["obj"])
 
     def ddim_sample_long(self, shape, x_start, x_cond, padding_mask=None, guide=False, rtn_x_list=False, newPoints=None, hand_raw=None, **kwargs):
+        print("TODO: first frame ")
         device = x_cond.device
         window_size = self.opt.model.window
         overlap_size = window_size // 2
@@ -965,7 +985,7 @@ class CondGaussianDiffusion(nn.Module):
         kwargs['obs'] = obs
         ts = quadratic_ts()
         # x_list = []
-        rtn = {'x_list': [], 'x_0_packed_pred': []}
+        rtn = {'x_list': [], 'x_0_packed_pred': [], 'info_inner': [], 'info_post': None}
         for i in tqdm(range(len(ts) - 1)):
             print(f"Sampling {i}/{len(ts) - 1}")
             t = ts[i]
@@ -975,6 +995,9 @@ class CondGaussianDiffusion(nn.Module):
                 # Chop everything into windows.
                 x_0_packed_pred = torch.zeros_like(x_t_packed)
                 overlap_weights = torch.zeros((1, seq_len, 1), device=x_t_packed.device)
+                
+                # Store previous window's model prediction for conditioning
+                prev_model_x0_pred = None
 
                 # Denoise each window.
                 for start_t in range(0, seq_len, window_size - overlap_size):
@@ -988,11 +1011,23 @@ class CondGaussianDiffusion(nn.Module):
 
                     t_pt = torch.full((b,), t, device=device, dtype=torch.long)
                     # denoise
-                    c = self.get_cond(x_cond[:, start_t:end_t], x_t_packed[:, start_t:end_t], t_pt, newPoints, hand_raw[:, start_t:end_t])
+                    # print('x_cond', x_cond[0, 0:2, -11:-6], x_cond[0, start_t:end_t, -11:-6])
+                    cond_cur = x_cond[:, start_t:end_t] 
+                    # if self.opt.condition.get("first_wTo", False) and start_t > 0 and prev_model_x0_pred is not None:
+                    #     # use the prediction from previous window to condition the first step of this sliding window
+                    #     # Previous window's last frame before overlap is at local index overlap_size - 1
+                    #     ind = window_size - overlap_size
+                    #     cond_cur[:, 0, -9:] = prev_model_x0_pred[:, ind, -9:]
+
+                    c = self.get_cond(cond_cur, x_t_packed[:, start_t:end_t], t_pt, newPoints, hand_raw[:, start_t:end_t])
                     model_output = self.denoise_fn(x_t_packed[:, start_t:end_t], t_pt, c, None)
                     model_x0_pred = self.predict_start_from_noise_new(x_t_packed[:, start_t:end_t], t=t, noise=model_output)
                     x_0_packed_pred[:, start_t:end_t] += model_x0_pred * overlap_weights_slice
                     
+                    # Store current window's prediction for next iteration
+                    prev_model_x0_pred = model_x0_pred
+
+
             x_0_packed_pred = x_0_packed_pred / overlap_weights
 
             sigma_t = torch.cat(
@@ -1005,7 +1040,8 @@ class CondGaussianDiffusion(nn.Module):
                 ]
             )
             if guide:
-                x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+                x_0_packed_pred, info = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs, t=t)
+                rtn['info_inner'].append(info)
             x_t_packed = (
                 torch.sqrt(alpha_bar_t[t_next]) * x_0_packed_pred
                 + (
@@ -1021,7 +1057,8 @@ class CondGaussianDiffusion(nn.Module):
 
 
         if self.opt.post_guidance and kwargs.get('guide', False):
-            x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+            x_0_packed_pred, info = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+            rtn['info_post'].append(info)
         if rtn_x_list:
             return x_t_packed, rtn
         return x_t_packed
@@ -1057,7 +1094,7 @@ class CondGaussianDiffusion(nn.Module):
         kwargs['obs'] = obs
         ts = quadratic_ts()
         # x_list = []
-        rtn = {'x_list': [], 'x_0_packed_pred': []}
+        rtn = {'x_list': [], 'x_0_packed_pred': [], 'info_inner': [], 'info_post': None}
         for i in tqdm(range(len(ts) - 1)):
             print(f"Sampling {i}/{len(ts) - 1}")
             t = ts[i]
@@ -1079,7 +1116,8 @@ class CondGaussianDiffusion(nn.Module):
                 ]
             )
             if guide:
-                x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+                x_0_packed_pred, info = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs, t=t)
+                rtn['info_inner'].append(info)
             x_t_packed = (
                 torch.sqrt(alpha_bar_t[t_next]) * x_0_packed_pred
                 + (
@@ -1095,7 +1133,8 @@ class CondGaussianDiffusion(nn.Module):
 
 
         if self.opt.post_guidance and kwargs.get('guide', False):
-            x_0_packed_pred = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+            x_0_packed_pred, info = self.guide_jax(x_0_packed_pred, model_kwargs=kwargs)
+            rtn['info_post'].append(info)
         if rtn_x_list:
             return x_t_packed, rtn
         return x_t_packed

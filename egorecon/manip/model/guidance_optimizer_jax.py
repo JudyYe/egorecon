@@ -670,8 +670,15 @@ def _optimize(
 
     # Extract optimized trajectory
     optimized_traj = solutions[var_traj]
-    debug_info = {"final_cost": None}  # Could compute final cost if needed
+    
+    # Compute cost values for all factors
+    debug_info = {}
+    for cost in factors:
+        residual = cost.compute_residual(solutions, *cost.args)
+        cost_value = float(jnp.sum(residual ** 2))
+        debug_info[cost._get_name()] = cost_value
 
+    print('debug_info', debug_info)
     return optimized_traj, debug_info
 
 

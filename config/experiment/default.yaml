@@ -25,6 +25,11 @@ loss:
   w_smoothness: 0.1
   w_consistency: 0.1
   w_static: 0.1
+
+  w_wTo: 100.
+  w_hand: 10.
+  w_rot: 10.
+
   
 condition: 
   noisy_obj: true

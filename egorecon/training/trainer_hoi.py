@@ -23,6 +23,7 @@ from ..manip.model.transformer_hand_to_object_diffusion_model import (
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from .trainer_proof_of_idea import Trainer as BaseTrainer
 import os.path as osp
+import logging
 
 
 def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
@@ -33,7 +34,12 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
         f_pref = f"{pref}_process_{i:04d}"
         pred_dict["newMesh"] = batch["newMesh"]
         log_dict = gen_one(
-            model, viz_off, opt, step, pred_dict, name=f_pref
+            model,
+            viz_off,
+            opt,
+            step,
+            pred_dict,
+            name=f_pref,
             # model, viz_off, opt, step, batch, {"pred_raw": x_raw}, pref=f_pref
         )
         print(log_dict[f"{f_pref}"]._path, t)
@@ -64,7 +70,7 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
     imageio.mimwrite(save_dir, frames, fps=30)
 
 
-def gen_one(model, viz_off, opt, step, output, name):
+def gen_one(model, viz_off, opt, step, output, name, debug_info: list = None):
     """
     Generate one visualization result for hand-object interaction.
 
@@ -73,7 +79,7 @@ def gen_one(model, viz_off, opt, step, output, name):
         viz_off: Pt3dVisualizer instance for visualization
         opt: Configuration object containing hand settings
         step: Current step number
-        output: 
+        output:
             "newMesh": The object mesh
             "left_hand_params": The left hand parameters
             "right_hand_params": The right hand parameters
@@ -94,12 +100,14 @@ def gen_one(model, viz_off, opt, step, output, name):
         output["right_hand_params"][0],
         hand_rep="theta",
     )
+    print('debug_info', debug_info)
     fname = viz_off.log_hoi_step(
         *hand_meshes,
         wTo,
         oObj,
         pref=name + f"_{step:07d}",
         contact=output["contact"][0],
+        debug_info=debug_info,
     )
     log_dict = {name: wandb.Video(fname)}
 
@@ -108,14 +116,14 @@ def gen_one(model, viz_off, opt, step, output, name):
 
 def gen_vis_res(model, viz_off, opt, step, batch, output, pref):
     """Generate visualization results for hand-object interaction.
-    
+
     Args:
         model: The diffusion model used for decoding
         viz_off: Pt3dVisualizer instance for visualization
         opt: Configuration object containing hand settings
         step: Current step number
         batch: Input batch data
-        output: 
+        output:
         pref: Prefix for visualization files
     """
     assert False, "This function is deprecated"
@@ -184,7 +192,7 @@ class Trainer(BaseTrainer):
         # seq_len = torch.tensor([cond.shape[1]]).to(device)
         # seq_len = val_data_dict["seq_len"].shape[1]
 
-        if self.opt.get('legacy_mask', True):
+        if self.opt.get("legacy_mask", True):
             seq_len = torch.tensor([cond.shape[1]]).to(device)
             actual_seq_len = seq_len + 1
             tmp_mask = torch.arange(self.window + 2, device=device).expand(
@@ -322,7 +330,17 @@ class Trainer(BaseTrainer):
             )
         return
 
-def gen_vis_hoi_res(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: OmegaConf, step: int, batch: dict, output: dict, pref: str):
+
+def gen_vis_hoi_res(
+    model: CondGaussianDiffusion,
+    viz_off: Pt3dVisualizer,
+    opt: OmegaConf,
+    step: int,
+    batch: dict,
+    output: dict,
+    pref: str,
+    debug_info: list = None,
+):
     all_log_dict = {}
     if opt.hand == "cond":
         # batch_dict = {
@@ -339,13 +357,21 @@ def gen_vis_hoi_res(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: 
         batch_dict["left_hand_params"] = batch["left_hand_params"]
         batch_dict["right_hand_params"] = batch["right_hand_params"]
 
-        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref +'_gt')
+        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref + "_gt")
         all_log_dict.update(log_dict)
 
         if output is not None:
             pred_dict = batch_dict
             pred_dict["wTo"] = model.decode_dict(output["pred_raw"])["wTo"]
-            log_dict = gen_one(model, viz_off, opt, step, pred_dict, pref +'_pred')
+            log_dict = gen_one(
+                model,
+                viz_off,
+                opt,
+                step,
+                pred_dict,
+                pref + "_pred",
+                debug_info=debug_info,
+            )
             all_log_dict.update(log_dict)
 
     elif opt.hand == "cond_out":
@@ -354,16 +380,17 @@ def gen_vis_hoi_res(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: 
         batch_dict = model.decode_dict(target_raw)
         batch_dict["newMesh"] = batch["newMesh"]
         batch_dict["contact"] = batch["contact"]
-        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref +'_gt')
+        log_dict = gen_one(model, viz_off, opt, step, batch_dict, pref + "_gt")
         all_log_dict.update(log_dict)
 
         if output is not None:
             pred_dict = model.decode_dict(output["pred_raw"])
             pred_dict["newMesh"] = batch["newMesh"]
-            log_dict = gen_one(model, viz_off, opt, step, pred_dict, pref +'_pred')
+            log_dict = gen_one(model, viz_off, opt, step, pred_dict, pref + "_pred", debug_info=debug_info)
             all_log_dict.update(log_dict)
 
     return all_log_dict
+
 
 @hydra.main(config_path="../../config", config_name="train", version_base=None)
 @slurm_engine()
@@ -386,8 +413,35 @@ def run_train(opt, device):
 
     diffusion_model = build_model(opt)
     if opt.ckpt:
+        logging.warning(f"Loading checkpoint from {opt.ckpt}")
+        print(f"######################### Loading checkpoint from {opt.ckpt}")
         ckpt = torch.load(opt.ckpt)
-        model_utils.load_my_state_dict(diffusion_model, ckpt["model"])
+        _, _, mismatch_keys = model_utils.load_my_state_dict(
+            diffusion_model, ckpt["model"]
+        )
+        # try my best to initialize --> if ckpt's parameters are bigger: cut it. if our model is bigger: zero first and copy what can be copied.
+        for key in mismatch_keys:
+            if key in ckpt["model"]:
+                ckpt_param = ckpt["model"][key]
+                model_param = diffusion_model.state_dict()[key]
+                if isinstance(ckpt_param, torch.nn.Parameter):
+                    ckpt_param = ckpt_param.data
+                # If checkpoint param is bigger: cut it to fit
+                # If model param is bigger: zero first then copy what fits
+                if ckpt_param.shape != model_param.shape:
+                    # Create slice indices to copy what fits
+                    slices = tuple(
+                        slice(0, min(s1, s2))
+                        for s1, s2 in zip(ckpt_param.shape, model_param.shape)
+                    )
+                    # Zero initialize model param if it's bigger
+                    if model_param.numel() > ckpt_param.numel():
+                        model_param.zero_()
+                    # Copy the overlapping region
+                    model_param[slices].copy_(ckpt_param[slices])
+                    logging.warning(
+                        f"Partially loaded {key}: ckpt shape {ckpt_param.shape}, model shape {model_param.shape}"
+                    )
 
     diffusion_model.to(device)
 

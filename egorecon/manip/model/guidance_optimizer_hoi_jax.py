@@ -56,6 +56,7 @@ GuidanceMode = Literal[
     "hoi_contact",  # reprojection + HOI contact loss
     "hand_only",
     "object_only",
+    "contact_only",
 ]
 
 
@@ -100,7 +101,7 @@ class JaxGuidanceParams:
     contact_th: float = 0.5
 
     # Optimization parameters
-    lambda_initial: float = 1e4  # Increased for better convergence
+    lambda_initial: float = .1 # 1e4  # Increased for better convergence
     # lambda_initial: float = 1e-4  
     step_quality_min: float = 1e-4
     # step_quality_min: float = 1e-5  
@@ -109,15 +110,63 @@ class JaxGuidanceParams:
     @staticmethod
     def defaults(
         mode: GuidanceMode,
-        phase: Literal["inner", "post", "fp"],
+        phase: Literal["inner", "post", "fp", "inner-init"],
     ) -> JaxGuidanceParams:
         if mode == "hoi_contact":
+            if phase == "inner":
+
+                # less term, hand over relative relation to diffusion 
+                # only turn on essential terms
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    use_hand_smoothness=False,
+                    hand_acc_weight=10.,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=False,
+                    use_reproj_com=True,
+                    use_reproj_cd=False,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    use_obj_smoothness=True,
+                    max_iters=5,
+                )
+
+            elif phase == "post":
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=10.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=100.,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=True,
+                    use_reproj_com=False,
+                    use_reproj_cd=True,
+                    reproj_weight=10.,
+                    use_abs_contact=True,
+                    use_rel_contact=True,
+                    use_obj_smoothness=True,
+                    max_iters=50,
+                )         
+            return params        
+                
+
+        elif mode == "contact_only":
+            max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
-                # use_obj_smoothness=False,
-                max_iters=5
-                if phase == "inner"
-                else 50,  # Much faster for paper performance
-            )
+                use_j2d=False,
+                use_hand_smoothness=True,
+                use_j3d=False,
+                use_contact_obs=False,
+                use_static=False,
+                use_reproj_com=True,
+                use_reproj_cd=False,
+                use_abs_contact=False,
+                use_rel_contact=False,
+                use_obj_smoothness=True,
+                max_iters=max_iters,
+            )            
         elif mode == "object_only":
             max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
@@ -260,6 +309,8 @@ def do_guidance_optimization(
         "j3d",
         "j2d",
         "contact",
+        "x2d_vis",
+        "j2d_vis",
     ]
     for key in keep_keys:
         if key in obs:
@@ -277,6 +328,19 @@ def do_guidance_optimization(
         guidance_params=guidance_params,
         verbose=verbose,
     )
+
+    # Convert debug_info JAX arrays to Python floats (outside traced context)
+    # Handle batch dimension from vmap
+    debug_info_converted = {}
+    for key, value in debug_info.items():
+        if isinstance(value, jax.Array):
+            # Materialize and convert to float
+            value_np = onp.array(value)
+            # If batched (from vmap), take first element or mean
+            debug_info_converted[key] = value_np
+        else:
+            debug_info_converted[key] = value
+    debug_info = debug_info_converted
 
     # Convert back to torch tensor
     wTo = wxyz_xyz_to_se3(torch.from_numpy(onp.array(optimized_traj["wTo"])).to(device))
@@ -296,6 +360,7 @@ def do_guidance_optimization(
     }
 
     print(f"SE3 trajectory optimization finished in {time.time() - start_time}sec")
+
     return optimized_traj_torch, debug_info
 
 
@@ -316,6 +381,8 @@ def _optimize_vmapped(
     target_j3d: jax.Array = None,
     target_j2d: jax.Array = None,
     target_contact: jax.Array = None,
+    target_x2d_vis: jax.Array = None,
+    target_j2d_vis: jax.Array = None,
 ) -> tuple[dict, dict]:
     return jax.vmap(
         partial(
@@ -337,6 +404,8 @@ def _optimize_vmapped(
         target_j3d=target_j3d,
         target_j2d=target_j2d,
         target_contact=target_contact,
+        target_x2d_vis=target_x2d_vis,
+        target_j2d_vis=target_j2d_vis,
     )
 
 
@@ -356,6 +425,8 @@ def _optimize(
     target_j3d: jax.Array = None,
     target_j2d: jax.Array = None,
     target_contact: jax.Array = None,
+    target_x2d_vis: jax.Array = None,
+    target_j2d_vis: jax.Array = None,
 ) -> jax.Array:
     timesteps = wTo.shape[0]
     assert wTo.shape == (timesteps, 7)
@@ -380,16 +451,16 @@ def _optimize(
         left_params = vals[left_params]
         right_params = vals[right_params]
         left_mesh = left_shaped.with_pose(
-            global_orient=left_params[:3],
-            transl=left_params[3:6],
-            pca=left_params[6:21],
+            global_orient=left_params[..., :3],
+            transl=left_params[..., 3:6],
+            pca=left_params[..., 6:21],
             add_mean=True,
         )
 
         right_mesh = right_shaped.with_pose(
-            global_orient=right_params[:3],
-            transl=right_params[3:6],
-            pca=right_params[6:21],
+            global_orient=right_params[..., :3],
+            transl=right_params[..., 3:6],
+            pca=right_params[..., 6:21],
             add_mean=True,
         )
 
@@ -431,6 +502,7 @@ def _optimize(
             target_j2d,
             target_wTc,
             target_intr[None],
+            target_j2d_vis,
         )
         def j2d_cost(
             vals: jaxls.VarValues,
@@ -439,6 +511,7 @@ def _optimize(
             target_j2d: jax.Array,
             target_wTc: jax.Array,
             target_intr: jax.Array,
+            target_j2d_vis: jax.Array,
         ) -> jax.Array:
             left_posed, right_posed = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
@@ -450,7 +523,8 @@ def _optimize(
             wJoints_traj = joints_traj.reshape(-1, 3)
 
             j2d_pred = project_jax_pinhole(wJoints_traj, target_wTc, target_intr, ndc=ndc)
-            diff = j2d_pred - target_j2d  # (J, 2)
+            diff = (j2d_pred - target_j2d) / j2d_pred.shape[0]  # (J, 2)
+            diff = diff * target_j2d_vis.reshape(-1, 1)
             diff = guidance_params.j2d_weight * diff.flatten()
             return diff
             
@@ -584,7 +658,6 @@ def _optimize(
             current: _SE3TrajectoryVar,
             next: _SE3TrajectoryVar,
         ) -> jax.Array:
-            # don't be too far away from the initial pose
             dist2 = dist_residual(
                 guidance_params.obj_vel_weight,
                 jaxlie.SE3(vals[current]).inverse() @ jaxlie.SE3(vals[next]),
@@ -734,12 +807,9 @@ def _optimize(
             current_rot = wTo_cur.rotation()
             next_rot = wTo_next.rotation()
 
-            # prox_next = joints_traj_next + next_rot @ current_rot.inverse() @ p_near  # (J, 3)  # relative position to the joint
-            # jax.fdebug.print('prox_next', prox_next.shape)
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
             dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
-            # print(dist_prox.shape)
             
             contact_cost = guidance_params.rel_contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
 
@@ -790,6 +860,7 @@ def _optimize(
             target_wTc,
             target_newPoints[None],
             target_intr[None],
+            target_x2d_vis,
         )
         def reprojection_cost_com(
             vals: jaxls.VarValues,
@@ -798,6 +869,7 @@ def _optimize(
             target_wTc: jax.Array,
             target_newPoints: jax.Array,
             target_intr: jax.Array,
+            target_x2d_vis: jax.Array,
         ) -> jax.Array:
             """Reprojection cost: project object points and compare with 2D observations.
             but target_x2d is not in correspondence, you need to find the closest point in target_x2d to the projected point.
@@ -810,9 +882,9 @@ def _optimize(
                 target_newPoints, current_traj, target_wTc, target_intr, ndc=ndc
             )  # (P, 2)
 
-            pred_com = projected_2d.mean(axis=0)
-            target_com = target_x2d.mean(axis=0)
-            diff = pred_com - target_com
+            pred_com = projected_2d.mean(axis=0)  # (2,)
+            target_com = target_x2d.mean(axis=0)  # (2,)
+            diff = (pred_com - target_com) * target_x2d_vis.reshape(1)
 
             return guidance_params.reproj_weight * diff.flatten()
 
@@ -831,6 +903,7 @@ def _optimize(
             target_wTc,
             target_newPoints[None],
             target_intr[None],
+            target_x2d_vis,
         )
         def reprojection_cost_cd(
             vals: jaxls.VarValues,
@@ -839,6 +912,7 @@ def _optimize(
             target_wTc: jax.Array,
             target_newPoints: jax.Array,
             target_intr: jax.Array,
+            target_x2d_vis: jax.Array,
         ) -> jax.Array:
             """Reprojection cost: project object points and compare with 2D observations.
             but target_x2d is not in correspondence, you need to find the closest point in target_x2d to the projected point.
@@ -850,13 +924,15 @@ def _optimize(
             projected_2d = project_jax(
                 target_newPoints, current_traj, target_wTc, target_intr, ndc=ndc
             )
+            P = projected_2d.shape[0]
             dist, nn_idx, x2d_nn = knn_jax(projected_2d, target_x2d, k=1)
             dist2, nn_idx2, oPoints_nn = knn_jax(target_x2d, projected_2d, k=1)
 
-            dist1 = projected_2d - x2d_nn.squeeze(1)
-            dist2 = target_x2d - oPoints_nn.squeeze(1)
+            dist1 = (projected_2d - x2d_nn.squeeze(1)) / projected_2d.shape[0]
+            dist2 = (target_x2d - oPoints_nn.squeeze(1)) / target_x2d.shape[0]
 
-            diff = jnp.concatenate([dist1, dist2], axis=0)  # residual
+            diff = jnp.concatenate([dist1, dist2], axis=0)  # residual  # (P1+P2, 2)
+            diff = diff * target_x2d_vis.reshape(1, 1)
 
             return guidance_params.reproj_weight * diff.flatten()
 
@@ -890,7 +966,53 @@ def _optimize(
     optimized_left_params = solutions[var_left_params]
     optimized_right_params = solutions[var_right_params]
     optimized_contact = solutions[var_contact]
-    debug_info = {"final_cost": None}  # Could compute final cost if needed
+
+
+
+    # Compute cost values for all factors
+    debug_info = {}
+    for cost in factors:
+        # Helper to evaluate cost for a single timestep
+        def eval_cost_at_timestep(t: int):
+            # Create VarValues for this timestep by extracting per-timestep variables
+            timestep_vars = []
+            timestep_args = []
+            
+            for arg in cost.args:
+                if isinstance(arg, jaxls.Var):
+                    # Check if variable spans timesteps (id is array  and fist dim > 1)
+                    if isinstance(arg.id, jax.Array) and arg.id.ndim > 0 and arg.id.shape[0] > 1:
+                        # Create single-timestep variable with id = t
+                        timestep_var = type(arg)(t)
+                        timestep_vars.append(timestep_var.with_value(solutions[arg][t]))
+                        timestep_args.append(timestep_var)
+                    else:
+                        # Single timestep variable
+                        timestep_vars.append(arg.with_value(solutions[arg]))
+                        timestep_args.append(arg)
+                elif isinstance(arg, jax.Array) and arg.ndim > 1:
+                    # Array argument - extract timestep (assuming first dimension is time)
+                    timestep_args.append(arg[t])
+                else:
+                    # Scalar or non-temporal argument
+                    timestep_args.append(arg)
+            
+            # Build VarValues for this timestep
+            timestep_vals = jaxls.VarValues.make(timestep_vars)
+            
+            # Evaluate cost at this timestep
+            result = cost.compute_residual(timestep_vals, *timestep_args)
+            if isinstance(result, tuple):
+                residual = result[0]
+            else:
+                residual = result
+            return jnp.sum(residual ** 2)
+        
+        # Vmap across all timesteps and sum
+        cost_values_per_timestep = jax.vmap(eval_cost_at_timestep)(jnp.arange(timesteps))
+        cost_total = cost_values_per_timestep  # (T, )
+        # Store as JAX array - will be converted to float outside traced context
+        debug_info[cost._get_name()] = cost_total
 
     return {
         "wTo": optimized_traj,

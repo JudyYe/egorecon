@@ -1,10 +1,16 @@
-[] order of condition? t? cond? 
-[] correct masking: in train, test, and dataset? previously: validation mask is wrong! (last condition is thrown away!!)
+[] first frame condition ddim long term
+[] better base: hoi + rotaion 
+[] print guidance debug log 
+
+
+
+[x] order of condition? t? cond? 
+[x] correct masking: in train, test, and dataset? previously: validation mask is wrong! (last condition is thrown away!!)
 [] set up quant
-[] noisy hand?????????? why model change soooo much? 
   - hand yes! 
-[] jax: no lbs()
-[] add off-the-shelf obs pipeline p(O, H, C | \hat H)
+[x] noisy hand?????????? why model change soooo much? 
+[x] jax: no lbs()
+[] add off-the-shelf obs pipeline p(O, H, C | \hat H), at least joint visibility. 
 
 
 [x] add hand motion rep as joint + theta
@@ -39,10 +45,117 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=first_frame_hoi/dyn\${dyn_only}_static\${loss.w_static}_contact\${loss.w_contact}_smoothness\${loss.w_smoothness} \
+  experiment=noisy_hand   condition.first_wTo=true  \
+  traindata=hotclip_train   \
+  dyn_only=true \
+  condition.bps=2   \
+  general.wandb=true   \
+  train.warmup=0 loss.w_consistency=1 loss.w_smoothness=10 loss.w_contact=100 loss.w_static=100 \
+  general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
+  ckpt=outputs/first_frame/dynTrue/weights/model-20.pt \
+  +engine=move
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=first_frame/dynFalse \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train \
+  dyn_only=true \
+  test_folder=eval_\${guide.hint}_\${sample}_vis guide.hint=hoi_contact \
+  test_num=50  \
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=first_frame/dynFalse \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train \
+  dyn_only=true \
+  test_folder=eval_\${guide.hint}_\${sample} guide.hint=hoi_contact \
+  test_num=50  \
+
+
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=first_frame/dyn\${dyn_only}_firstframe\${condition.first_wTo} \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  dyn_only=false,true \
+  condition.bps=2   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=10 \
+  condition.first_wTo=false \
+  general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
+  ckpt=outputs/oracle_cond/bps2_False/weights/model-9.pt \
+  +engine=move
+  
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=dev/tmp \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  dyn_only=false \
+  condition.bps=2   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=10 \
+  oracle_cond=true \
+  condition.first_wTo=true \
+  start_mask_step=.. 
+
+
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=oracle_cond/bps2_False \
+  ckpt_index=model-5.pt \
+  guide.hint=hoi_contact \
+  test_folder=eval_\${guide.hint}_\${sample}_lambda1 \
+  testdata=hotclip_mini test_num=5 \
+
+
+
+
 bug:
 static loss
 paddding mask ( validation)
 can bps added to the front? 
+
+python -m preprocess.est_noise \
+  --est_dataset_name dataset_contact_patched_hawor_v2_camGT_gt
+
+python -m preprocess.hot3dclip_extract \
+  --shelf_name hawor_v2_camGT_gt \
+  --orig_name dataset_contact \
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=oracle_cond/bps\${condition.bps}_\${dyn_only} \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  dyn_only=false \
+  condition.bps=2   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=10 \
+  oracle_cond=true \
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=oracle_cond/bps\${condition.bps}_\${dyn_only} \
+  experiment=noisy_hand   \
+  traindata=hotclip_train   \
+  dyn_only=true,false \
+  condition.bps=2   \
+  general.wandb=true   \
+  loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10 loss.w_static=10 \
+  oracle_cond=true \
+  +engine=move
+  
 
 
 
@@ -54,7 +167,6 @@ python -m egorecon.training.trainer_hoi  -m    \
   general.wandb=true   \
   loss.w_consistency=0.1 loss.w_smoothness=1 loss.w_contact=10,1 loss.w_static=10,1 \
   +engine=move engine.timeout_min=2880
-
 
 
 

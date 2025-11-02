@@ -1,3 +1,5 @@
+from jutils import mesh_utils, geom_utils, image_utils, plot_utils
+from pytorch3d.structures import Meshes
 from fire import Fire
 import os
 import os.path as osp
@@ -43,12 +45,92 @@ def get_hand_joints(seq, hand_wrapper: HandWrapper):
     return left_joints, right_joints
 
 
+def get_hand_meshes(seq, hand_wrapper: HandWrapper):
+
+    if "left_hand_theta" not in seq:
+        seq["left_hand_theta"], seq["left_hand_shape"] = seq["left_hand_params"][..., :-10], seq["left_hand_params"][..., -10:]
+
+    left_theta = torch.FloatTensor(seq["left_hand_theta"]).to(device)
+    left_shape = torch.FloatTensor(seq["left_hand_shape"]).to(device)
+    left_verts, left_faces, _ = hand_wrapper.hand_para2verts_faces_joints(
+        left_theta, left_shape, side="left"
+    )
+    
+    if "right_hand_theta" not in seq:
+        seq["right_hand_theta"], seq["right_hand_shape"] = seq["right_hand_params"][..., :-10], seq["right_hand_params"][..., -10:]
+        
+    right_theta = torch.FloatTensor(seq["right_hand_theta"]).to(device)
+    right_shape = torch.FloatTensor(seq["right_hand_shape"]).to(device)
+    right_verts, right_faces, _ = hand_wrapper.hand_para2verts_faces_joints(
+        right_theta, right_shape, side="right"
+    )
+    
+    left_meshes = Meshes(verts=left_verts, faces=left_faces).to(device)
+    right_meshes = Meshes(verts=right_verts, faces=right_faces).to(device)
+    return left_meshes, right_meshes
+
+
 def get_hotclip_split(split="test"):
     split_file = osp.join(data_dir, "sets", "split.json")
     with open(split_file, "r") as f:
         split2sesq = json.load(f)
     seqs = split2sesq[split]
     return seqs
+
+
+
+@torch.no_grad()
+def vis_hotclip(
+    pred_file="pred_joints.pkl",
+    gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
+    side="right",
+    save_dir=None,
+    split="test",
+    skip_not_there=False,
+    chunk_length=-1,
+):
+
+    seqs = get_hotclip_split(split)
+    if isinstance(pred_file, str):
+        with open(pred_file, "rb") as f:
+            pred_data = pickle.load(f)
+    else:
+        pred_data = pred_file
+    if isinstance(gt_file, str):
+        with open(gt_file, "rb") as f:
+            gt_data = pickle.load(f)
+    else:
+        gt_data = gt_file
+
+    hand_wrapper = HandWrapper(mano_model_path).to(device)
+    if save_dir is None:
+        save_dir = osp.join(osp.dirname(pred_file), "vis")
+    os.makedirs(save_dir, exist_ok=True)
+
+    for seq in seqs:
+        if skip_not_there and (seq not in pred_data or seq not in gt_data):
+            print(f"Seq {seq} not in pred_data or gt_data")
+            continue
+        
+        pred_seq = pred_data[seq]
+        gt_seq = gt_data[seq]
+        left_pred, right_pred = get_hand_meshes(pred_seq, hand_wrapper)
+        pred_hands = mesh_utils.join_scene([left_pred, right_pred])
+        pred_hands.textures = mesh_utils.pad_texture(pred_hands, 'blue')
+        left_gt, right_gt = get_hand_meshes(gt_seq, hand_wrapper)
+        gt_hands = mesh_utils.join_scene([left_gt, right_gt])
+        gt_hands.textures = mesh_utils.pad_texture(gt_hands, 'red')
+
+        scene = mesh_utils.join_scene([pred_hands, gt_hands])
+        nTw = mesh_utils.get_nTw(scene.verts_packed()[None], new_scale=1.2)
+
+        image_list = mesh_utils.render_geom_rot_v2(scene, nTw=nTw, time_len=1)  # (time_len, B, H, W, 3)
+        H, W = image_list[0].shape[-2:]
+        image_list = torch.stack(image_list, axis=0).reshape(-1, 1, 3, H, W)
+        image_utils.save_gif(image_list, osp.join(save_dir, f"{seq}"), fps=30, ext=".mp4")
+
+
+
 
 
 def eval_hotclip(
@@ -171,9 +253,17 @@ def eval_hotclip(
     return
 
 
+
+def main(mode='quant',  **kwargs):
+    if mode == 'quant':
+        eval_hotclip(**kwargs)
+    elif mode == 'vis':
+        vis_hotclip(**kwargs)
+
+
 if __name__ == "__main__":
     split = "test"
     gt_file = "dataset_contact.pkl"
     pred_file = "pred_joints.pkl"
     # eval_hotclip(pred_file, gt_file)
-    Fire(eval_hotclip)
+    Fire(main)

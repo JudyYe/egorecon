@@ -59,6 +59,9 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
+        # if b.item() != 184:
+        #     print(b)
+        #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
 
         sample = batch = model_utils.to_cuda(batch)
@@ -74,7 +77,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             padding_mask = None
         padding_mask = None            
 
-        for i in range(0):
+        for i in range(1):
             guided_object_pred_raw, info = diffusion_model.sample_raw(
                 torch.randn_like(sample["target"]),
                 sample["condition"],
@@ -109,8 +112,21 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         )
         save_prediction(diffusion_model.decode_dict(guided_object_pred_raw), index, osp.join(model_cfg.exp_dir, opt.test_folder, "guided", f"{index}.pkl"))
 
+        def get_info_str(info):
+
+            B, T = sample["condition"].shape[:2]
+            info_per_time = [[] for _ in range(T)]
+            for t in range(T):
+                for b in range(B):
+                    info_str = f"t={t:04d} \n"
+                    for k, v in info.items(): 
+                        info_str += f"  {k}={v[b, t]:.4f} \n"
+                    info_per_time[t].append(info_str)
+
+            return info_per_time
 
         if opt.vis_x:
+            info_per_time = get_info_str(info['info_inner'][-1])
             gen_vis_hoi_res(
                 diffusion_model,
                 viz_off,
@@ -119,6 +135,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 batch=sample,
                 output={"pred_raw": guided_object_pred_raw},
                 pref=f"test_guided_{b:04d}",
+                debug_info=info_per_time,
             )
 
         # save for debug
@@ -154,7 +171,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 guide=True, batch=sample, shape=guided_object_pred_raw.shape
             )
 
-            post_pred_dict, _ = do_guidance_optimization(
+            post_pred_dict, debug_info = do_guidance_optimization(
                 pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
                 obs=obs,
                 left_mano_model=left_mano_model,
@@ -163,6 +180,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                 phase="post",
                 verbose=True,
             )
+            info_per_time = get_info_str(debug_info)
             post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
             pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
             if opt.vis_x:
@@ -175,6 +193,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                     # batch=sample,
                     output=pred_dict,
                     name=f"test_post_{b:04d}",
+                    debug_info=info_per_time,
                 )
             
             save_prediction(post_pred_dict, index, osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"))
@@ -213,8 +232,6 @@ def aggregate_prediction(opt):
                 pred_dict[k] = v[0]
         seq_dict[seq] = pred_dict
 
-        print(pred_dict["right_hand_params"].shape)
-
 
     save_file = osp.dirname(save_dir) + ".pkl"
     with open(save_file, "wb") as f:    
@@ -225,6 +242,8 @@ def aggregate_prediction(opt):
 
 
 def set_test_cfg(opt, model_cfg):
+    # resolve model_cfg first 
+    OmegaConf.resolve(model_cfg)
     model_cfg.guide.hint = opt.guide.hint
     model_cfg.sample = opt.sample
     model_cfg.post_guidance = opt.post_guidance
@@ -232,6 +251,8 @@ def set_test_cfg(opt, model_cfg):
     model_cfg.datasets.window = opt.datasets.window
     model_cfg.datasets.use_cache = opt.datasets.use_cache
     model_cfg.datasets.save_cache = opt.datasets.save_cache
+    model_cfg.dyn_only = opt.dyn_only
+    model_cfg.oracle_cond = opt.oracle_cond
 
 
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
@@ -257,7 +278,6 @@ def main(opt):
 
     elif opt.test_mode == 'aggregate':
         aggregate_prediction(opt)
-
 
     return
 

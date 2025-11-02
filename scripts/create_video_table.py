@@ -1,227 +1,135 @@
-#!/usr/bin/env python3
-"""
-Create an HTML page to display test videos with ground truth in first column and predictions in second column.
-"""
-
 import os
-import glob
-from pathlib import Path
+import argparse
+import re
+from glob import glob
+from jutils import web_utils
 
-def find_video_files(base_dir="/move/u/yufeiy2/egorecon"):
-    """Find all test_post_*_gt_0000000.mp4 and test_post_*_pred_0000000.mp4 files."""
-    
-    # Search for GT and pred video files
-    gt_pattern = os.path.join(base_dir, "**", "test_post_*_gt_0000000.mp4")
-    pred_pattern = os.path.join(base_dir, "**", "test_post_*_pred_0000000.mp4")
-    
-    gt_files = glob.glob(gt_pattern, recursive=True)
-    pred_files = glob.glob(pred_pattern, recursive=True)
-    
-    print(f"Found {len(gt_files)} GT files and {len(pred_files)} pred files")
-    
-    # Create pairs by matching the test_post_* part
-    pairs = []
-    for gt_file in gt_files:
-        # Extract the test_post_* part from the GT file
-        gt_name = os.path.basename(gt_file)
-        test_id = gt_name.replace("_gt_0000000.mp4", "")
-        
-        # Find corresponding pred file
-        pred_file = None
-        for pred in pred_files:
-            if test_id in os.path.basename(pred):
-                pred_file = pred
-                break
-        
-        if pred_file:
-            pairs.append({
-                'test_id': test_id,
-                'gt_file': gt_file,
-                'pred_file': pred_file,
-                'gt_relative': os.path.relpath(gt_file, base_dir),
-                'pred_relative': os.path.relpath(pred_file, base_dir)
-            })
-    
-    return pairs
 
-def create_html_page(video_pairs, output_file="video_comparison.html"):
-    """Create an HTML page displaying the video pairs."""
-    
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Test Video Comparison - GT vs Predictions</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            background-color: #f5f5f5;
-        }}
-        .header {{
-            text-align: center;
-            margin-bottom: 30px;
-            background-color: #2c3e50;
-            color: white;
-            padding: 20px;
-            border-radius: 10px;
-        }}
-        .video-grid {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            max-width: 1400px;
-            margin: 0 auto;
-        }}
-        .video-pair {{
-            background-color: white;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
-        }}
-        .video-container {{
-            text-align: center;
-            margin-bottom: 15px;
-        }}
-        .video-container h3 {{
-            margin-bottom: 10px;
-            color: #2c3e50;
-        }}
-        .video-container video {{
-            width: 100%;
-            max-width: 500px;
-            height: auto;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }}
-        .test-id {{
-            text-align: center;
-            font-weight: bold;
-            font-size: 18px;
-            color: #34495e;
-            margin-bottom: 15px;
-            padding: 10px;
-            background-color: #ecf0f1;
-            border-radius: 5px;
-        }}
-        .gt-label {{
-            color: #27ae60;
-            font-weight: bold;
-        }}
-        .pred-label {{
-            color: #e74c3c;
-            font-weight: bold;
-        }}
-        .stats {{
-            text-align: center;
-            margin-bottom: 20px;
-            padding: 15px;
-            background-color: #3498db;
-            color: white;
-            border-radius: 8px;
-        }}
-        .file-path {{
-            font-size: 12px;
-            color: #7f8c8d;
-            margin-top: 5px;
-            word-break: break-all;
-        }}
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Test Video Comparison</h1>
-        <p>Ground Truth vs Predictions</p>
-    </div>
-    
-    <div class="stats">
-        <h2>Total Video Pairs: {len(video_pairs)}</h2>
-    </div>
-    
-    <div class="video-grid">
-"""
-    
-    for i, pair in enumerate(video_pairs):
-        html_content += f"""
-        <div class="video-pair">
-            <div class="test-id">Test: {pair['test_id']}</div>
-            
-            <div class="video-container">
-                <h3 class="gt-label">Ground Truth</h3>
-                <video controls>
-                    <source src="{pair['gt_relative']}" type="video/mp4">
-                    Your browser does not support the video tag.
-                </video>
-                <div class="file-path">{pair['gt_relative']}</div>
-            </div>
-            
-            <div class="video-container">
-                <h3 class="pred-label">Prediction</h3>
-                <video controls>
-                    <source src="{pair['pred_relative']}" type="video/mp4">
-                    Your browser does not support the video tag.
-                </video>
-                <div class="file-path">{pair['pred_relative']}</div>
-            </div>
-        </div>
-"""
-    
-    html_content += """
-    </div>
-    
-    <script>
-        // Auto-play videos when they come into view
-        const videos = document.querySelectorAll('video');
-        
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.play();
-                } else {
-                    entry.target.pause();
-                }
-            });
-        });
-        
-        videos.forEach(video => {
-            observer.observe(video);
-        });
-    </script>
-</body>
-</html>
-"""
-    
-    # Write the HTML file
-    with open(output_file, 'w') as f:
-        f.write(html_content)
-    
-    print(f"HTML page created: {output_file}")
+def parse_args():
+    parser = argparse.ArgumentParser(description='Create HTML table displaying video results')
+    parser.add_argument('--dir', type=str, default="outputs/oracle_cond/bps2_False/eval_hoi_contact_ddim_long_lambda1/log/", help='Directory containing video files')
+    parser.add_argument('--width', type=int, default=400, help='Video width in pixels')
+    parser.add_argument('--height', type=int, default=None, help='Video height in pixels (optional)')
+    parser.add_argument('--output', type=str, default=None, help='Output HTML file path (default: {dir}/index.html)')
+    parser.add_argument('--inplace', action='store_true', help='Use videos in place without copying')
+    return parser.parse_args()
 
-def main():
-    """Main function to create the video comparison HTML page."""
+
+def extract_index_from_filename(filename):
+    """Extract the index from filenames like test_guided_0000_gt_0000000.mp4"""
+    # Match pattern: test_guided_{index}_gt or test_guided_{index}_pred or test_post_{index} or test_sample_0_{index}
+    patterns = [
+        r'test_guided_(\d+)_gt',
+        r'test_guided_(\d+)_pred',
+        r'test_post_(\d+)_',
+        r'test_sample_0_(\d+)_',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, filename)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def find_videos_by_pattern(dir_path, index):
+    """Find videos for a specific index matching the required patterns"""
+    videos = {
+        'sample': None,  # test_sample_0_{index}_0000000.mp4
+        'pred': None,    # test_guided_{index}_pred_0000000.mp4
+        'post': None,    # test_post_{index}_0000000.mp4
+        'gt': None,      # test_guided_{index}_gt_0000000.mp4
+    }
     
-    base_dir = "/move/u/yufeiy2/egorecon"
-    output_file = "/move/u/yufeiy2/egorecon/video_comparison.html"
+    # Pattern for sample
+    sample_pattern = os.path.join(dir_path, f'test_sample_0_{index:04d}_*.mp4')
+    sample_files = glob(sample_pattern)
+    if sample_files:
+        videos['sample'] = sorted(sample_files)[0]
     
-    print("Searching for video files...")
-    video_pairs = find_video_files(base_dir)
+    # Pattern for pred
+    pred_pattern = os.path.join(dir_path, f'test_guided_{index:04d}_pred_*.mp4')
+    pred_files = glob(pred_pattern)
+    if pred_files:
+        videos['pred'] = sorted(pred_files)[0]
     
-    if not video_pairs:
-        print("No video pairs found!")
+    # Pattern for post
+    post_pattern = os.path.join(dir_path, f'test_post_{index:04d}_*.mp4')
+    post_files = glob(post_pattern)
+    if post_files:
+        videos['post'] = sorted(post_files)[0]
+    
+    # Pattern for gt
+    gt_pattern = os.path.join(dir_path, f'test_guided_{index:04d}_gt_*.mp4')
+    gt_files = glob(gt_pattern)
+    if gt_files:
+        videos['gt'] = sorted(gt_files)[0]
+    
+    return videos
+
+
+def collect_all_indices(dir_path):
+    """Collect all unique indices from video files in the directory"""
+    all_files = glob(os.path.join(dir_path, 'test_*.mp4'))
+    indices = set()
+    
+    for filename in all_files:
+        basename = os.path.basename(filename)
+        idx = extract_index_from_filename(basename)
+        if idx is not None:
+            indices.add(idx)
+    
+    return sorted(indices)
+
+
+def create_video_table(args):
+    """Main function to create video table HTML"""
+    dir_path = args.dir
+    
+    if not os.path.isdir(dir_path):
+        raise ValueError(f"Directory does not exist: {dir_path}")
+    
+    # Collect all indices
+    indices = collect_all_indices(dir_path)
+    
+    if not indices:
+        print(f"No matching video files found in {dir_path}")
         return
     
-    print(f"Found {len(video_pairs)} video pairs:")
-    for pair in video_pairs:
-        print(f"  - {pair['test_id']}")
+    print(f"Found {len(indices)} indices: {indices}")
     
-    print("Creating HTML page...")
-    create_html_page(video_pairs, output_file)
+    # Build cell_list: each row is [sample, pred, post, gt]
+    cell_list = []
+    for idx in indices:
+        videos = find_videos_by_pattern(dir_path, idx)
+        row = [
+            videos['sample'],  # Column 0: test_sample_0_
+            videos['pred'],    # Column 1: test_guided_{index}_pred_
+            videos['post'],    # Column 2: test_post_{index}_
+            videos['gt'],      # Column 3: test_guided_{index}_gt_
+        ]
+        cell_list.append(row)
+        print(f"Index {idx}: sample={videos['sample'] is not None}, "
+              f"pred={videos['pred'] is not None}, "
+              f"post={videos['post'] is not None}, "
+              f"gt={videos['gt'] is not None}")
     
-    print(f"✅ HTML page created successfully!")
-    print(f"Open the file in your browser: {output_file}")
+    # Determine output path
+    if args.output:
+        html_root = args.output
+    else:
+        html_root = os.path.join(dir_path, 'vis.html')
+    
+    # Create HTML table
+    web_utils.run(
+        html_root=html_root,
+        cell_list=cell_list,
+        width=args.width,
+        height=args.height,
+        inplace=args.inplace,
+    )
+    print(f"\nHTML table created at: {html_root}")
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__':
+    args = parse_args()
+    create_video_table(args)

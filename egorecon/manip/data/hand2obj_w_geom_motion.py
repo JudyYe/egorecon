@@ -225,6 +225,7 @@ class HandToObjectDataset(Dataset):
         # else:
         seq_list = json.load(open(self.split_file))[self.split]
 
+        logging.warning("Well let's remove this in the end!!")
         for seq in seq_list:
             if seq not in self.processed_data:
                 continue
@@ -235,7 +236,6 @@ class HandToObjectDataset(Dataset):
             else:
                 obj_list = list(self.processed_data[seq]["objects"].keys())
 
-            logging.warning("Well let's remove this in the end!!")
             # if self.one_window:
             #     t0 = self.t0
             #     t1 = t0 + 120
@@ -484,7 +484,7 @@ class HandToObjectDataset(Dataset):
                         shelf_right_valid_list.append(
                             shelf_data["right_hand"]["valid"][start_idx:end_idx]
                         )
-                    
+
                     window_data = {
                         "demo_id": demo_id,
                         "object_id": obj_id,
@@ -805,6 +805,7 @@ class HandToObjectDataset(Dataset):
         elif hand_io == "cond_out":
             condition = torch.cat([condition, noisy_hand_rep], dim=-1)
         condition = self.normalize_condition(condition)
+
         # mask out condition if there is noisy input?
         if self.opt.hand == "cond_out":
             D = hand_rep.shape[-1] // 2
@@ -820,9 +821,16 @@ class HandToObjectDataset(Dataset):
         else:
             cond_mask = torch.ones_like(condition)
                 
+        if self.opt.condition.get("first_wTo", False):
+            target_first = torch.zeros_like(target[:, :9])
+            target_first[0:1, :9] = target[0, :9]
+            condition = torch.cat([condition, target_first], dim=-1)  # [T, D_cond + 9]
+
+
         left_hand_param = to_tensor(_legacy_to_hand_param(window["left_hand_params"]))
         right_hand_param = to_tensor(_legacy_to_hand_param(window["right_hand_params"]))
         data = {
+            # "first_target": target_first,
             "contact": contact,
             "condition": condition,  # [T, 2*D] - left and right hand trajectories
             "cond_mask": cond_mask,
@@ -908,14 +916,18 @@ class HandToObjectDataset(Dataset):
 
     def add_noise_data(self, can_window_dict):
         """Add noise to the hand for training."""
-        # can_window_dict_noisy = deepcopy(can_window_dict)
+        if self.opt.oracle_cond and self.is_train:
+            can_window_dict_noisy = deepcopy(can_window_dict)
+            can_window_dict_noisy["left_hand_valid"] = torch.ones(self.window_size)
+            can_window_dict_noisy["right_hand_valid"] = torch.ones(self.window_size)
+            return can_window_dict_noisy
 
         can_window_dict_noisy = {}
         use_real_noise = False  # default to use synthetic noise
         shelf_idx = None
         if (
-            not self.is_train or np.random.rand() < 0.5
-        ):  # if test, or 50% of training data, use real noise
+            not self.is_train or np.random.rand() < self.opt.use_real_noise
+        ):  # if test, or 90% of training data, use real noise
             shelf_idx = np.random.randint(0, len(can_window_dict["shelf_left_hand"]))
             use_real_noise = can_window_dict["shelf_ready"][
                 shelf_idx

@@ -1,3 +1,4 @@
+from fire import Fire
 import pickle
 import os
 from collections import defaultdict
@@ -11,10 +12,122 @@ from scipy.ndimage import gaussian_filter
 from scipy.spatial.transform import Rotation as R
 from egorecon.utils.motion_repr import HandWrapper
 from egorecon.manip.data.utils import load_pickle
-
+from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle
 mano_model_folder = "assets/mano"
 device = "cuda:0"
 sided_mano_model = HandWrapper(mano_model_folder).to(device)
+
+
+
+    
+
+def compute_trajectory_noise_stats_with_rot(gt_vec, est_vec):
+    """Compute trajectory-level and per-frame noise statistics.
+
+    Args:
+        gt_traj: (BS, T, D) ground truth value
+        est_traj: (BS, T, D) estimated value
+
+    Returns:
+        traj_std: 
+        frame_std: 
+    """
+    # Convert to vector representation
+    # gt_vec = se3_to_vec(gt_traj)  # (BS, T, 9)
+    # est_vec = se3_to_vec(est_traj)  # (BS, T, 9)
+    traj_std_most, frame_std_most = compute_trajectory_noise_stats(gt_vec[..., 3:], est_vec[..., 3:])
+    
+    rot_gt = gt_vec[..., :3]
+    rot_est = est_vec[..., :3]
+    rot_std = estimate_sigma_rotvec(rot_gt.reshape(-1, 3), rot_est.reshape(-1, 3))
+
+    traj_std = torch.cat([rot_std/10, traj_std_most], dim=0)
+    frame_std = torch.cat([rot_std/10, frame_std_most], dim=0)
+
+    return traj_std, frame_std
+
+
+def estimate_sigma_rotvec(rotA, rotB):
+    """
+    Estimate the noise level (sigma) from clean and noisy rotation vectors.
+    
+    Parameters:
+    -----------
+    rotA : torch.Tensor, shape (N, 3)
+        Clean rotation vectors (axis-angle representation)
+    rotB : torch.Tensor, shape (N, 3)
+        Noisy rotation vectors (axis-angle representation)
+    
+    Returns:
+    --------
+    sigma : float
+        Estimated standard deviation of the noise in radians
+    """
+    # Convert to rotation matrices (batched)
+    Ra = axis_angle_to_matrix(rotA)  # (N, 3, 3)
+    Rb = axis_angle_to_matrix(rotB)  # (N, 3, 3)
+    
+    # Compute relative rotation: Rb @ Ra^T (batched)
+    rel_rot = Rb @ Ra.transpose(-2, -1)  # (N, 3, 3)
+    
+    # Convert to axis-angle to get rotation angles (batched)
+    rotvec = matrix_to_axis_angle(rel_rot)  # (N, 3)
+    angles = torch.norm(rotvec, dim=1)  # (N,)
+    
+    # Estimate sigma as the standard deviation of angular differences
+    sigma = angles.std()
+    
+    return torch.tensor([sigma, sigma, sigma])
+
+
+def generate_noisy_rotvec(rotA, sigma):
+    """
+    Generate noisy rotation vectors by adding angular noise.
+    
+    Parameters:
+    -----------
+    rotA : torch.Tensor, shape (N, 3)
+        Clean rotation vectors (axis-angle representation)
+    sigma : float or torch.Tensor, shape (3,)
+        Standard deviation of noise in radians
+        If tensor, assumes isotropic noise (uses mean of the three values)
+    
+    Returns:
+    --------
+    rotB : torch.Tensor, shape (N, 3)
+        Noisy rotation vectors (axis-angle representation)
+    """
+    N = rotA.shape[0]
+    device = rotA.device
+    dtype = rotA.dtype
+    
+    # Handle sigma as either scalar or (3,) tensor
+    if isinstance(sigma, torch.Tensor):
+        sigma = sigma.mean().item()
+    
+    # Convert to rotation matrices (batched)
+    Ra = axis_angle_to_matrix(rotA)  # (N, 3, 3)
+    
+    # Generate random axes (batched)
+    axes = torch.randn(N, 3, device=device, dtype=dtype)
+    axes = axes / torch.norm(axes, dim=1, keepdim=True)
+    
+    # Generate random angles from normal distribution (batched)
+    angles = torch.randn(N, device=device, dtype=dtype) * sigma
+    
+    # Create perturbation rotations (batched)
+    perturbation_rotvec = angles.unsqueeze(1) * axes  # (N, 3)
+    perturbation = axis_angle_to_matrix(perturbation_rotvec)  # (N, 3, 3)
+    
+    # Apply perturbation: Rb = perturbation @ Ra (batched)
+    Rb = perturbation @ Ra  # (N, 3, 3)
+    
+    # Convert back to rotation vectors (batched)
+    rotB = matrix_to_axis_angle(Rb)  # (N, 3)
+    
+    return rotB
+
+
 
 
 def compute_trajectory_noise_stats(gt_vec, est_vec):
@@ -292,6 +405,8 @@ def compute_noise_param_dict(clean_vec, noisy_vec):
     
     return noise_std_params_dict
 
+
+
 def generate_noisy_hand_traj(clean_vec, hand_noise_dict, traj_std):
     """Generate noisy hand trajectories similar to generate_noisy_smplx.
     
@@ -362,6 +477,15 @@ def generate_noisy_hand_traj(clean_vec, hand_noise_dict, traj_std):
     
     return noisy_vec
 
+def generate_noisy_trajectory_with_rot(clean_vec, traj_std, frame_std):
+    print("traj_std", traj_std.shape, "frame_std", frame_std.shape)
+    noisy_vec_most = generate_noisy_trajectory(clean_vec[..., 3:], traj_std[3:], frame_std[3:])
+    print("noisy_vec_most", noisy_vec_most.shape)
+    print("clean_vec", clean_vec.shape)
+    noisy_vec_rot = generate_noisy_rotvec(clean_vec[..., :3].reshape(-1, 3).to(device), traj_std[:3].to(device))
+    noisy_vec_rot = noisy_vec_rot.reshape(clean_vec.shape[:-1] + (3,))
+    noisy_vec = torch.cat([noisy_vec_rot, noisy_vec_most], dim=-1)
+    return noisy_vec
 
 def generate_noisy_trajectory(clean_vec, traj_std, frame_std):
     """Generate synthetic noisy trajectories.
@@ -398,11 +522,9 @@ def generate_noisy_trajectory(clean_vec, traj_std, frame_std):
     return noisy_vec
 
 
-def est_noise_use_merged_data(num=100):
-    gt_dataset = load_pickle("data/HOT3D-CLIP/preprocess/dataset_contact.pkl")
-    est_dataset = load_pickle(
-        "/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact_patched_hawor_gtcamFalse.pkl"
-    )
+def est_noise_use_merged_data(num=100, gt_dataset_name="dataset_contact", est_dataset_name="dataset_contact_patched_hawor_gtcamFalse"):
+    gt_dataset = load_pickle(f"data/HOT3D-CLIP/preprocess/{gt_dataset_name}.pkl")
+    est_dataset = load_pickle(f"data/HOT3D-CLIP/preprocess/{est_dataset_name}.pkl")
 
     key_list = [
         "left_hand_theta",
@@ -459,21 +581,25 @@ def est_noise_use_merged_data(num=100):
         est_data[key] = torch.from_numpy(est_data[key]).float()
 
         # print(est_data[key][0:2,..., 3:7])
-
-        traj_std, frame_std = compute_trajectory_noise_stats(
-            gt_data[key], est_data[key]
-        )
+        if "theta" in key:
+            traj_std, frame_std = compute_trajectory_noise_stats_with_rot(
+                gt_data[key], est_data[key]
+            )
+        else:
+            print(f"Not theta: {key}")
+            traj_std, frame_std = compute_trajectory_noise_stats(
+                gt_data[key], est_data[key]
+            )
         std_dict[key] = {"traj_std": traj_std, "frame_std": frame_std}
     
     # Print comprehensive validity statistics
     print_validity_statistics(valid_data)
     
 
-    save_file = "data/cache/noise_stats_hand.pkl"
+    save_file = f"data/cache/noise_stats_hand_{est_dataset_name}.pkl"
     pickle.dump(std_dict, open(save_file, "wb"))
 
-    vis_gen(gt_data, est_data, std_dict, "outputs/est_noise_merged.rrd")
-
+    vis_gen(gt_data, est_data, std_dict, f"outputs/est_noise_merged_{est_dataset_name}.rrd")
 
 
 
@@ -546,7 +672,7 @@ def vis_gen(gt_data, est_data, std_dict, save_file="outputs/est_noise.rrd"):
             )
         )
 
-        gen_theta = generate_noisy_trajectory(
+        gen_theta = generate_noisy_trajectory_with_rot(
             right_hand_theta[None],
             std_dict["right_hand_theta"]["traj_std"],
             std_dict["right_hand_theta"]["frame_std"],
@@ -556,6 +682,7 @@ def vis_gen(gt_data, est_data, std_dict, save_file="outputs/est_noise.rrd"):
             std_dict["right_hand_shape"]["traj_std"],
             std_dict["right_hand_shape"]["frame_std"],
         )[0]
+        print(gen_theta.shape, gen_shape.shape)
         verts_gen, faces_gen, joints_gen = (
             sided_mano_model.hand_para2verts_faces_joints(
                 gen_theta, gen_shape, side="right"
@@ -604,5 +731,5 @@ def vis_gen(gt_data, est_data, std_dict, save_file="outputs/est_noise.rrd"):
 
 
 if __name__ == "__main__":
-    est_noise_use_merged_data()
+    Fire(est_noise_use_merged_data)
     # est_noise()

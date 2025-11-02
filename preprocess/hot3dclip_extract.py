@@ -973,6 +973,6 @@ if __name__ == "__main__":
     # rotate_90(clip_path)
     # extract_image_one_clip(clip_path)
 
-    # patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
+    patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
     # split_dataset(args.shelf_name)
     # check_nan(args.shelf_name)

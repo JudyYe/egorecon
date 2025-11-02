@@ -32,6 +32,9 @@ def build_model(opt) -> CondGaussianDiffusion:
     else:
         pass
 
+    if opt.condition.get("first_wTo", False):
+        cond_dim += 9
+
     repr_dim = 9  # Output dimension (3D translation + 6D rotation)
     if hand == 'out':
         repr_dim += hand_rep_dim
