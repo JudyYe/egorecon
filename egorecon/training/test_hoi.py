@@ -59,7 +59,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
-        # if b.item() != 184:
+        # if b.item() != 494:
         #     print(b)
         #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"

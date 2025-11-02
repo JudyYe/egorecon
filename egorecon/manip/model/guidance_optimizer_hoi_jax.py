@@ -54,6 +54,7 @@ GuidanceMode = Literal[
     "with_smoothness",  # L2 + smoothness
     "reproj_cd",  # Reprojection loss with points in correspondence
     "hoi_contact",  # reprojection + HOI contact loss
+    "kp2d",  # reprojection + KP2D loss
     "hand_only",
     "object_only",
     "contact_only",
@@ -83,9 +84,15 @@ class JaxGuidanceParams:
     hand_vel_weight: float = 1.0
     hand_acc_weight: float = 1.0
 
+    use_delta_wTo: jdc.Static[bool] = True
+    delta_wTo_weight: float = 1.0
+
     # Reprojection cost weights
     reproj_weight: float = 1.0
     use_reproj_cd: jdc.Static[bool] = True
+
+    use_kp2d: jdc.Static[bool] = False
+    kp2d_weight: float = 1.0
 
     use_reproj_com: jdc.Static[bool] = False
 
@@ -93,6 +100,9 @@ class JaxGuidanceParams:
     use_rel_contact: jdc.Static[bool] = True
     contact_weight: float = 1.0
     rel_contact_weight: float = 1.0
+
+    use_hand_local: jdc.Static[bool] = True
+    hand_local_weight: float = 1.0
 
     # smoothness weights
     tsl_weight: float = 1.0
@@ -114,13 +124,10 @@ class JaxGuidanceParams:
     ) -> JaxGuidanceParams:
         if mode == "hoi_contact":
             if phase == "inner":
-
-                # less term, hand over relative relation to diffusion 
-                # only turn on essential terms
                 params = JaxGuidanceParams( 
                     use_j2d=True,
+                    use_hand_local=True,
                     use_hand_smoothness=False,
-                    hand_acc_weight=10.,
                     use_j3d=False,
                     use_contact_obs=True,
                     use_static=False,
@@ -128,16 +135,17 @@ class JaxGuidanceParams:
                     use_reproj_cd=False,
                     use_abs_contact=False,
                     use_rel_contact=False,
-                    use_obj_smoothness=True,
+                    use_obj_smoothness=False,
+                    use_delta_wTo=False,
                     max_iters=5,
-                )
+                )                
 
             elif phase == "post":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
                     j2d_weight=10.,
                     use_hand_smoothness=True,
-                    hand_acc_weight=100.,
+                    hand_acc_weight=10.,
                     use_j3d=False,
                     use_contact_obs=True,
                     use_static=True,
@@ -147,10 +155,50 @@ class JaxGuidanceParams:
                     use_abs_contact=True,
                     use_rel_contact=True,
                     use_obj_smoothness=True,
+                    use_delta_wTo=True,
                     max_iters=50,
                 )         
             return params        
                 
+        if mode == "kp2d":
+            if phase == "inner":
+                params = JaxGuidanceParams( 
+                    use_kp2d=True,
+                    use_j2d=True,
+                    use_hand_local=True,
+                    use_hand_smoothness=False,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=False,
+                    use_reproj_com=True,
+                    use_reproj_cd=False,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    use_obj_smoothness=False,
+                    use_delta_wTo=False,
+                    max_iters=5,
+                )                
+
+            elif phase == "post":
+                params = JaxGuidanceParams( 
+                    use_kp2d=True,
+                    use_j2d=True,
+                    j2d_weight=10.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=10.,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=True,
+                    use_reproj_com=False,
+                    use_reproj_cd=True,
+                    reproj_weight=10.,
+                    use_abs_contact=True,
+                    use_rel_contact=True,
+                    use_obj_smoothness=True,
+                    use_delta_wTo=True,
+                    max_iters=50,
+                )         
+            return params        
 
         elif mode == "contact_only":
             max_iters = 5 if phase == "inner" else 50
@@ -311,6 +359,9 @@ def do_guidance_optimization(
         "contact",
         "x2d_vis",
         "j2d_vis",
+        "kp3d",
+        "kp2d",
+        "kp2d_vis",
     ]
     for key in keep_keys:
         if key in obs:
@@ -383,6 +434,9 @@ def _optimize_vmapped(
     target_contact: jax.Array = None,
     target_x2d_vis: jax.Array = None,
     target_j2d_vis: jax.Array = None,
+    target_kp3d: jax.Array = None,
+    target_kp2d: jax.Array = None,
+    target_kp2d_vis: jax.Array = None,
 ) -> tuple[dict, dict]:
     return jax.vmap(
         partial(
@@ -406,6 +460,9 @@ def _optimize_vmapped(
         target_contact=target_contact,
         target_x2d_vis=target_x2d_vis,
         target_j2d_vis=target_j2d_vis,
+        target_kp3d=target_kp3d,
+        target_kp2d=target_kp2d,
+        target_kp2d_vis=target_kp2d_vis,
     )
 
 
@@ -427,6 +484,9 @@ def _optimize(
     target_contact: jax.Array = None,
     target_x2d_vis: jax.Array = None,
     target_j2d_vis: jax.Array = None,
+    target_kp3d: jax.Array = None,
+    target_kp2d: jax.Array = None,
+    target_kp2d_vis: jax.Array = None,
 ) -> jax.Array:
     timesteps = wTo.shape[0]
     assert wTo.shape == (timesteps, 7)
@@ -440,6 +500,11 @@ def _optimize(
     right_betas = right_hand_params[..., -10:]
     left_shaped = left_mano_model.with_shape(jnp.mean(left_betas, axis=0))
     right_shaped = right_mano_model.with_shape(jnp.mean(right_betas, axis=0))
+
+    initial_left_params = left_hand_params
+    initial_right_params = right_hand_params
+
+    initial_wTo = wTo
 
 
     def do_forward_kinematics_two_hands(
@@ -568,13 +633,30 @@ def _optimize(
             diff = guidance_params.contact_weight * diff.flatten()
             return diff
 
+    if guidance_params.use_hand_local:
+        @cost_with_args(
+            _LeftHandParamsVar(jnp.arange(timesteps)),
+            _RightHandParamsVar(jnp.arange(timesteps)),
+            initial_left_params,
+            initial_right_params,
+        )
+        def delta_hand_local_cost(
+            vals: jaxls.VarValues,
+            left_params: _LeftHandParamsVar,
+            right_params: _RightHandParamsVar,
+            initial_left_params: jax.Array,
+            initial_right_params: jax.Array,
+        ) -> jax.Array:
+            left_params = vals[left_params]
+            right_params = vals[right_params]
+            
+            left_delta = left_params[..., 6:] - initial_left_params[..., 6:]
+            right_delta = right_params[..., 6:] - initial_right_params[..., 6:]
+            diff = jnp.concatenate([left_delta, right_delta], axis=0)
+            diff = guidance_params.hand_local_weight * diff.flatten()
+            return diff
+
     if guidance_params.use_hand_smoothness:
-    #     @cost_with_args(
-    #         _LeftHandParamsVar(jnp.arange(timesteps - 1)),
-    #         _LeftHandParamsVar(jnp.arange(1, timesteps)),
-    #         _RightHandParamsVar(jnp.arange(timesteps - 1)),
-    #         _RightHandParamsVar(jnp.arange(1, timesteps)),
-    #     )
     #     def hand_delta_smoothness_cost(
     #         vals: jaxls.VarValues,
     #         left_cur: _LeftHandParamsVar,
@@ -646,6 +728,26 @@ def _optimize(
             diff = jnp.concatenate([left_acc_012, right_acc_012], axis=0)
             diff = guidance_params.hand_acc_weight * diff.flatten()
             return diff
+
+    if guidance_params.use_delta_wTo:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(0, timesteps)),
+            initial_wTo,
+        )
+        def delta_wTo_cost(
+            vals: jaxls.VarValues,
+            wTo: _SE3TrajectoryVar,
+            initial_wTo: jax.Array,
+        ) -> jax.Array:
+            ids = wTo.id
+            wTo = jaxlie.SE3(vals[wTo])
+            init_wTo = jaxlie.SE3(initial_wTo)
+            mask = ids == 0
+            diff = mask *dist_residual(
+                guidance_params.delta_wTo_weight,
+                wTo.inverse() @ init_wTo,
+            )
+            return diff.flatten()
 
     if guidance_params.use_obj_smoothness:
         # smoothness on
@@ -888,6 +990,40 @@ def _optimize(
 
             return guidance_params.reproj_weight * diff.flatten()
 
+
+    if guidance_params.use_kp2d:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            target_kp2d,
+            target_wTc,
+            target_kp3d[None],
+            target_intr[None],
+            target_kp2d_vis,
+        )
+        def reprojection_cost_kp(
+            vals: jaxls.VarValues,
+            var_traj: _SE3TrajectoryVar,
+            target_kp2d: jax.Array,
+            target_wTc: jax.Array,
+            target_kp3d: jax.Array,
+            target_intr: jax.Array,
+            target_kp2d_vis: jax.Array,
+        ) -> jax.Array:
+            """Reprojection cost: project object points and compare with 2D observations.
+            but target_kp2d is not in correspondence, you need to find the closest point in target_kp2d to the projected point.
+            """
+            current_traj = vals[var_traj]  # (7, ) - wxyz_xyz format
+
+            # inside (7,) (5000, 2) (7,) (5000, 3) (3, 3)
+            # Project object points using current trajectory
+            projected_2d = project_jax(
+                target_kp3d, current_traj, target_wTc, target_intr, ndc=ndc
+            )
+
+            diff = projected_2d - target_kp2d  # (num_kp, 2)
+            diff = diff * target_kp2d_vis.reshape(-1, 1)
+
+            return guidance_params.kp2d_weight * diff.flatten()
 
     if guidance_params.use_reproj_cd:
         assert (

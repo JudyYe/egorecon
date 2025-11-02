@@ -678,7 +678,6 @@ def _optimize(
         cost_value = float(jnp.sum(residual ** 2))
         debug_info[cost._get_name()] = cost_value
 
-    print('debug_info', debug_info)
     return optimized_traj, debug_info
 
 

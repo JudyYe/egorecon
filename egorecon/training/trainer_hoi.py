@@ -100,7 +100,6 @@ def gen_one(model, viz_off, opt, step, output, name, debug_info: list = None):
         output["right_hand_params"][0],
         hand_rep="theta",
     )
-    print('debug_info', debug_info)
     fname = viz_off.log_hoi_step(
         *hand_meshes,
         wTo,

@@ -1,5 +1,8 @@
+why hand shake? 
+keypoints ? where to get? 
+
+
 [] first frame condition ddim long term
-[] better base: hoi + rotaion 
 [] print guidance debug log 
 
 
@@ -45,6 +48,22 @@ bowl: 194930206998778
 spoon: 225397651484143
 
 
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=first_frame_hoi/first\${condition.first_wTo}_dyn\${dyn_only}_static\${loss.w_static}_contact_\${loss.w_contact}_smoothness\${loss.w_smoothness} \
+  experiment=noisy_hand   condition.first_wTo=false  \
+  traindata=hotclip_train   \
+  dyn_only=true \
+  condition.bps=2   \
+  general.wandb=true   \
+  train.warmup=0 loss.w_consistency=1 loss.w_smoothness=10 loss.w_contact=100 loss.w_static=100 \
+  general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
+  ckpt=outputs/first_frame/dynTrue/weights/model-20.pt \
+  +engine=move
+
+
+
+
 python -m egorecon.training.trainer_hoi  -m    \
   expname=first_frame_hoi/dyn\${dyn_only}_static\${loss.w_static}_contact\${loss.w_contact}_smoothness\${loss.w_smoothness} \
   experiment=noisy_hand   condition.first_wTo=true  \
@@ -56,6 +75,16 @@ python -m egorecon.training.trainer_hoi  -m    \
   general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
   ckpt=outputs/first_frame/dynTrue/weights/model-20.pt \
   +engine=move
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=first_frame_hoi/dynTrue_static100_contact100_smoothness10 \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train \
+  dyn_only=true \
+  test_folder=eval_\${guide.hint}_\${sample}_vis guide.hint=hoi_contact \
+  test_num=50  \
 
 
 

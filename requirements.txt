@@ -5,6 +5,7 @@ scipy==1.12.0
 scikit-image==0.22.0
 hydra_colorlog==0.1.0
 wandb==0.16.5
-
+Flask-Table
 jax[cuda12]==0.6.1
 git+https://github.com/brentyi/jaxls.git
+

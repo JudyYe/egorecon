@@ -514,6 +514,11 @@ class CondGaussianDiffusion(nn.Module):
         if guide:
             # x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
             x2d = project(batch['wTc'], batch['intr'], batch['newPoints'], batch['wTo'], ndc=True)
+
+            num_kp = 5
+            kp2d = x2d[:, :, :num_kp]  # (B, T, num_kp, 2)
+            kp2d_vis = ((kp2d <= 1) & (kp2d >= -1)).all(dim=-1)  
+
             # if self.opt.guide.hint == "reproj_cd":
             b, T = shape[:2]
             ind_list = []
@@ -534,6 +539,9 @@ class CondGaussianDiffusion(nn.Module):
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,
+                "kp3d": batch["newPoints"][:, :num_kp],
+                "kp2d": kp2d,
+                "kp2d_vis": kp2d_vis,
                 "x2d_vis": x2d_vis.reshape(b, T, 1),
                 "contact": batch['contact'],
                 "j3d": batch['hand_raw'].reshape(b, T, -1, 3),
