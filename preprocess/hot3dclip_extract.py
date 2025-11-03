@@ -110,6 +110,8 @@ def extract_image_one_clip(clip_path, **kwargs):
         )
         down_sample = 4
         H, W = image.shape[:2]
+        print("image shape", H, W)
+        assert False
         image = cv2.resize(image, (W // down_sample, H // down_sample))
 
         # Save image with 4-digit zero-padded frame number
@@ -969,10 +971,10 @@ if __name__ == "__main__":
     # merge_preprocess()
 
     # make_own_split()
-    # clip_path = osp.join(args.clips_dir, "train_aria", "clip-002240.tar")
+    clip_path = osp.join(args.clips_dir, "train_aria", "clip-002240.tar")
     # rotate_90(clip_path)
-    # extract_image_one_clip(clip_path)
+    extract_image_one_clip(clip_path)
 
-    patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
+    # patch_shelf_pred(shelf_name=args.shelf_name, orig_name=args.orig_name)
     # split_dataset(args.shelf_name)
     # check_nan(args.shelf_name)

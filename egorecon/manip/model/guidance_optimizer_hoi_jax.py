@@ -130,7 +130,8 @@ class JaxGuidanceParams:
                     use_hand_smoothness=False,
                     use_j3d=False,
                     use_contact_obs=True,
-                    use_static=False,
+                    use_static=True,
+                    static_weight=1.,
                     use_reproj_com=True,
                     use_reproj_cd=False,
                     use_abs_contact=False,
@@ -143,17 +144,19 @@ class JaxGuidanceParams:
             elif phase == "post":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
-                    j2d_weight=10.,
+                    j2d_weight=1.,
                     use_hand_smoothness=True,
-                    hand_acc_weight=10.,
+                    hand_acc_weight=1.,
                     use_j3d=False,
                     use_contact_obs=True,
                     use_static=True,
+                    static_weight=100.,
                     use_reproj_com=False,
                     use_reproj_cd=True,
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
+                    rel_contact_weight=10.,
                     use_obj_smoothness=True,
                     use_delta_wTo=True,
                     max_iters=50,
@@ -592,31 +595,7 @@ def _optimize(
             diff = diff * target_j2d_vis.reshape(-1, 1)
             diff = guidance_params.j2d_weight * diff.flatten()
             return diff
-            
-    if guidance_params.use_j3d:
-
-        @cost_with_args(
-            _LeftHandParamsVar(jnp.arange(timesteps)),
-            _RightHandParamsVar(jnp.arange(timesteps)),
-            target_j3d,
-        )
-        def j3d_cost(
-            vals: jaxls.VarValues,
-            left_params: _LeftHandParamsVar,
-            right_params: _RightHandParamsVar,
-            target_j3d: jax.Array,
-        ) -> jax.Array:
-            left_mesh, right_mesh = do_forward_kinematics_two_hands(
-                vals, left_params, right_params
-            )
-            left_joints = left_mesh.joints
-            right_joints = right_mesh.joints
-            joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
-            joints_traj = joints_traj.reshape(-1, 3)
-            diff = joints_traj - target_j3d  # (J, 3)
-            diff = guidance_params.j3d_weight * diff.flatten()
-            return diff
-
+       
     if guidance_params.use_contact_obs:
 
         @cost_with_args(
@@ -702,20 +681,20 @@ def _optimize(
             left_mesh_t0, right_mesh_t0 = do_forward_kinematics_two_hands(
                 vals, left_t0, right_t0
             )
-            left_joints_t0 = left_mesh_t0.Ts_world_joint[..., 4:7]
-            right_joints_t0 = right_mesh_t0.Ts_world_joint[..., 4:7]
+            left_joints_t0 = left_mesh_t0.joint_tip_transl
+            right_joints_t0 = right_mesh_t0.joint_tip_transl
 
             left_mesh_t1, right_mesh_t1 = do_forward_kinematics_two_hands(
                 vals, left_t1, right_t1
             )
-            left_joints_t1 = left_mesh_t1.Ts_world_joint[..., 4:7]
-            right_joints_t1 = right_mesh_t1.Ts_world_joint[..., 4:7]
+            left_joints_t1 = left_mesh_t1.joint_tip_transl
+            right_joints_t1 = right_mesh_t1.joint_tip_transl
 
             left_mesh_t2, right_mesh_t2 = do_forward_kinematics_two_hands(
                 vals, left_t2, right_t2
             )
-            left_joints_t2 = left_mesh_t2.Ts_world_joint[..., 4:7]
-            right_joints_t2 = right_mesh_t2.Ts_world_joint[..., 4:7]
+            left_joints_t2 = left_mesh_t2.joint_tip_transl
+            right_joints_t2 = right_mesh_t2.joint_tip_transl
 
             left_vel_01 = left_joints_t1 - left_joints_t0
             right_vel_01 = right_joints_t1 - right_joints_t0
@@ -816,20 +795,26 @@ def _optimize(
             joints_traj = joints_traj.reshape(-1, 3)
             J = joints_traj.shape[0]
 
-            dist = jnp.linalg.norm(
-                current_points[:, None] - joints_traj[None, :, :], axis=-1
-            )  # (P, J)
-            dist = dist.reshape(-1, 2, J // 2)
-            contact_cost = (
-                dist.min(axis=0) * guidance_params.contact_weight
-            )  # (2, J//2)
+            dist, nn_idx, nn_points = knn_jax(joints_traj, current_points, k=1, )
+            dist = dist.reshape(-1, 2, J // 2).clip(min=0.005)  # 0.5cm 
+            dist = dist[..., -5:]  # finger tips
+            dist = dist.min(axis=-1, keepdims=True)  # (2, J//2) -> (2, 1)
+            contact_cost = dist * guidance_params.contact_weight
+
+            # dist = jnp.linalg.norm(
+            #     current_points[:, None] - joints_traj[None, :, :], axis=-1
+            # )  # (P, J)
+            # dist = dist.reshape(-1, 2, J // 2)
+            # contact_cost = (
+            #     dist.min(axis=0) * guidance_params.contact_weight
+            # )  # (2, J//2)
             # contact_cost = -jax.lax.top_k(-contact_cost, k=5, axis=-1)[0]
             # contact_cost = contact_cost.min(axis=-1, keepdims=True)
 
             # target_contact = jnp.min(dist, axis=-1) < guidance_params.contact_th
             # target_contact = jnp.array([0, 1])
             non_contact_cost = (
-                jnp.ones((2, 1)) * 0 * guidance_params.contact_weight
+                jnp.zeros((2, 1)) * guidance_params.contact_weight
             )  # (2,)
 
             cost = jnp.where(
@@ -876,16 +861,16 @@ def _optimize(
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params_cur, right_params_cur
             )
-            left_joints = left_mesh.Ts_world_joint[..., 4:7]
-            right_joints = right_mesh.Ts_world_joint[..., 4:7]
+            left_joints = left_mesh.joint_tip_transl
+            right_joints = right_mesh.joint_tip_transl
             joints_traj_cur = jnp.concatenate([left_joints, right_joints], axis=0)
             joints_traj_cur = joints_traj_cur.reshape(-1, 3)
                 
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
                 vals, left_params_next, right_params_next
             )
-            left_joints = left_mesh.Ts_world_joint[..., 4:7]
-            right_joints = right_mesh.Ts_world_joint[..., 4:7]
+            left_joints = left_mesh.joint_tip_transl
+            right_joints = right_mesh.joint_tip_transl
             joints_traj_next = jnp.concatenate([left_joints, right_joints], axis=0)
             joints_traj_next = joints_traj_next.reshape(-1, 3)
 
@@ -941,18 +926,25 @@ def _optimize(
             contact_next: _ContactVar,
             target_newPoints: jax.Array,
         ) -> jax.Array:
-            wTo_cur = jaxlie.SE3(vals[wTo_cur])
+            wTo_cur =   jaxlie.SE3(vals[wTo_cur])
+            # wTo_next = jax.lax.stop_gradient(jaxlie.SE3(vals[wTo_next]))
+            # contact_cur = jax.lax.stop_gradient(vals[contact_cur])
+            # contact_next = jax.lax.stop_gradient(vals[contact_next])
+
             wTo_next = jaxlie.SE3(vals[wTo_next])
             contact_cur = vals[contact_cur]
             contact_next = vals[contact_next]
-            current_points = wTo_cur @ target_newPoints
-            next_points = wTo_next @ target_newPoints
 
-            wPoints_diff = (next_points - current_points)
+            # current_points = wTo_cur @ target_newPoints
+            # next_points = wTo_next @ target_newPoints
 
-            static_mask = (contact_cur < 0.5) & (contact_next < 0.5)
+            # wPoints_diff = (next_points - current_points)
+
+            static_mask = (contact_cur < 0.5) | (contact_next < 0.5)
             static_mask = static_mask[0] & static_mask[1]
-            static_cost = guidance_params.static_weight * (static_mask * wPoints_diff).flatten()    
+            static_cost = dist_residual(guidance_params.static_weight, wTo_next.inverse() @ wTo_cur)
+            static_cost = static_cost * static_mask.flatten()
+            # static_cost = guidance_params.static_weight * (static_mask * wPoints_diff).flatten()    
             return static_cost
 
     if guidance_params.use_reproj_com:

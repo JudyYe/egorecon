@@ -1018,8 +1018,7 @@ class CondGaussianDiffusion(nn.Module):
                     overlap_weights[:, start_t:end_t, :] += overlap_weights_slice
 
                     t_pt = torch.full((b,), t, device=device, dtype=torch.long)
-                    # denoise
-                    # print('x_cond', x_cond[0, 0:2, -11:-6], x_cond[0, start_t:end_t, -11:-6])
+
                     cond_cur = x_cond[:, start_t:end_t] 
                     # if self.opt.condition.get("first_wTo", False) and start_t > 0 and prev_model_x0_pred is not None:
                     #     # use the prediction from previous window to condition the first step of this sliding window

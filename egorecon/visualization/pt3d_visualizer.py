@@ -55,18 +55,9 @@ class Pt3dVisualizer:
             raise ValueError(f"Invalid library: {lib}")
         return object_cache
 
-    def log_hoi_step(
-        self,
-        left_hand_meshes,
-        right_hand_meshes,
-        wTo,
-        oObj,
-        pref="training/",
-        step=0,
-        save_to_file=True,
-        device="cuda:0",
-        contact=None,
-        debug_info: list = None,
+    @staticmethod
+    def get_scene(
+        left_hand_meshes, right_hand_meshes, wTo, oObj, contact, device, coord=True
     ):
         B, P, D = left_hand_meshes.verts_padded().shape
         left_textures = mesh_utils.get_color("blue").expand(B, P, 3).to(device)
@@ -114,15 +105,126 @@ class Pt3dVisualizer:
         )
         wScene = mesh_utils.join_scene([left_hand_meshes, right_hand_meshes, wObj_exp])
 
-        coord = plot_utils.create_coord(device, B, size=0.2)
-        wScene = mesh_utils.join_scene([wScene, coord])
+        if coord:
+            coord = plot_utils.create_coord(device, B, size=0.2)
+            wScene = mesh_utils.join_scene([wScene, coord])
+        return wScene
+
+    def log_hoi_step_from_cam_side(
+        self,
+        left_hand_meshes,
+        right_hand_meshes,
+        wTo,
+        oObj,
+        contact,
+        intr_pix,
+        wTc,
+        device,
+        save_to_file=True,
+        pref="training/",
+        debug_info: list = None,
+    ):        
+        B = wTc.shape[0]
+        # to ndc
+        intr = intr_pix.clone()[None].repeat(B, 1, 1)
+        H = (intr_pix[..., 0, 2] * 2).item()
+        W = (intr_pix[..., 1, 2] * 2).item()
+        intr =mesh_utils.intr_from_screen_to_ndc(intr, W, H)
+
+        wScene = self.get_scene(
+            left_hand_meshes, right_hand_meshes, wTo, oObj, contact, device, coord=False,
+        )
+        fxfy, pxpy = mesh_utils.get_fxfy_pxpy(intr)
+        camera = PerspectiveCameras(fxfy, pxpy, device=device)
+        cScene = mesh_utils.apply_transform(wScene, geom_utils.inverse_rt_v2(geom_utils.se3_to_matrix_v2(wTc)))
+        image_cam = mesh_utils.render_mesh(cScene, camera, out_size=360)  # (T, 3, H, W)
+
+        nTw = mesh_utils.get_nTw(wScene.verts_packed()[None], new_scale=1.2)
+        print("render wScene", wScene.verts_padded().shape, nTw.shape)
+
+        image_side = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
+
+        image_all = torch.cat([image_cam["image"], image_side["image"]], dim=-1) 
+        if save_to_file:
+            fname = osp.join(self.save_dir, f"{pref}")
+            image_utils.save_gif(
+                image_all.unsqueeze(1), fname, text_list=debug_info, fps=30, ext=".mp4"
+            )
+            return fname + ".mp4"
+        else:
+            return image_all
+
+
+
+    def log_hoi_step_from_cam(
+        self,
+        left_hand_meshes,
+        right_hand_meshes,
+        wTo,
+        oObj,
+        contact,
+        intr_pix,
+        wTc,
+        device,
+        save_to_file=True,
+        pref="training/",
+        debug_info: list = None,
+    ):
+        B = wTc.shape[0]
+        # to ndc
+        intr = intr_pix.clone()[None].repeat(B, 1, 1)
+        H = (intr_pix[..., 0, 2] * 2).item()
+        W = (intr_pix[..., 1, 2] * 2).item()
+        print(H, W)
+        intr =mesh_utils.intr_from_screen_to_ndc(intr, W, H)
+
+        wScene = self.get_scene(
+            left_hand_meshes, right_hand_meshes, wTo, oObj, contact, device, coord=False,
+        )
+        fxfy, pxpy = mesh_utils.get_fxfy_pxpy(intr)
+        print(fxfy, pxpy)
+        camera = PerspectiveCameras(fxfy, pxpy, device=device)
+        cScene = mesh_utils.apply_transform(wScene, geom_utils.inverse_rt_v2(geom_utils.se3_to_matrix_v2(wTc)))
+        image = mesh_utils.render_mesh(cScene, camera, out_size=360)  # (T, 3, H, W)
+
+        image_list = image["image"]
+        if save_to_file:
+            fname = osp.join(self.save_dir, f"{pref}")
+            image_utils.save_gif(
+                image_list.unsqueeze(1), fname, text_list=debug_info, fps=30, ext=".mp4"
+            )
+            return fname + ".mp4"
+        else:
+            return image_list
+
+    def log_hoi_step(
+        self,
+        left_hand_meshes,
+        right_hand_meshes,
+        wTo,
+        oObj,
+        pref="training/",
+        step=0,
+        save_to_file=True,
+        device="cuda:0",
+        contact=None,
+        debug_info: list = None,
+    ):
+        wScene = self.get_scene(
+            left_hand_meshes,
+            right_hand_meshes,
+            wTo,
+            oObj,
+            contact,
+            device,
+        )
 
         nTw = mesh_utils.get_nTw(wScene.verts_packed()[None], new_scale=1.2)
         print("render wScene", wScene.verts_padded().shape, nTw.shape)
 
         image_list = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
 
-        image_list = image_list["image"]
+        image_list = image_list["image"]  # (T, 3, H, W)
 
         if save_to_file:
             fname = osp.join(self.save_dir, f"{pref}")

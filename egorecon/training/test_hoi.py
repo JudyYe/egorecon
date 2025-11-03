@@ -14,12 +14,7 @@ from ..manip.model import build_model
 from ..manip.model.guidance_optimizer_hoi_jax import (
     do_guidance_optimization,
 )
-# from ..manip.model.guidance_optimizer_jax import (
-#     do_guidance_optimization,
-#     se3_to_wxyz_xyz,
-#     wxyz_xyz_to_se3,
-# )
-from .trainer_hoi import gen_vis_res, vis_gen_process, gen_vis_hoi_res
+from .trainer_hoi import gen_vis_res, vis_gen_process, gen_vis_hoi_res, vis_one_from_cam, vis_one_from_cam_side
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
 )
@@ -28,6 +23,10 @@ from ..utils.evaluation_metrics import compute_wTo_error
 from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..manip.model import fncmano_jax
 from pathlib import Path
+import imageio
+from PIL import Image   
+
+
 device = torch.device("cuda:0")
 
 
@@ -43,6 +42,17 @@ def build_model_from_ckpt(opt):
     return diffusion_model
 
 
+def extract_hoi(demo_id, fname,):
+    hot3d_dir = f"data/HOT3D-CLIP/extract_images-rot90/clip-{demo_id}"
+    image_paths = glob(osp.join(hot3d_dir, "*.jpg"))
+    print(f"query {osp.join(hot3d_dir, '*.jpg')}, found {len(image_paths)} images")
+    image_paths = sorted(image_paths)
+    images = [Image.open(image_path) for image_path in image_paths]
+    images = [image.convert("RGB") for image in images]
+    images = [image.resize((360, 360)) for image in images]
+    os.makedirs(osp.dirname(fname), exist_ok=True)
+    imageio.mimwrite(fname, images, fps=30)
+    
 
 @torch.no_grad()
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
@@ -59,8 +69,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
-        # if b.item() != 494:
-        #     print(b)
+        # if b.item() != 484:
         #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
 
@@ -77,6 +86,24 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             padding_mask = None
         padding_mask = None            
 
+
+        # visualize real RGB
+        fname = osp.join(model_cfg.exp_dir, opt.test_folder, "log", f"{b:04d}_input.mp4")
+        extract_hoi(sample["demo_id"][0], fname)
+
+        # visualize gt
+        gt = diffusion_model.decode_dict(diffusion_model.denormalize_data(sample["target"]))
+        gt["newMesh"] = sample["newMesh"]
+        gt["contact"] = sample["contact"]
+        vis_one_from_cam_side(            
+            diffusion_model,
+            viz_off,
+            model_cfg,
+            step=0,
+            output=gt,
+            camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+            name=f"{b:04d}_gt",
+        )
         for i in range(1):
             guided_object_pred_raw, info = diffusion_model.sample_raw(
                 torch.randn_like(sample["target"]),
@@ -92,13 +119,14 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
             pred_dict["newMesh"] = sample["newMesh"]
             if opt.vis_x:
-                gen_one(
+                vis_one_from_cam_side(
                     diffusion_model,
                     viz_off,
                     model_cfg,
                     step=0,
                     output=pred_dict,
-                    name=f"test_sample_{i}_{b:04d}",
+                    camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+                    name=f"{b:04d}_{i}_sample",
                 )        
         guided_object_pred_raw, info = diffusion_model.sample_raw(
             torch.randn_like(sample["target"]),
@@ -118,26 +146,27 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             info_per_time = [[] for _ in range(T)]
             for t in range(T):
                 for b in range(B):
-                    info_str = f"t={t:04d} \n"
+                    info_str = f"t={t:04d} x1000\n"
                     for k, v in info.items(): 
-                        info_str += f"  {k}={v[b, t]:.4f} \n"
+                        info_str += f"  {k}={v[b, t]*1000:.4f} \n"
                     info_per_time[t].append(info_str)
 
             return info_per_time
 
         if opt.vis_x:
             info_per_time = get_info_str(info['info_inner'][-1])
-            gen_vis_hoi_res(
-                diffusion_model,
-                viz_off,
-                model_cfg,
-                step=0,
-                batch=sample,
-                output={"pred_raw": guided_object_pred_raw},
-                pref=f"test_guided_{b:04d}",
-                debug_info=info_per_time,
-            )
-
+            pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
+            pred_dict["newMesh"] = sample["newMesh"]
+            vis_one_from_cam_side(
+                    diffusion_model,
+                    viz_off,
+                    model_cfg,
+                    step=0,
+                    output=pred_dict,
+                    camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+                    name=f"{b:04d}_guided",
+                    debug_info=info_per_time,
+                )        
         # save for debug
         # tmp_file = "outputs/tmp.pkl"
         # with open(tmp_file, "wb") as f:
@@ -185,17 +214,16 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
             if opt.vis_x:
                 pred_dict["newMesh"] = sample["newMesh"]
-                gen_one(
+                vis_one_from_cam_side(
                     diffusion_model,
                     viz_off,
                     model_cfg,
                     step=0,
-                    # batch=sample,
                     output=pred_dict,
-                    name=f"test_post_{b:04d}",
+                    camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+                    name=f"{b:04d}_post",
                     debug_info=info_per_time,
                 )
-            
             save_prediction(post_pred_dict, index, osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"))
 
 

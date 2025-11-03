@@ -70,6 +70,69 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
     imageio.mimwrite(save_dir, frames, fps=30)
 
 
+def vis_one_from_cam_side(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: OmegaConf, step: int, output: dict, camera: dict, name: str, debug_info: list = None):
+    oObj = output["newMesh"]  # a Mesh??
+
+    oObj = Meshes(
+        verts=[oObj.verts_list()[0]],
+        faces=[oObj.faces_list()[0]],
+    ).to(device)
+
+    wTo = output["wTo"][0]
+    hand_meshes = model.decode_hand_mesh(
+        output["left_hand_params"][0],
+        output["right_hand_params"][0],
+        hand_rep="theta",
+    )
+
+    fname = viz_off.log_hoi_step_from_cam_side(
+        *hand_meshes,
+        wTo,
+        oObj,
+        pref=name + f"_{step:07d}",
+        contact=output["contact"][0],
+        intr_pix=camera['intr'],
+        wTc=camera['wTc'],
+        device=device,
+        debug_info=debug_info,
+    )    
+    log_dict = {name: wandb.Video(fname)}
+    return log_dict
+
+def vis_one_from_cam(model, viz_off, opt, step, output, camera, name, debug_info: list = None):
+    oObj = output["newMesh"]  # a Mesh??
+
+    oObj = Meshes(
+        verts=[oObj.verts_list()[0]],
+        faces=[oObj.faces_list()[0]],
+    ).to(device)
+
+    wTo = output["wTo"][0]
+    hand_meshes = model.decode_hand_mesh(
+        output["left_hand_params"][0],
+        output["right_hand_params"][0],
+        hand_rep="theta",
+    )
+
+    fname = viz_off.log_hoi_step_from_cam(
+        *hand_meshes,
+        wTo,
+        oObj,
+        pref=name + f"_{step:07d}",
+        contact=output["contact"][0],
+        intr_pix=camera['intr'],
+        wTc=camera['wTc'],
+        device=device,
+        debug_info=debug_info,
+    )
+    log_dict = {name: wandb.Video(fname)}
+
+    return log_dict
+
+
+
+
+
 def gen_one(model, viz_off, opt, step, output, name, debug_info: list = None):
     """
     Generate one visualization result for hand-object interaction.
