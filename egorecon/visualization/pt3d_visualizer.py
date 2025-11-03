@@ -32,7 +32,7 @@ class Pt3dVisualizer:
         self.object_cache = self.setup_template(self.object_mesh_dir)
 
     @staticmethod
-    def setup_template(object_mesh_dir, lib="hotclip"):
+    def setup_template(object_mesh_dir, lib="hotclip", load_mesh=True):
         object_cache = {}
         if lib == "hot3d":
             glob_file = glob(osp.join(object_mesh_dir, "*.glb"))
@@ -49,7 +49,11 @@ class Pt3dVisualizer:
                 obj2uid[int(obj_id)] = obj_info["original_id"]
             for mesh_file in glob_file:
                 obj_id = int(osp.basename(mesh_file).split(".")[0].split("_")[-1])
-                object_cache[f"{obj_id:06d}"] = mesh_utils.load_mesh(mesh_file)
+                if load_mesh:
+                    mesh = mesh_utils.load_mesh(mesh_file)
+                else:
+                    mesh = mesh_file
+                object_cache[f"{obj_id:06d}"] = mesh
                 object_cache[obj2uid[obj_id]] = object_cache[f"{obj_id:06d}"]
         else:
             raise ValueError(f"Invalid library: {lib}")

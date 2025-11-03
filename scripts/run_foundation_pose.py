@@ -1,6 +1,10 @@
 # run foundation pose on HOT3D-CLIP
 import os.path as osp
-
+import json 
+from tqdm import tqdm   
+from functools import partial
+import os
+from glob import glob
 import numpy as np
 import torch
 from jutils import geom_utils, hand_utils, image_utils, mesh_utils
@@ -17,11 +21,34 @@ from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
 mano_model_folder = "assets/mano"
 
 seq_name = "002240"
-all_dat = load_pickle("data/HOT3D-CLIP/preprocess/dataset_contact.pkl")
+data_dir = "data/HOT3D-CLIP/"
+all_data = load_pickle("data/HOT3D-CLIP/preprocess/dataset_contact.pkl")
 device = torch.device("cuda:0")
 
 
 vis_dir = "outputs/debug_fp_mask"
+
+def batch_prorcess(func, split, skip=True, save_dir=""):
+    split_file = osp.join("data/HOT3D-CLIP/sets", f"split.json")
+    with open(split_file, "r") as f:
+        split_dict = json.load(f)
+    seq_list = split_dict[split]
+    for seq in tqdm(seq_list):
+        done_file = osp.join(save_dir, "done", f"{seq}")
+        lock_file = osp.join(save_dir, "lock", f"{seq}")
+        save_file = osp.join(save_dir, f"{seq}.npz")
+
+        if skip and osp.exists(done_file):
+            continue
+        try:
+            os.makedirs(lock_file)
+        except FileExistsError:
+            if skip:
+                continue
+        func(seq, save_file=save_file)
+        os.makedirs(done_file)
+        os.rmdir(lock_file)
+
 
 
 def discretize_rgb_to_obj_uid(rgb, index, index2objid, fg_mask):
@@ -76,10 +103,11 @@ def discretize_rgb_to_obj_uid(rgb, index, index2objid, fg_mask):
     return obj_mask
 
 
-def get_mask(seq_data, object_library, sided_model: HandWrapper):
+def get_mask(seq, all_data, object_library, sided_model: HandWrapper, vis=False, save_file=None):
     # mask:
     # {'uid': [T, H, W]}
     # create scene
+    seq_data = all_data[seq]
     wScene = []
 
     index = (np.linspace(0.1, 0.9, len(seq_data["objects"])) * 255).astype(np.uint8)
@@ -87,7 +115,6 @@ def get_mask(seq_data, object_library, sided_model: HandWrapper):
     for i, obj_id in enumerate(seq_data["objects"]):
         objid2index[obj_id] = index[i]
     index2objid = {index: obj_id for obj_id, index in objid2index.items()}
-    print(index)
 
     for i, (obj_id, obj_data) in enumerate(seq_data["objects"].items()):
         wTo = torch.FloatTensor(obj_data["wTo"]).to(device)
@@ -151,7 +178,7 @@ def get_mask(seq_data, object_library, sided_model: HandWrapper):
         specular_color=((0.0, 0.0, 0.0),),  # No specular reflectivity
         shininess=0,
     )
-    
+
     flat_shader = HardFlatShader(
         device=device,
         lights=ambient_lights,
@@ -165,30 +192,133 @@ def get_mask(seq_data, object_library, sided_model: HandWrapper):
     )
     rgb = image["image"]  # (N, 3, H, W)
     fg_mask = image["mask"]
-    left_hand_mask = (image["image"][:, 1:2] > 0.5).float()
-    right_hand_mask = (image["image"][:, 2:3] > 0.5).float()
+    left_hand_mask = ((image["image"][:, 1:2] > 0.5) & (fg_mask > 0.5)).float()
+    right_hand_mask = ((image["image"][:, 2:3] > 0.5) & (fg_mask > 0.5)).float()
     # not left hand and not right hand
     obj_mask = fg_mask * (1 - left_hand_mask) * (1 - right_hand_mask)
-    image_utils.save_gif(rgb.unsqueeze(1), osp.join(vis_dir, "rgb"), ext=".mp4", fps=30)
+    if vis:
+        image_utils.save_gif(rgb.unsqueeze(1), osp.join(vis_dir, "rgb"), ext=".mp4", fps=30)
 
     # Discretize RGB image to object UIDs
     obj_mask = discretize_rgb_to_obj_uid(
         rgb, index, index2objid, obj_mask
     )  # (N, #obj, H, W)
     num_obj = obj_mask.shape[1]
-    image_utils.save_gif(
-        obj_mask.unsqueeze(2), osp.join(vis_dir, "obj_mask"), ext=".mp4", col=num_obj, max_size=324*8, fps=30
+    hand_obj_mask = torch.cat(
+        [left_hand_mask, right_hand_mask, obj_mask], dim=1
+    )  # (N, 2 + #obj, H, W)
+    if vis:
+        image_utils.save_gif(
+        hand_obj_mask.unsqueeze(2),
+        osp.join(vis_dir, "hand_obj_mask"),
+        ext=".mp4",
+        col=num_obj + 2,
+        max_size=324 * 8,
+        fps=30,
     )
 
+    hand_obj_mask_np = hand_obj_mask.transpose(0, 1).cpu().numpy() > 0.5 # (2 + #obj, N, H, W)
+    index = np.array(["left_hand", "right_hand", *seq_data["objects"].keys()])
 
-def run_foundation_pose(seq):
-    # save
+    if save_file is None:
+        save_file = osp.join(vis_dir, f"{seq}.npz")
+    np.savez_compressed(save_file, hand_obj_mask=hand_obj_mask_np, index=index)
+
+
+def run_foundation_pose(seq, all_data, object_library, ):
+    seq_data = all_data[seq]
+    image_dir = osp.join(data_dir, "extract_images-rot90", f"clip-{seq}")
+    image_list = sorted(glob(osp.join(image_dir, "*.jpg")))
+    print(f"query {image_dir}, found {len(image_list)} images")
+    T = len(image_list)
+    assert T == len(seq_data["wTc"]), f"T mismatch: {T} != {len(seq_data['wTc'])}"
+
+    mask_file = osp.join(data_dir, "gt_mask", f"{seq}.npz")
+    mask_data = np.load(mask_file)
+    hand_obj_mask = mask_data["hand_obj_mask"]
+    index = mask_data["index"]
+
+    wTc = torch.FloatTensor(seq_data["wTc"]).to(device)
+    intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
+
+    # save to wTo
+    for o, obj_id in enumerate(seq_data["objects"]):
+        i = o + 2
+        print(index[i], obj_id)
+
+        obj_mask = hand_obj_mask[i]  # (T, H, W) 
+        intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
+        intr[..., :2, :] /= down
+        
+        # Get mesh file path from object library or construct it
+        
+        mesh_file = object_library[obj_id]
+        # Convert intrinsics to numpy [fx, fy, cx, cy] format
+        if isinstance(intr, torch.Tensor):
+            intr_np = intr.cpu().numpy()
+        else:
+            intr_np = intr
+        if intr_np.shape == (3, 3):
+            fx, fy = intr_np[0, 0], intr_np[1, 1]
+            cx, cy = intr_np[0, 2], intr_np[1, 2]
+            intr_np = np.array([fx, fy, cx, cy])
+        
+        cTo, valid = track_obj(mesh_file, obj_mask, image_list, intr_np)  # (T, 4, 4), (T, )
+        
+        wTo = wTc @ cTo
+        print('wTo', wTo.shape)
+        import ipdb; ipdb.set_trace()
+
     return
 
+def track_obj(mesh_file, obj_mask, image_list, intr):
+    """
+    Track object pose using FoundationPose with automatic reinitialization.
+    
+    Args:
+        fp_wrapper: PoseWrapper instance (optional, will create new if None)
+        mesh_file: Path to object mesh file (.glb or .obj)
+        obj_id: Object ID (for logging)
+        obj_mask: (T, H, W) boolean mask array
+        image_list: List of image paths
+        intr: Camera intrinsics [fx, fy, cx, cy] or 3x3 matrix
+    
+    Returns:
+        cTo: (T, 4, 4) array of poses in camera frame
+        valid: (T,) boolean array indicating valid poses
+    """
+    from scripts.fp_utils import PoseWrapper
+
+    pose_wrapper = PoseWrapper(
+        mesh_file=mesh_file,
+        intrinsic=intr,
+        mask_list=obj_mask
+    )
+    
+    # Track through video
+    cTo, valid = pose_wrapper.track_video(image_list, intr)
+    cTo = torch.FloatTensor(cTo).to(device)
+    valid = torch.FloatTensor(valid).to(device)
+    print('cTo', cTo.shape, valid.shape)
+    
+    return cTo, valid
+
+down = 4
 
 if __name__ == "__main__":
     hand_wrapper = HandWrapper(mano_model_folder).to(device)
+    # object_library = Pt3dVisualizer.setup_template(
+    #     object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip"
+    # )
+
+    # func = partial(get_mask, object_library=object_library, sided_model=hand_wrapper, all_data=all_data)
+    
+
+    # batch_prorcess(func,  split="test", save_dir=osp.join(data_dir, "gt_mask"))
+    # get_mask(all_dat[seq_name], object_library, hand_wrapper)
+
     object_library = Pt3dVisualizer.setup_template(
-        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip"
+        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip", load_mesh=False
     )
-    get_mask(all_dat[seq_name], object_library, hand_wrapper)
+    seq_name = "001992"
+    run_foundation_pose(seq_name, all_data, object_library, )
