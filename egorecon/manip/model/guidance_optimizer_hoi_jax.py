@@ -126,7 +126,9 @@ class JaxGuidanceParams:
             if phase == "inner":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
+                    j2d_weight=20.,
                     use_hand_local=True,
+                    hand_local_weight=.1,
                     use_hand_smoothness=False,
                     use_j3d=False,
                     use_contact_obs=True,
@@ -139,12 +141,14 @@ class JaxGuidanceParams:
                     use_obj_smoothness=False,
                     use_delta_wTo=False,
                     max_iters=5,
+                    lambda_initial=1e-2,
                 )                
+                print('temporary, change back later')
 
             elif phase == "post":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
-                    j2d_weight=1.,
+                    j2d_weight=20.,
                     use_hand_smoothness=True,
                     hand_acc_weight=1.,
                     use_j3d=False,
@@ -156,7 +160,7 @@ class JaxGuidanceParams:
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
-                    rel_contact_weight=10.,
+                    rel_contact_weight=1,
                     use_obj_smoothness=True,
                     use_delta_wTo=True,
                     max_iters=50,
@@ -796,10 +800,28 @@ def _optimize(
             J = joints_traj.shape[0]
 
             dist, nn_idx, nn_points = knn_jax(joints_traj, current_points, k=1, )
-            dist = dist.reshape(-1, 2, J // 2).clip(min=0.005)  # 0.5cm 
-            dist = dist[..., -5:]  # finger tips
-            dist = dist.min(axis=-1, keepdims=True)  # (2, J//2) -> (2, 1)
-            contact_cost = dist * guidance_params.contact_weight
+            res = current_points[nn_idx.squeeze(1)] - joints_traj  # (J*2, 3)
+            # print('res', res.shape)
+            
+            dist = dist.reshape(2, J // 2)
+            res = res.reshape(2, J // 2, 3)
+            dist = dist[..., -5:]  # finger tips  # (2, J//2)
+            res = res[..., -5:, :]  # (2, J//2, 3)
+            # print(res.shape)  # (2, 5, 3)
+            
+            # dist = dist.min(axis=-1, keepdims=True)  # (2, J//2) -> (2, 1)
+            dist_idx = jnp.argmin(dist, axis=-1)  # (2, )
+            # print('dist_idx', dist_idx.shape,)  
+            # (2, 5, 3) -> (2, 1, 3)
+            res_min = jnp.take_along_axis(res, dist_idx[..., None, None], axis=-2)  # (2, 1, 3)
+            res_min = res_min.squeeze(1)  # (2, 3)
+
+            # print('res_min', res_min.shape)
+            
+            res_min = residual_with_threshold(res_min, 0.005)  # half a cm
+            contact_cost = res_min * guidance_params.contact_weight
+            contact_cost = contact_cost.reshape(2, 3)
+            D = contact_cost.shape[1]
 
             # dist = jnp.linalg.norm(
             #     current_points[:, None] - joints_traj[None, :, :], axis=-1
@@ -814,7 +836,7 @@ def _optimize(
             # target_contact = jnp.min(dist, axis=-1) < guidance_params.contact_th
             # target_contact = jnp.array([0, 1])
             non_contact_cost = (
-                jnp.zeros((2, 1)) * guidance_params.contact_weight
+                jnp.zeros((2, D)) * guidance_params.contact_weight
             )  # (2,)
 
             cost = jnp.where(
@@ -896,11 +918,13 @@ def _optimize(
 
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
-            dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
+            # dist_prox = jnp.linalg.norm(res, axis=-1)    # (J,)
+            dist_prox = res.reshape(2, J//2 * 3)
+            D = dist_prox.shape[1]
             
-            contact_cost = guidance_params.rel_contact_weight * dist_prox.reshape(2, J//2)  # (2, J//2)
+            contact_cost = guidance_params.rel_contact_weight * dist_prox
 
-            no_contact_cost = jnp.ones((2, J//2)) * 0 * guidance_params.rel_contact_weight  # (2, J//2)
+            no_contact_cost = jnp.ones((2, D)) * 0 * guidance_params.rel_contact_weight  # (2, D)
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
 
             # is_static = (((contact_cur <= 0.5) & (contact_cur <= 0.5)).sum(-1) >= 2) # (1, 2)
@@ -1098,37 +1122,117 @@ def _optimize(
 
 
     # Compute cost values for all factors
-    debug_info = {}
+    debug_info = get_cost_values(graph, solutions, timesteps, factors)
+    return {
+        "wTo": optimized_traj,
+        "left_hand_params": optimized_left_params,
+        "right_hand_params": optimized_right_params,
+        "contact": optimized_contact,
+    }, debug_info
+
+
+def get_cost_values(problem, solution, timesteps, factors):
+    """Get per-timestep cost values for all costs in the problem.
+    
+    Args:
+        problem: The AnalyzedLeastSquaresProblem (result of jaxls.LeastSquaresProblem.analyze())
+        solution: VarValues solution
+        timesteps: Number of timesteps to pad to
+        factors: Original list of Cost objects (before analysis)
+        
+    Returns:
+        dict: {cost_name: cost_values} where cost_values is shape (timesteps,)
+    """
+    cost_dict = {}
+    
+    # Iterate over original costs (factors) to get per-timestep evaluation
     for cost in factors:
-        # Helper to evaluate cost for a single timestep
-        def eval_cost_at_timestep(t: int):
+        cost_name = cost._get_name()
+        
+        # Get variables from the cost to determine timestep structure
+        def get_variables_from_args(args):
+            """Recursively extract Var objects from cost args."""
+            variables = []
+            if isinstance(args, (list, tuple)):
+                for arg in args:
+                    variables.extend(get_variables_from_args(arg))
+            elif isinstance(args, jaxls.Var):
+                variables.append(args)
+            return variables
+        
+        # Extract variables from cost args
+        cost_vars = get_variables_from_args(cost.args)
+        
+        # Detect cost type by examining timestep variable IDs
+        # Note: We check shapes and array identity (not values) to avoid traced boolean conversions
+        timestep_vars_info = []
+        for var in cost_vars:
+            if isinstance(var.id, jax.Array) and var.id.ndim > 0 and var.id.shape[0] > 1:
+                timestep_vars_info.append((var.id, var))
+        
+        # Determine cost type based on timestep variable structure
+        # Use shape and array identity checks (not value comparisons) to avoid traced booleans
+        if len(timestep_vars_info) == 0:
+            cost_type = "standard"
+        elif len(timestep_vars_info) == 1:
+            cost_type = "standard"
+        elif len(timestep_vars_info) == 2:
+            ids1, var1 = timestep_vars_info[0]
+            ids2, var2 = timestep_vars_info[1]
+            # Check if same variable (identity check) or same shape
+            if var1 is var2 or ids1.shape[0] == ids2.shape[0]:
+                # Same variable or same shape - check if they're actually the same object
+                if var1 is var2:
+                    cost_type = "standard"
+                else:
+                    # Different variables with same shape - likely first-order offset
+                    # We can't check values in JIT, so assume first-order if different objects
+                    cost_type = "first_order"
+            else:
+                # Different shapes - first-order
+                cost_type = "first_order"
+        elif len(timestep_vars_info) >= 3:
+            ids1, var1 = timestep_vars_info[0]
+            ids2, var2 = timestep_vars_info[1]
+            ids3, var3 = timestep_vars_info[2]
+            # Check if all same variable or all same shape
+            if var1 is var2 is var3:
+                cost_type = "standard"
+            elif ids1.shape[0] == ids2.shape[0] == ids3.shape[0]:
+                # Same shape but different variables - likely second-order offset
+                cost_type = "second_order"
+            else:
+                # Different shapes - second-order
+                cost_type = "second_order"
+        else:
+            cost_type = "standard"
+        
+        # Helper to evaluate cost at a single timestep (for standard costs)
+        def eval_cost_standard(t: int):
             # Create VarValues for this timestep by extracting per-timestep variables
             timestep_vars = []
             timestep_args = []
             
-            for arg in cost.args:
-                if isinstance(arg, jaxls.Var):
-                    # Check if variable spans timesteps (id is array  and fist dim > 1)
-                    if isinstance(arg.id, jax.Array) and arg.id.ndim > 0 and arg.id.shape[0] > 1:
-                        # Create single-timestep variable with id = t
-                        timestep_var = type(arg)(t)
-                        timestep_vars.append(timestep_var.with_value(solutions[arg][t]))
-                        timestep_args.append(timestep_var)
+            def extract_timestep_args(args, t_val):
+                """Recursively extract timestep-specific args."""
+                if isinstance(args, (list, tuple)):
+                    return type(args)(extract_timestep_args(arg, t_val) for arg in args)
+                elif isinstance(args, jaxls.Var):
+                    if isinstance(args.id, jax.Array) and args.id.ndim > 0 and args.id.shape[0] > 1:
+                        timestep_var = type(args)(t_val)
+                        timestep_vars.append(timestep_var.with_value(solution[args][t_val]))
+                        return timestep_var
                     else:
-                        # Single timestep variable
-                        timestep_vars.append(arg.with_value(solutions[arg]))
-                        timestep_args.append(arg)
-                elif isinstance(arg, jax.Array) and arg.ndim > 1:
-                    # Array argument - extract timestep (assuming first dimension is time)
-                    timestep_args.append(arg[t])
+                        timestep_vars.append(args.with_value(solution[args]))
+                        return args
+                elif isinstance(args, jax.Array) and args.ndim > 1:
+                    return args[t_val]
                 else:
-                    # Scalar or non-temporal argument
-                    timestep_args.append(arg)
+                    return args
             
-            # Build VarValues for this timestep
+            timestep_args = extract_timestep_args(cost.args, t)
             timestep_vals = jaxls.VarValues.make(timestep_vars)
             
-            # Evaluate cost at this timestep
             result = cost.compute_residual(timestep_vals, *timestep_args)
             if isinstance(result, tuple):
                 residual = result[0]
@@ -1136,18 +1240,104 @@ def _optimize(
                 residual = result
             return jnp.sum(residual ** 2)
         
-        # Vmap across all timesteps and sum
-        cost_values_per_timestep = jax.vmap(eval_cost_at_timestep)(jnp.arange(timesteps))
-        cost_total = cost_values_per_timestep  # (T, )
-        # Store as JAX array - will be converted to float outside traced context
-        debug_info[cost._get_name()] = cost_total
-
-    return {
-        "wTo": optimized_traj,
-        "left_hand_params": optimized_left_params,
-        "right_hand_params": optimized_right_params,
-        "contact": optimized_contact,
-    }, debug_info
+        # Helper to evaluate first-order cost at timestep pair (t1, t2)
+        def eval_cost_first_order(i: int):
+            t1, t2 = i, i + 1
+            timestep_vars = []
+            
+            def extract_timestep_args_first_order(args, var_idx_ref):
+                """Extract args with offset timesteps for first-order."""
+                if isinstance(args, (list, tuple)):
+                    return type(args)(extract_timestep_args_first_order(arg, var_idx_ref) for arg in args)
+                elif isinstance(args, jaxls.Var):
+                    if isinstance(args.id, jax.Array) and args.id.ndim > 0 and args.id.shape[0] > 1:
+                        var_idx_ref[0] += 1
+                        t_use = t1 if var_idx_ref[0] == 1 else t2
+                        timestep_var = type(args)(t_use)
+                        timestep_vars.append(timestep_var.with_value(solution[args][t_use]))
+                        return timestep_var
+                    else:
+                        timestep_vars.append(args.with_value(solution[args]))
+                        return args
+                elif isinstance(args, jax.Array) and args.ndim > 1:
+                    return args[t1]
+                else:
+                    return args
+            
+            var_idx_ref = [0]
+            timestep_args = extract_timestep_args_first_order(cost.args, var_idx_ref)
+            timestep_vals = jaxls.VarValues.make(timestep_vars)
+            
+            result = cost.compute_residual(timestep_vals, *timestep_args)
+            if isinstance(result, tuple):
+                residual = result[0]
+            else:
+                residual = result
+            return jnp.sum(residual ** 2)
+        
+        # Helper to evaluate second-order cost at timestep triplet (t1, t2, t3)
+        def eval_cost_second_order(i: int):
+            t1, t2, t3 = i, i + 1, i + 2
+            timestep_vars = []
+            
+            def extract_timestep_args_second_order(args, var_idx_ref):
+                """Extract args with offset timesteps for second-order."""
+                if isinstance(args, (list, tuple)):
+                    return type(args)(extract_timestep_args_second_order(arg, var_idx_ref) for arg in args)
+                elif isinstance(args, jaxls.Var):
+                    if isinstance(args.id, jax.Array) and args.id.ndim > 0 and args.id.shape[0] > 1:
+                        var_idx_ref[0] += 1
+                        if var_idx_ref[0] == 1:
+                            t_use = t1
+                        elif var_idx_ref[0] == 2:
+                            t_use = t2
+                        else:
+                            t_use = t3
+                        timestep_var = type(args)(t_use)
+                        timestep_vars.append(timestep_var.with_value(solution[args][t_use]))
+                        return timestep_var
+                    else:
+                        timestep_vars.append(args.with_value(solution[args]))
+                        return args
+                elif isinstance(args, jax.Array) and args.ndim > 1:
+                    return args[t1]
+                else:
+                    return args
+            
+            var_idx_ref = [0]
+            timestep_args = extract_timestep_args_second_order(cost.args, var_idx_ref)
+            timestep_vals = jaxls.VarValues.make(timestep_vars)
+            
+            result = cost.compute_residual(timestep_vals, *timestep_args)
+            if isinstance(result, tuple):
+                residual = result[0]
+            else:
+                residual = result
+            return jnp.sum(residual ** 2)
+        
+        # Evaluate based on cost type and pad to T timesteps
+        if cost_type == "standard":
+            # Standard: t=0:T
+            cost_values = jax.vmap(eval_cost_standard)(jnp.arange(timesteps))  # (T,)
+            cost_values_per_timestep = cost_values
+        elif cost_type == "first_order":
+            # First-order: (t1=0:T-1, t2=1:T) -> T-1 values
+            cost_values = jax.vmap(eval_cost_first_order)(jnp.arange(timesteps - 1))  # (T-1,)
+            # Pad with 0 at the end
+            cost_values_per_timestep = jnp.concatenate([cost_values, jnp.array([0.0])])  # (T,)
+        elif cost_type == "second_order":
+            # Second-order: (t1=0:T-2, t2=1:T-1, t3=2:T) -> T-2 values
+            cost_values = jax.vmap(eval_cost_second_order)(jnp.arange(timesteps - 2))  # (T-2,)
+            # Pad with 0 at the end
+            cost_values_per_timestep = jnp.concatenate([cost_values, jnp.zeros(2)])  # (T,)
+        else:
+            # Fallback to standard
+            cost_values = jax.vmap(eval_cost_standard)(jnp.arange(timesteps))
+            cost_values_per_timestep = cost_values
+        
+        cost_dict[cost_name] = cost_values_per_timestep
+    
+    return cost_dict
 
 
 def knn_jax(xPoints, yPoints, k=1):
@@ -1209,7 +1399,13 @@ def project_jax_pinhole(wJoints, wTc, intr, ndc=False, H=None, W=None):
         iJoints = jnp.stack([x, y], axis=-1)
     return iJoints
 
-    
+def residual_with_threshold(r: jax.Array, tau: float, eps: float=1e-8) -> jax.Array:
+    # r: (..., D)
+    s = jnp.sqrt(r**2).sum(axis=-1, keepdims=True)
+    # factor = max(0, (s - tau) / s)
+    factor = (s - tau).clip(min=0.0) / (s + eps)
+    return factor * r
+
 def project_jax(oPoints, wTo, wTc, intr, ndc=False, H=None, W=None):
     """JAX version of projection function for optimization.
 

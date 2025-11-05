@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 from .pcl import align_pcl
-
-
+from . import bop_utils as misc
+from scipy import spatial
 
 def w_rje(gt, pred):
     """world relative joint error
@@ -25,6 +25,117 @@ def wa_rje(gt, pred):
     aligned_pred = aligned_pred.squeeze(1)
     res = torch.linalg.norm(gt - pred, dim=-1).mean()
     return res
+
+
+def apd(R_est, t_est, R_gt, t_gt, pts, thre_list=[0.01, 0.02, 0.05, 0.1]):
+    """(Average percent of Points within Delta (APD))
+    :return: dict with {thre: value} for each threshold
+    """
+    apd_dict = {}
+    pts_est = misc.transform_pts_Rt(pts, R_est, t_est)
+    pts_gt = misc.transform_pts_Rt(pts, R_gt, t_gt)
+    for thre in thre_list:
+        dist = np.linalg.norm(pts_est - pts_gt, axis=1)
+        num_points = dist < thre
+        num_points = num_points.sum()
+        # Convert to percentage (fraction of points within threshold)
+        apd_value = num_points / len(pts) if len(pts) > 0 else 0.0
+        apd_dict[thre] = apd_value
+    
+    return apd_dict
+
+
+def add(R_est, t_est, R_gt, t_gt, pts):
+    """Average Distance of Model Points for objects with no indistinguishable
+    views - by Hinterstoisser et al. (ACCV'12).
+
+    :param R_est: 3x3 ndarray with the estimated rotation matrix.
+    :param t_est: 3x1 ndarray with the estimated translation vector.
+    :param R_gt: 3x3 ndarray with the ground-truth rotation matrix.
+    :param t_gt: 3x1 ndarray with the ground-truth translation vector.
+    :param pts: nx3 ndarray with 3D model points.
+    :return: The calculated error.
+    """
+    pts_est = misc.transform_pts_Rt(pts, R_est, t_est)
+    pts_gt = misc.transform_pts_Rt(pts, R_gt, t_gt)
+    e = np.linalg.norm(pts_est - pts_gt, axis=1).mean()
+    return e
+
+def center(R_est, t_est, R_gt, t_gt, pts):
+
+    pts_est = misc.transform_pts_Rt(pts, R_est, t_est)  # (P, 3)
+    pts_gt = misc.transform_pts_Rt(pts, R_gt, t_gt)
+    
+    pts_mean = np.mean(pts_est, axis=0) # (3, )
+    pts_gt_mean = np.mean(pts_gt, axis=0)
+    e = np.linalg.norm(pts_mean - pts_gt_mean)
+    return e
+
+def adi(R_est, t_est, R_gt, t_gt, pts):
+    """Average Distance of Model Points for objects with indistinguishable views
+    - by Hinterstoisser et al. (ACCV'12).
+
+    :param R_est: 3x3 ndarray with the estimated rotation matrix.
+    :param t_est: 3x1 ndarray with the estimated translation vector.
+    :param R_gt: 3x3 ndarray with the ground-truth rotation matrix.
+    :param t_gt: 3x1 ndarray with the ground-truth translation vector.
+    :param pts: nx3 ndarray with 3D model points.
+    :return: The calculated error.
+    """
+    pts_est = misc.transform_pts_Rt(pts, R_est, t_est)
+    pts_gt = misc.transform_pts_Rt(pts, R_gt, t_gt)
+
+    # Calculate distances to the nearest neighbors from vertices in the
+    # ground-truth pose to vertices in the estimated pose.
+    nn_index = spatial.cKDTree(pts_est)
+    nn_dists, _ = nn_index.query(pts_gt, k=1)
+
+    e = nn_dists.mean()
+    return e
+
+
+def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center"]):
+    # Handle apd separately since it returns multiple thresholds
+    apd_thre_list = [0.01, 0.02, 0.05, 0.1]  # Default thresholds for apd
+    apd_metric_names = [f"apd@{thre}" for thre in apd_thre_list] if "apd" in metric_names else []
+    
+    # Initialize metrics - separate entries for each apd threshold
+    all_metric_names = [name for name in metric_names if name != "apd"] + apd_metric_names
+    cur_metrics = {name: [] for name in all_metric_names}
+
+    gt_wTo = gt_wTo.cpu().numpy()
+    pred_wTo = pred_wTo.cpu().numpy()
+
+    gt_wTo_rot, gt_wTo_t = gt_wTo[..., :3, :3], gt_wTo[..., :3, 3:4]
+    pred_wTo_rot, pred_wTo_t = pred_wTo[..., :3, :3], pred_wTo[..., :3, 3:4]
+    
+    for t in range(gt_wTo.shape[0]):
+        points = mesh.verts_packed().detach().cpu().numpy()  # (P, 3)
+        
+        for name in metric_names:
+            if name == "add":
+                score = add(gt_wTo_rot[t], gt_wTo_t[t], pred_wTo_rot[t], pred_wTo_t[t], points)
+                cur_metrics[name].append(score)
+            elif name == "adi":
+                score = adi(gt_wTo_rot[t], gt_wTo_t[t], pred_wTo_rot[t], pred_wTo_t[t], points)
+                cur_metrics[name].append(score)
+            elif name == "center":
+                score = center(gt_wTo_rot[t], gt_wTo_t[t], pred_wTo_rot[t], pred_wTo_t[t], points)
+                cur_metrics[name].append(score)
+            elif name == "apd":
+                # apd returns a dict with thresholds as keys: {thre: value}
+                apd_dict = apd(gt_wTo_rot[t], gt_wTo_t[t], pred_wTo_rot[t], pred_wTo_t[t], points, thre_list=apd_thre_list)
+                # Convert dict to separate metric entries
+                for thre in apd_thre_list:
+                    apd_key = f"apd@{thre}"
+                    value = apd_dict[thre]  # apd_dict[thre] is now a scalar value
+                    cur_metrics[apd_key].append(value)
+            else:
+                raise NotImplementedError(f"metric {name} not implemented")
+    
+    # Convert lists to numpy arrays
+    cur_metrics = {name: np.array(cur_metrics[name]) for name in all_metric_names}
+    return cur_metrics
 
 
 def eval_jts(gt_seq_joints, res_joints, metric_names=["ga_jmse", "ga_rmse", "fa_jmse", "acc_norm", "pampjpe",]):
@@ -112,7 +223,7 @@ def global_align_joints(gt_joints, pred_joints):
     )
     pred_glob = (
         s_glob * torch.einsum("ij,tnj->tni", R_glob, pred_joints) + t_glob[None, None]
-    )
+    )  # (T, J, 3)
     return pred_glob
 
 

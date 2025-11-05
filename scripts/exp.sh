@@ -1,10 +1,10 @@
-why hand shake? 
-keypoints ? where to get? 
+[] relative contact: something is wrong for printing????? 
+[] why guided last step != post first step? 
 
 
-[] first frame condition ddim long term
-[] print guidance debug log 
-
+test hand 
+GT mask 
+[] change contact 
 
 
 [x] order of condition? t? cond? 
@@ -46,6 +46,10 @@ keypoints ? where to get?
 
 bowl: 194930206998778
 spoon: 225397651484143
+
+python -m eval.eval_joints   \
+  --mode pose6d --skip_not_there True --split test50 \
+  --pred_file outputs/first_frame_hoi/firstFalse_dynTrue_static100_contact_100_smoothness10/eval_hoi_contact_ddim_long_vis/post_objects.pkl
 
 
 

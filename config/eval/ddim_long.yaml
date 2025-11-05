@@ -7,7 +7,7 @@ sample: ddim_long
 
 datasets:
   window: 150
-  use_cache: false
-  save_cache: false
+  use_cache: true 
+  save_cache: true
 
   

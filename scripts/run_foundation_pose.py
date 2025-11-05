@@ -1,7 +1,9 @@
+from scipy.spatial.transform import Slerp, Rotation
+
 # run foundation pose on HOT3D-CLIP
 import os.path as osp
-import json 
-from tqdm import tqdm   
+import json
+from tqdm import tqdm
 from functools import partial
 import os
 from glob import glob
@@ -13,12 +15,14 @@ from pytorch3d.renderer.materials import Materials
 from pytorch3d.renderer.mesh.shader import HardFlatShader
 from pytorch3d.renderer.lighting import PointLights
 from pytorch3d.structures import Meshes
+from pytorch3d.transforms import matrix_to_quaternion, quaternion_to_matrix
 
 from egorecon.manip.data.utils import load_pickle
 from egorecon.utils.motion_repr import HandWrapper
 from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
 
 mano_model_folder = "assets/mano"
+object_mesh_dir = "data/HOT3D-CLIP/object_models_eval/"
 
 seq_name = "002240"
 data_dir = "data/HOT3D-CLIP/"
@@ -26,7 +30,9 @@ all_data = load_pickle("data/HOT3D-CLIP/preprocess/dataset_contact.pkl")
 device = torch.device("cuda:0")
 
 
-vis_dir = "outputs/debug_fp_mask"
+# vis_dir = "outputs/debug_fp_mask"
+vis_dir = "outputs/debug_fp_pose"
+
 
 def batch_prorcess(func, split, skip=True, save_dir=""):
     split_file = osp.join("data/HOT3D-CLIP/sets", f"split.json")
@@ -48,7 +54,6 @@ def batch_prorcess(func, split, skip=True, save_dir=""):
         func(seq, save_file=save_file)
         os.makedirs(done_file)
         os.rmdir(lock_file)
-
 
 
 def discretize_rgb_to_obj_uid(rgb, index, index2objid, fg_mask):
@@ -103,7 +108,9 @@ def discretize_rgb_to_obj_uid(rgb, index, index2objid, fg_mask):
     return obj_mask
 
 
-def get_mask(seq, all_data, object_library, sided_model: HandWrapper, vis=False, save_file=None):
+def get_mask(
+    seq, all_data, object_library, sided_model: HandWrapper, vis=False, save_file=None
+):
     # mask:
     # {'uid': [T, H, W]}
     # create scene
@@ -197,7 +204,9 @@ def get_mask(seq, all_data, object_library, sided_model: HandWrapper, vis=False,
     # not left hand and not right hand
     obj_mask = fg_mask * (1 - left_hand_mask) * (1 - right_hand_mask)
     if vis:
-        image_utils.save_gif(rgb.unsqueeze(1), osp.join(vis_dir, "rgb"), ext=".mp4", fps=30)
+        image_utils.save_gif(
+            rgb.unsqueeze(1), osp.join(vis_dir, "rgb"), ext=".mp4", fps=30
+        )
 
     # Discretize RGB image to object UIDs
     obj_mask = discretize_rgb_to_obj_uid(
@@ -209,15 +218,17 @@ def get_mask(seq, all_data, object_library, sided_model: HandWrapper, vis=False,
     )  # (N, 2 + #obj, H, W)
     if vis:
         image_utils.save_gif(
-        hand_obj_mask.unsqueeze(2),
-        osp.join(vis_dir, "hand_obj_mask"),
-        ext=".mp4",
-        col=num_obj + 2,
-        max_size=324 * 8,
-        fps=30,
-    )
+            hand_obj_mask.unsqueeze(2),
+            osp.join(vis_dir, "hand_obj_mask"),
+            ext=".mp4",
+            col=num_obj + 2,
+            max_size=324 * 8,
+            fps=30,
+        )
 
-    hand_obj_mask_np = hand_obj_mask.transpose(0, 1).cpu().numpy() > 0.5 # (2 + #obj, N, H, W)
+    hand_obj_mask_np = (
+        hand_obj_mask.transpose(0, 1).cpu().numpy() > 0.5
+    )  # (2 + #obj, N, H, W)
     index = np.array(["left_hand", "right_hand", *seq_data["objects"].keys()])
 
     if save_file is None:
@@ -225,7 +236,7 @@ def get_mask(seq, all_data, object_library, sided_model: HandWrapper, vis=False,
     np.savez_compressed(save_file, hand_obj_mask=hand_obj_mask_np, index=index)
 
 
-def run_foundation_pose(seq, all_data, object_library, ):
+def run_foundation_pose(seq, all_data, object_library, save_file=None, vis=False):
     seq_data = all_data[seq]
     image_dir = osp.join(data_dir, "extract_images-rot90", f"clip-{seq}")
     image_list = sorted(glob(osp.join(image_dir, "*.jpg")))
@@ -241,18 +252,45 @@ def run_foundation_pose(seq, all_data, object_library, ):
     wTc = torch.FloatTensor(seq_data["wTc"]).to(device)
     intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
 
+    if vis:
+        viz = Pt3dVisualizer(
+            exp_name="log",
+            save_dir=vis_dir,
+            mano_models_dir=mano_model_folder,
+            object_mesh_dir=object_mesh_dir,
+        )
+        sided_model = HandWrapper(mano_model_folder).to(device)
+        left_hand_verts, left_hand_faces, _ = sided_model.hand_para2verts_faces_joints(
+            torch.FloatTensor(seq_data["left_hand"]["theta"]).to(device),
+            torch.FloatTensor(seq_data["left_hand"]["shape"]).to(device),
+            side="left",
+        )
+        left_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
+        right_hand_verts, right_hand_faces, _ = (
+            sided_model.hand_para2verts_faces_joints(
+                torch.FloatTensor(seq_data["right_hand"]["theta"]).to(device),
+                torch.FloatTensor(seq_data["right_hand"]["shape"]).to(device),
+                side="right",
+            )
+        )
+        right_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
+        hand_meshes = [left_meshes, right_meshes]
+
     # save to wTo
+    wTo_list = []
+    valid_list = []
+    score_list = []
     for o, obj_id in enumerate(seq_data["objects"]):
         i = o + 2
-        print(index[i], obj_id)
 
-        obj_mask = hand_obj_mask[i]  # (T, H, W) 
+        obj_mask = hand_obj_mask[i]  # (T, H, W)
         intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
         intr[..., :2, :] /= down
-        
+
         # Get mesh file path from object library or construct it
-        
+
         mesh_file = object_library[obj_id]
+        textured_file = mesh_file.replace("/object_models_eval/", "/object_models/")
         # Convert intrinsics to numpy [fx, fy, cx, cy] format
         if isinstance(intr, torch.Tensor):
             intr_np = intr.cpu().numpy()
@@ -262,19 +300,219 @@ def run_foundation_pose(seq, all_data, object_library, ):
             fx, fy = intr_np[0, 0], intr_np[1, 1]
             cx, cy = intr_np[0, 2], intr_np[1, 2]
             intr_np = np.array([fx, fy, cx, cy])
-        
-        cTo, valid = track_obj(mesh_file, obj_mask, image_list, intr_np)  # (T, 4, 4), (T, )
-        
-        wTo = wTc @ cTo
-        print('wTo', wTo.shape)
-        import ipdb; ipdb.set_trace()
 
+        cTo, valid, score = track_obj(
+            textured_file, obj_mask, image_list, intr_np
+        )  # (T, 4, 4), (T, )
+        wTo = wTc @ cTo
+        wTo = infill_obj(wTo, valid)
+
+        wTo_list.append(wTo)
+        valid_list.append(valid)
+        score_list.append(score)
+
+        # tmp_file = save_file.replace(".npz", f"_{obj_id}.npz")
+        # os.makedirs(osp.dirname(tmp_file), exist_ok=True)
+        # np.savez_compressed(tmp_file, wTo=wTo.cpu().numpy(), valid=valid.cpu().numpy())
+
+        if vis:
+            oObj = mesh_utils.load_mesh(mesh_file).to(device)
+            viz.log_hoi_step_from_cam_side(
+                *hand_meshes,
+                geom_utils.matrix_to_se3_v2(wTo),
+                oObj,
+                contact=None,
+                pref=f"{seq}_{obj_id}_pred",
+                intr_pix=intr,
+                wTc=geom_utils.matrix_to_se3_v2(wTc),
+                device=device,
+            )
+            wTo_gt = torch.FloatTensor(seq_data["objects"][obj_id]["wTo"]).to(device)
+            viz.log_hoi_step_from_cam_side(
+                *hand_meshes,
+                geom_utils.matrix_to_se3_v2(wTo_gt),
+                oObj,
+                contact=None,
+                pref=f"{seq}_{obj_id}_gt",
+                intr_pix=intr,
+                wTc=geom_utils.matrix_to_se3_v2(wTc),
+                device=device,
+            )
+
+    wTo_list = torch.stack(wTo_list, 0).cpu().numpy()
+    valid_list = torch.stack(valid_list, 0).cpu().numpy()
+    score_list = torch.stack(score_list, 0).cpu().numpy()
+    print("wTo_list", wTo_list.shape, valid_list.shape, score_list.shape)
+    if save_file is not None:
+        os.makedirs(osp.dirname(save_file), exist_ok=True)
+        np.savez_compressed(
+            save_file, wTo=wTo_list, valid=valid_list, index=index, score=score_list
+        )
+
+    print(f"Saved foundation pose to {save_file}")
     return
+
+
+def infill_obj(cTo, valid):
+    """_summary_
+    cTo: (T, 4, 4)
+    valid: (T,)
+    return: (T, 4, 4)
+    """
+    device = cTo.device
+    valid = valid.cpu().numpy().astype(np.bool_)
+    T = cTo.shape[0]
+    rot, tsl, _ = geom_utils.homo_to_rt(cTo, ignore_scale=True)
+    tsl = tsl.cpu().numpy()
+
+    quat = matrix_to_quaternion(rot)  # wxyz  # T, 4
+    quat = quat.cpu().numpy()
+
+    quat = slerp_interpolation_quat(quat.reshape(1, T, 1, 4), valid.reshape(1, T))
+    quat = torch.FloatTensor(quat).reshape(T, 4)  # wxyz
+    rot = quaternion_to_matrix(quat)
+
+    tsl = linear_interpolation_nd(tsl.reshape(1, T, 3), valid.reshape(1, T))
+    tsl = torch.FloatTensor(tsl).reshape(T, 3)
+
+    cTo = geom_utils.rt_to_homo(rot, tsl).to(device)
+    return cTo
+
+
+def slerp_interpolation_aa(pos, valid):
+    B, T, N, _ = pos.shape  # B: 批次大小, T: 时间步长, N: 关节数, 4: 四元数维度
+    pos_interp = pos.copy()  # 创建副本以存储插值结果
+
+    for b in range(B):
+        for n in range(N):
+            quat_b_n = pos[b, :, n, :]
+            valid_b_n = valid[b, :]
+
+            invalid_idxs = np.where(~valid_b_n)[0]
+            valid_idxs = np.where(valid_b_n)[0]
+
+            if len(invalid_idxs) == 0:
+                continue
+
+            if len(valid_idxs) > 1:
+                valid_times = valid_idxs  # 有效时间步
+                valid_rots = Rotation.from_rotvec(quat_b_n[valid_idxs])  # 有效四元数
+
+                slerp = Slerp(valid_times, valid_rots)
+
+                for idx in invalid_idxs:
+                    if idx < valid_idxs[0]:  # 时间步小于第一个有效时间步，进行外推
+                        pos_interp[b, idx, n, :] = quat_b_n[
+                            valid_idxs[0]
+                        ]  # 复制第一个有效四元数
+                    elif idx > valid_idxs[-1]:  # 时间步大于最后一个有效时间步，进行外推
+                        pos_interp[b, idx, n, :] = quat_b_n[
+                            valid_idxs[-1]
+                        ]  # 复制最后一个有效四元数
+                    else:
+                        interp_rot = slerp([idx])
+                        pos_interp[b, idx, n, :] = interp_rot.as_rotvec()[0]
+
+            if len(valid_idxs) == 1:
+                # just repeat the only valid value for the whole sequence
+                pos_interp[b, :, n, :] = quat_b_n[valid_idxs[0]]
+
+    # print("#######")
+    # if N > 1:
+    #     print(pos[1,0,11])
+    #     print(pos_interp[1,0,11])
+
+    return pos_interp
+
+
+def slerp_interpolation_quat(pos, valid):
+    """_summary_
+    :param pos: (B, T, N, D) wxyz
+    :param valid: (B, T)
+    :return: (B, T, N, D)
+    """
+    # wxyz to xyzw
+    pos = pos[:, :, :, [1, 2, 3, 0]]
+
+    B, T, N, _ = pos.shape  # B: 批次大小, T: 时间步长, N: 关节数, 4: 四元数维度
+    pos_interp = pos.copy()  # 创建副本以存储插值结果
+
+    for b in range(B):
+        for n in range(N):
+            quat_b_n = pos[b, :, n, :]
+            valid_b_n = valid[b, :]
+            print(valid_b_n.dtype, valid_b_n.shape)
+
+            invalid_idxs = np.where(~valid_b_n)[0]
+            valid_idxs = np.where(valid_b_n)[0]
+
+            if len(invalid_idxs) == 0:
+                continue
+
+            if len(valid_idxs) > 1:
+                valid_times = valid_idxs  # 有效时间步
+                valid_rots = Rotation.from_quat(quat_b_n[valid_idxs])  # 有效四元数
+
+                slerp = Slerp(valid_times, valid_rots)
+
+                for idx in invalid_idxs:
+                    if idx < valid_idxs[0]:  # 时间步小于第一个有效时间步，进行外推
+                        pos_interp[b, idx, n, :] = quat_b_n[
+                            valid_idxs[0]
+                        ]  # 复制第一个有效四元数
+                    elif idx > valid_idxs[-1]:  # 时间步大于最后一个有效时间步，进行外推
+                        pos_interp[b, idx, n, :] = quat_b_n[
+                            valid_idxs[-1]
+                        ]  # 复制最后一个有效四元数
+                    else:
+                        interp_rot = slerp([idx])
+                        pos_interp[b, idx, n, :] = interp_rot.as_quat()[0]
+
+    # xyzw to wxyz
+    pos_interp = pos_interp[:, :, :, [3, 0, 1, 2]]
+    return pos_interp
+
+
+def linear_interpolation_nd(pos, valid):
+    """_summary_"""
+    B, T = pos.shape[:2]  # 取出批次大小B和时间步长T
+    feature_dim = pos.shape[2]  # ** 代表的任意维度
+    pos_interp = pos.copy()  # 创建一个副本，用来保存插值结果
+
+    for b in range(B):
+        for idx in range(feature_dim):  # 针对任意维度
+            pos_b_idx = pos[b, :, idx]  # 取出第b批次对应的**维度下的一个时间序列
+            valid_b = valid[b, :]  # 当前批次的有效标志
+
+            # 找到无效的索引（False）
+            invalid_idxs = np.where(~valid_b)[0]
+            valid_idxs = np.where(valid_b)[0]
+
+            if len(invalid_idxs) == 0:
+                continue
+
+            # 对无效部分进行线性插值
+            if len(valid_idxs) > 1:  # 确保有足够的有效点用于插值
+                pos_b_idx[invalid_idxs] = np.interp(
+                    invalid_idxs, valid_idxs, pos_b_idx[valid_idxs]
+                )
+                pos_interp[b, :, idx] = pos_b_idx  # 保存插值结果
+
+            # NOTE: judy's code
+            if len(valid_idxs) == 1:
+                # just repeat the only valid value for the whole sequence
+                # print('before', pos_interp[b, :, idx])
+                pos_interp[b, :, idx] = pos_b_idx[valid_idxs[0]]
+                # print('after', pos_interp[b, :, idx])
+            # import ipdb; ipdb.set_trace()
+
+    return pos_interp
+
 
 def track_obj(mesh_file, obj_mask, image_list, intr):
     """
     Track object pose using FoundationPose with automatic reinitialization.
-    
+
     Args:
         fp_wrapper: PoseWrapper instance (optional, will create new if None)
         mesh_file: Path to object mesh file (.glb or .obj)
@@ -282,43 +520,56 @@ def track_obj(mesh_file, obj_mask, image_list, intr):
         obj_mask: (T, H, W) boolean mask array
         image_list: List of image paths
         intr: Camera intrinsics [fx, fy, cx, cy] or 3x3 matrix
-    
+
     Returns:
         cTo: (T, 4, 4) array of poses in camera frame
         valid: (T,) boolean array indicating valid poses
     """
     from scripts.fp_utils import PoseWrapper
 
-    pose_wrapper = PoseWrapper(
-        mesh_file=mesh_file,
-        intrinsic=intr,
-        mask_list=obj_mask
-    )
-    
+    pose_wrapper = PoseWrapper(mesh_file=mesh_file, intrinsic=intr, mask_list=obj_mask)
+
     # Track through video
-    cTo, valid = pose_wrapper.track_video(image_list, intr)
+    cTo, valid, score = pose_wrapper.track_video(image_list, intr)
     cTo = torch.FloatTensor(cTo).to(device)
     valid = torch.FloatTensor(valid).to(device)
-    print('cTo', cTo.shape, valid.shape)
-    
-    return cTo, valid
+    score = torch.FloatTensor(score).to(device)
+    print("cTo", cTo.shape, valid.shape, score.shape)
+
+    return cTo, valid, score
+
 
 down = 4
 
 if __name__ == "__main__":
     hand_wrapper = HandWrapper(mano_model_folder).to(device)
-    # object_library = Pt3dVisualizer.setup_template(
-    #     object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip"
-    # )
+    object_library = Pt3dVisualizer.setup_template(
+        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip"
+    )
 
     # func = partial(get_mask, object_library=object_library, sided_model=hand_wrapper, all_data=all_data)
-    
 
     # batch_prorcess(func,  split="test", save_dir=osp.join(data_dir, "gt_mask"))
-    # get_mask(all_dat[seq_name], object_library, hand_wrapper)
+    get_mask("001870", all_data, object_library, hand_wrapper, save_file=osp.join(data_dir, "gt_mask", "001870.npz"))
 
     object_library = Pt3dVisualizer.setup_template(
-        object_mesh_dir="data/HOT3D-CLIP/object_models_eval/", lib="hotclip", load_mesh=False
+        object_mesh_dir=object_mesh_dir,
+        lib="hotclip",
+        load_mesh=False,
     )
-    seq_name = "001992"
-    run_foundation_pose(seq_name, all_data, object_library, )
+    # seq_name = "001992"
+    # seq_name = "001890"
+    # run_foundation_pose(
+    #     seq_name,
+    #     all_data,
+    #     object_library,
+    #     save_file=osp.join(vis_dir, f"{seq_name}.npz"),
+    #     vis=True,
+    # )
+
+    func = partial[None](
+        run_foundation_pose,
+        object_library=object_library,
+        all_data=all_data,
+    )
+    batch_prorcess(func, split="test", save_dir=osp.join(data_dir, "foundation_pose"))

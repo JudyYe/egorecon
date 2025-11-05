@@ -289,6 +289,9 @@ class HandToObjectDataset(Dataset):
             "cache",
             f"{self.data_cfg.name}_{self.split}_{self.opt.get('coord', 'camera')}.npz",
         )
+        if self.window_size != 120:
+            cache_name = cache_name.replace(".npz", f"_window{self.window_size}.npz")
+        
 
         if osp.exists(cache_name) and use_cache:
             print("loading window cache from ", cache_name)

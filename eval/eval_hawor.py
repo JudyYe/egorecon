@@ -60,13 +60,13 @@ def infill(hawor_pred, side):
 
 if __name__ == "__main__":
     data_dir = "/move/u/yufeiy2/egorecon/data/HOT3D-CLIP"
-    save_file = osp.join(data_dir, "preprocess/dataset_contact_patched_hawor_gtcamTrue_gt.pkl")
+    save_file = osp.join(data_dir, "preprocess/dataset_contact_patched_hawor_v2_camGT_gt.pkl")
     new_file = osp.join(data_dir, "eval/hawor_test_camTrue.pkl")
-    post_process_hawor(save_file, new_file, valid_only=True)
+    post_process_hawor(save_file, new_file, valid_only=False)
 
     gt_file = osp.join(data_dir, "preprocess/dataset_contact.pkl")
     
-    eval_hotclip(new_file, gt_file, split="test", skip_not_there=True, side="both", chunk_length=-1)
+    eval_hotclip(new_file, gt_file, split="test50", skip_not_there=True, side="both", chunk_length=-1)
 
 
     # vis_hotclip()

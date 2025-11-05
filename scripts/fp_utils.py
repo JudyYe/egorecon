@@ -1,4 +1,4 @@
-
+from tqdm import tqdm
 import imageio
 import os
 import os.path as osp
@@ -10,6 +10,8 @@ import logging
 import torch
 import nvdiffrast.torch as dr
 from FoundationPose.estimater import FoundationPose
+from FoundationPose.Utils import nvdiffrast_render
+
 from FoundationPose.learning.training.predict_score import ScorePredictor
 from FoundationPose.learning.training.predict_pose_refine import PoseRefinePredictor
 from FoundationPose.Utils import draw_posed_3d_box, draw_xyz_axis
@@ -186,7 +188,7 @@ class PoseWrapper:
             pose: 4x4 pose matrix or None if failed
         """
         if self.process_check_mask(obj_mask) is False:
-            return None
+            return np.eye(4), False
         
         depth, intrinsic= self.predict_depth(rgb, intrinsic, self.alpha)
         fx, fy, cx, cy = intrinsic
@@ -204,7 +206,8 @@ class PoseWrapper:
             K=K, rgb=rgb_down.copy(), depth=depth_down, ob_mask=obj_mask_down, 
             iteration=5, zero_depth=zero_depth
         )
-        return pose
+        success = self.estimator.pose_last is not None
+        return pose, success
 
     @staticmethod
     def process_check_mask(mask):
@@ -212,7 +215,6 @@ class PoseWrapper:
         Check if mask is valid for pose estimation.
         Returns False if mask is invalid, otherwise returns processed mask.
         """
-        print('mask', mask.shape)
         mask = mask.astype(np.uint8) * 255
         H, W = mask.shape[:2]
         
@@ -242,70 +244,113 @@ class PoseWrapper:
         current_pose = None
         cTo_list = []
         valid_list = []
+        score_list = []
+        fx, fy, cx, cy = intrinsic
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         
-        for i, img_path in enumerate(image_list):
+        for i, img_path in enumerate(tqdm(image_list)):
             self.index = i
             rgb = self.read_image(img_path)
             
             # Get mask for current frame (assume mask_list is (T, H, W) numpy array)
-            if self.mask_list is not None and i < len(self.mask_list):
-                obj_mask = self.mask_list[i]
-            else:
-                obj_mask = None
+            obj_mask = self.mask_list[i]
             
-            # Check if mask is valid - if not, skip registration and continue
-            mask_valid = self.process_check_mask(obj_mask) if obj_mask is not None else False
+            # # Check if mask is valid - if not, skip registration and continue
+            # mask_valid = self.process_check_mask(obj_mask) if obj_mask is not None else False
             
-            if not mask_valid:
-                # Mask is invalid - don't try to register, just append identity pose
-                logging.info(f"Frame {i}: Mask is invalid, skipping...")
-                cTo_list.append(np.eye(4))
-                valid_list.append(False)
-                continue
+            # if not mask_valid:
+            #     # Mask is invalid - don't try to register, just append identity pose
+            #     logging.info(f"Frame {i}: Mask is invalid, skipping...")
+            #     cTo_list.append(np.eye(4))
+            #     valid_list.append(False)
+            #     score_list.append(0.0)
+            #     continue
             
             if not pose_initialized:
                 # Initialize pose
-                logging.info(f"Frame {i}: Initializing pose...")
-                current_pose = self.register_one(rgb, intrinsic, obj_mask.copy())
+                print(f"Frame {i}: Initializing pose...")
+                current_pose, success = self.register_one(rgb, intrinsic, obj_mask.copy())
                 
-                if current_pose is not None:
+                if success:
                     pose_initialized = True
+                    reproj_iou = self.evaluate_tracking_score(current_pose, K, rgb, obj_mask, self.estimator)
                     logging.info(f"Frame {i}: Pose initialization successful")
                     cTo_list.append(current_pose)
                     valid_list.append(True)
+                    score_list.append(reproj_iou)
                 else:
                     logging.warning(f"Frame {i}: Pose initialization failed")
                     cTo_list.append(np.eye(4))
                     valid_list.append(False)
+                    score_list.append(0.0)
             else:
-                # Track pose
                 current_pose = self.track_one(rgb, intrinsic)
+                # get reprojection IoU for reset
+                reproj_iou = self.evaluate_tracking_score(current_pose, K, rgb, obj_mask, self.estimator)
+                th = 0.5
+                pose_initialized = reproj_iou >= th
+
+                logging.info(f"Frame {i}: Tracking successful")
+                cTo_list.append(current_pose)
+                valid_list.append(pose_initialized)
+                score_list.append(reproj_iou)
                 
-                if current_pose is not None:
-                    logging.info(f"Frame {i}: Tracking successful")
-                    cTo_list.append(current_pose)
-                    valid_list.append(True)
-                else:
-                    # Tracking failed - check if mask is valid before reinitializing
-                    logging.warning(f"Frame {i}: Tracking failed, checking mask for reinitialization...")
-                    if mask_valid:
-                        pose_initialized = False
-                        current_pose = self.register_one(rgb, intrinsic, obj_mask.copy())
-                        
-                        if current_pose is not None:
-                            pose_initialized = True
-                            cTo_list.append(current_pose)
-                            valid_list.append(True)
-                        else:
-                            cTo_list.append(np.eye(4))
-                            valid_list.append(False)
-                    else:
-                        # Mask is invalid, can't reinitialize
-                        cTo_list.append(np.eye(4))
-                        valid_list.append(False)
         
         # Convert to numpy arrays
         cTo = np.array(cTo_list)  # (T, 4, 4)
         valid = np.array(valid_list)  # (T,)
+        score = np.array(score_list)  # (T,)
+
+        return cTo, valid, score
+
+    def evaluate_tracking_score(self, pose, K, color, current_mask, estimator=None):
+        """
+        Evaluate tracking score using reprojection error between projected mask and detected mask.
         
-        return cTo, valid
+        Args:
+            pose: 4x4 pose matrix
+            K: Camera intrinsics matrix
+            color: Color image
+            mask_selector: Text2MaskPredictor instance
+            estimator: FoundationPose estimator (optional, for mesh rendering)
+        
+        Returns:
+            float: Tracking score (0.0 to 1.0, higher is better)
+        """
+        H, W = color.shape[:2]
+        # Convert pose to centered mesh coordinates for rendering
+        # pose_centered = pose @ np.linalg.inv(estimator.get_tf_to_centered_mesh().cpu().numpy())
+        pose_centered = pose.astype(np.float32)
+        # Render the mesh using nvdiffrast
+        
+        # Render mesh to get depth and mask
+        # rendered_depth, rendered_mask 
+        rendered_rgb, rendered_depth, rendered_normal_map = nvdiffrast_render(
+            K=K, H=H, W=W, 
+            ob_in_cams=torch.tensor(pose_centered.reshape(1, 4, 4), device='cuda'),
+            glctx=estimator.glctx,
+            mesh=estimator.mesh,
+            mesh_tensors=estimator.mesh_tensors,
+            # projection_mat=projection_mat,
+            output_size=(H, W)
+        )
+        projected_mask = (rendered_depth[0] > 0)
+        projected_mask = projected_mask.detach().cpu().numpy()
+        
+        # canvas = np.concatenate([current_mask, projected_mask], axis=1).astype(np.uint8) * 255
+        # cv2.imwrite(save_pref + 'mask_projected.png', canvas)
+
+        # Calculate IoU (Intersection over Union) between masks
+        intersection = np.logical_and(projected_mask, current_mask).sum()
+        union = np.logical_or(projected_mask, current_mask).sum()
+        
+        if union == 0:
+            return 0.0
+        
+        iou = intersection / union
+        
+        # Convert IoU to a score (0.0 to 1.0)
+        # IoU of 0.5+ is considered good tracking
+        score = min(1.0, iou * 2.0)  # Scale IoU to get better score range
+        
+        return float(score)

@@ -146,6 +146,9 @@ class Pt3dVisualizer:
         nTw = mesh_utils.get_nTw(wScene.verts_packed()[None], new_scale=1.2)
         print("render wScene", wScene.verts_padded().shape, nTw.shape)
 
+        coord = plot_utils.create_coord(device, len(wScene), size=0.2)
+        wScene = mesh_utils.join_scene([wScene, coord])
+
         image_side = render_scene_from_azel(wScene, nTw, az=160, el=5, out_size=360)
 
         image_all = torch.cat([image_cam["image"], image_side["image"]], dim=-1) 

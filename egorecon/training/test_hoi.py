@@ -7,14 +7,20 @@ from .trainer_hoi import gen_one
 from tqdm import tqdm
 import hydra
 import torch
-from jutils import model_utils
+from jutils import model_utils, geom_utils
 from move_utils.slurm_utils import slurm_engine
 from omegaconf import OmegaConf
 from ..manip.model import build_model
 from ..manip.model.guidance_optimizer_hoi_jax import (
     do_guidance_optimization,
 )
-from .trainer_hoi import gen_vis_res, vis_gen_process, gen_vis_hoi_res, vis_one_from_cam, vis_one_from_cam_side
+from .trainer_hoi import (
+    gen_vis_res,
+    vis_gen_process,
+    gen_vis_hoi_res,
+    vis_one_from_cam,
+    vis_one_from_cam_side,
+)
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
 )
@@ -24,7 +30,7 @@ from ..visualization.pt3d_visualizer import Pt3dVisualizer
 from ..manip.model import fncmano_jax
 from pathlib import Path
 import imageio
-from PIL import Image   
+from PIL import Image
 
 
 device = torch.device("cuda:0")
@@ -42,7 +48,10 @@ def build_model_from_ckpt(opt):
     return diffusion_model
 
 
-def extract_hoi(demo_id, fname,):
+def extract_hoi(
+    demo_id,
+    fname,
+):
     hot3d_dir = f"data/HOT3D-CLIP/extract_images-rot90/clip-{demo_id}"
     image_paths = glob(osp.join(hot3d_dir, "*.jpg"))
     print(f"query {osp.join(hot3d_dir, '*.jpg')}, found {len(image_paths)} images")
@@ -52,7 +61,28 @@ def extract_hoi(demo_id, fname,):
     images = [image.resize((360, 360)) for image in images]
     os.makedirs(osp.dirname(fname), exist_ok=True)
     imageio.mimwrite(fname, images, fps=30)
-    
+
+@torch.no_grad()
+def patch_wTc(diffusion_model: CondGaussianDiffusion, dl, opt):
+    model_cfg = diffusion_model.opt
+
+    # add guidance
+    for b, batch in enumerate(tqdm(dl)):
+        if opt.test_num > 0 and b >= opt.test_num:
+            break
+        b = batch["ind"][0]
+        # if b.item() != 484:
+        #     continue
+        index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
+        save_file = osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl")
+        with open(save_file, "rb") as f:
+            pred_dict = pickle.load(f)
+        
+        pred_dict["wTc"] = batch["wTc"][0].cpu().numpy()
+
+        with open(save_file, "wb") as f:
+            pickle.dump(pred_dict, f)
+
 
 @torch.no_grad()
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
@@ -76,7 +106,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         sample = batch = model_utils.to_cuda(batch)
 
         seq_len = torch.tensor([sample["condition"].shape[1]]).to(device)
-        if model_cfg.get('legacy_mask', True):
+        if model_cfg.get("legacy_mask", True):
             actual_seq_len = seq_len + 2
             tmp_mask = torch.arange(model_cfg.model.window + 2, device=device).expand(
                 1, model_cfg.model.window + 2
@@ -84,26 +114,42 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             padding_mask = tmp_mask[:, None, :]
         else:
             padding_mask = None
-        padding_mask = None            
-
+        padding_mask = None
 
         # visualize real RGB
-        fname = osp.join(model_cfg.exp_dir, opt.test_folder, "log", f"{b:04d}_input.mp4")
+        fname = osp.join(
+            model_cfg.exp_dir, opt.test_folder, "log", f"{index}_input.mp4"
+        )
         extract_hoi(sample["demo_id"][0], fname)
 
         # visualize gt
-        gt = diffusion_model.decode_dict(diffusion_model.denormalize_data(sample["target"]))
+        gt = diffusion_model.decode_dict(
+            diffusion_model.denormalize_data(sample["target"])
+        )
         gt["newMesh"] = sample["newMesh"]
         gt["contact"] = sample["contact"]
-        vis_one_from_cam_side(            
+        vis_one_from_cam_side(
             diffusion_model,
             viz_off,
             model_cfg,
             step=0,
             output=gt,
             camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
-            name=f"{b:04d}_gt",
+            name=f"{index}_gt",
         )
+
+        def get_info_str(info):
+            B, T = sample["condition"].shape[:2]
+            info_per_time = [[] for _ in range(T)]
+            for t in range(T):
+                for b in range(B):
+                    info_str = f"t={t:04d} x1000\n"
+                    for k, v in info.items():
+                        info_str += f"  {k}={v[b, t] * 1000:.4f} \n"
+                    info_per_time[t].append(info_str)
+
+            return info_per_time
+
         for i in range(1):
             guided_object_pred_raw, info = diffusion_model.sample_raw(
                 torch.randn_like(sample["target"]),
@@ -126,73 +172,72 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                     step=0,
                     output=pred_dict,
                     camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
-                    name=f"{b:04d}_{i}_sample",
-                )        
-        guided_object_pred_raw, info = diffusion_model.sample_raw(
-            torch.randn_like(sample["target"]),
-            sample["condition"],
-            padding_mask=padding_mask,
-            guide=opt.inner_guidance,
-            obs=sample,
-            newPoints=sample["newPoints"],
-            hand_raw=sample["hand_raw"],
-            rtn_x_list=True,
-        )
-        save_prediction(diffusion_model.decode_dict(guided_object_pred_raw), index, osp.join(model_cfg.exp_dir, opt.test_folder, "guided", f"{index}.pkl"))
+                    name=f"{index}_{i}_sample",
+                )
+            save_prediction(
+                pred_dict,
+                index,
+                osp.join(model_cfg.exp_dir, opt.test_folder, "sample", f"{index}.pkl"),
+                wTc=sample["wTc"][0],
+            )
 
-        def get_info_str(info):
+        if opt.inner_guidance:
+            guided_object_pred_raw, info = diffusion_model.sample_raw(
+                torch.randn_like(sample["target"]),
+                sample["condition"],
+                padding_mask=padding_mask,
+                guide=opt.inner_guidance,
+                obs=sample,
+                newPoints=sample["newPoints"],
+                hand_raw=sample["hand_raw"],
+                rtn_x_list=True,
+            )
+            save_prediction(
+                diffusion_model.decode_dict(guided_object_pred_raw),
+                index,
+                osp.join(model_cfg.exp_dir, opt.test_folder, "guided", f"{index}.pkl"),
+                wTc=sample["wTc"][0],
+            )
 
-            B, T = sample["condition"].shape[:2]
-            info_per_time = [[] for _ in range(T)]
-            for t in range(T):
-                for b in range(B):
-                    info_str = f"t={t:04d} x1000\n"
-                    for k, v in info.items(): 
-                        info_str += f"  {k}={v[b, t]*1000:.4f} \n"
-                    info_per_time[t].append(info_str)
-
-            return info_per_time
-
-        if opt.vis_x:
-            info_per_time = get_info_str(info['info_inner'][-1])
-            pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
-            pred_dict["newMesh"] = sample["newMesh"]
-            vis_one_from_cam_side(
+            if opt.vis_x:
+                info_per_time = get_info_str(info["info_inner"][-1])
+                pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
+                pred_dict["newMesh"] = sample["newMesh"]
+                vis_one_from_cam_side(
                     diffusion_model,
                     viz_off,
                     model_cfg,
                     step=0,
                     output=pred_dict,
                     camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
-                    name=f"{b:04d}_guided",
+                    name=f"{index}_guided",
                     debug_info=info_per_time,
-                )        
-        # save for debug
-        # tmp_file = "outputs/tmp.pkl"
-        # with open(tmp_file, "wb") as f:
-        #     pickle.dump(
-        #         {
-        #             "sample": sample,
-        #             "pred_raw": guided_object_pred_raw,
-        #         },
-        #         f,
-        #     )
-        # # assert False
+                )
+            # save for debug
+            # tmp_file = "outputs/tmp.pkl"
+            # with open(tmp_file, "wb") as f:
+            #     pickle.dump(
+            #         {
+            #             "sample": sample,
+            #             "pred_raw": guided_object_pred_raw,
+            #         },
+            #         f,
+            #     )
+            # # assert False
 
-        if opt.vis_x0_list:
-            vis_gen_process(
-                info["x_0_packed_pred"],
-                diffusion_model,
-                viz_off,
-                model_cfg,
-                step=0,
-                batch=sample,
-                pref=f"test_guided_{b:04d}_x0",
-            )
+            if opt.vis_x0_list:
+                vis_gen_process(
+                    info["x_0_packed_pred"],
+                    diffusion_model,
+                    viz_off,
+                    model_cfg,
+                    step=0,
+                    batch=sample,
+                    pref=f"{index}_x0",
+                )
 
         left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
         right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
-
 
         if opt.post_guidance:
             # directly guide object_pred_raw
@@ -221,20 +266,33 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
                     step=0,
                     output=pred_dict,
                     camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
-                    name=f"{b:04d}_post",
+                    name=f"{index}_post",
                     debug_info=info_per_time,
                 )
-            save_prediction(post_pred_dict, index, osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"))
+            save_prediction(
+                post_pred_dict,
+                index,
+                osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"),
+                wTc=sample["wTc"][0],
+            )
 
 
-def save_prediction(pred_dict, index, fname):
+def save_prediction(pred_dict, index, fname, wTc):
     os.makedirs(osp.dirname(fname), exist_ok=True)
     to_save = {}
-    for key in ["wTo", "left_hand_params", "right_hand_params", "contact", "left_joints", "right_joints"]:
+    for key in [
+        "wTo",
+        "left_hand_params",
+        "right_hand_params",
+        "contact",
+        "left_joints",
+        "right_joints",
+    ]:
         value = pred_dict.get(key, None)
         if value is not None:
             to_save[key] = value.detach().cpu().numpy()
     to_save["index"] = index
+    to_save["wTc"] = wTc.detach().cpu().numpy()  # GT
 
     with open(fname, "wb") as f:
         pickle.dump(to_save, f)
@@ -246,31 +304,53 @@ def aggregate_prediction(opt):
         save_dir = osp.join(opt.exp_dir, opt.test_folder)
     else:
         save_dir = opt.dir
-    pred_list = glob(osp.join(save_dir,  "*.pkl"))
+    pred_list = glob(osp.join(save_dir, "*.pkl"))
     # for hand, ignore object id
     seq_dict = {}
+    # for object evaluation, save with object id
+    seq_obj_dict = {}
+
     for pred_file in pred_list:
         with open(pred_file, "rb") as f:
             pred_dict = pickle.load(f)
         index = pred_dict["index"]
         seq = index.split("_")[0]
+        obj_id = index.split("_")[1]
 
         for k, v in pred_dict.items():
             if isinstance(v, np.ndarray) and v.shape[0] == 1:
                 pred_dict[k] = v[0]
         seq_dict[seq] = pred_dict
+        # Aggregate for object evaluation (with object id)
 
+        if seq not in seq_obj_dict:
+            seq_obj_dict[seq] = {}
+        # Save wTo with object ID as key
+        wTo = (
+            geom_utils.se3_to_matrix_v2(torch.FloatTensor(pred_dict["wTo"]))
+            .cpu()
+            .numpy()
+        )
+        seq_obj_dict[seq][f"obj_{obj_id}_wTo"] = wTo  # (T, 4,)
+        seq_obj_dict[seq]["wTc"] = pred_dict["wTc"]
 
-    save_file = osp.dirname(save_dir) + ".pkl"
-    with open(save_file, "wb") as f:    
+    # Save hand evaluation format
+    save_file = save_dir.rstrip("/") + ".pkl"
+    print(f"Saving hand predictions to {save_file}")
+    with open(save_file, "wb") as f:
         pickle.dump(seq_dict, f)
-    return 
 
+    # Save object evaluation format
+    save_file_obj = osp.dirname(save_dir) + "_objects.pkl"
+    print(f"Saving object predictions to {save_file_obj}")
+    with open(save_file_obj, "wb") as f:
+        pickle.dump(seq_obj_dict, f)
 
+    return
 
 
 def set_test_cfg(opt, model_cfg):
-    # resolve model_cfg first 
+    # resolve model_cfg first
     OmegaConf.resolve(model_cfg)
     model_cfg.guide.hint = opt.guide.hint
     model_cfg.sample = opt.sample
@@ -286,7 +366,6 @@ def set_test_cfg(opt, model_cfg):
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
 @slurm_engine()
 def main(opt):
-
     if opt.test_mode == "guided":
         diffusion_model = build_model_from_ckpt(opt)
         set_test_cfg(opt, diffusion_model.opt)
@@ -301,14 +380,26 @@ def main(opt):
             batch_size=1,
             num_workers=1,
         )
-        print(opt.sample,)
         test_guided_generation(diffusion_model, dl, opt)
+    elif opt.test_mode == "patch":
+        diffusion_model = build_model_from_ckpt(opt)
+        set_test_cfg(opt, diffusion_model.opt)
 
-    elif opt.test_mode == 'aggregate':
+        torch.manual_seed(123)
+
+        dl, ds = build_dataloader(
+            opt.testdata,
+            diffusion_model.opt,
+            is_train=False,
+            shuffle=True,
+            batch_size=1,
+            num_workers=1,
+        )
+        patch_wTc(diffusion_model, dl, opt)
+    elif opt.test_mode == "aggregate":
         aggregate_prediction(opt)
 
     return
-
 
 
 if __name__ == "__main__":
