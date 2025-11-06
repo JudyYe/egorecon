@@ -126,7 +126,6 @@ def load_one(index="003132_000020"):
     pred_wpTo = geom_utils.se3_to_matrix_v2(pred_wTo)[0]
     T = pred_wTo.shape[0]
 
-
     # align by the 1st frame camera
     predwTc = torch.FloatTensor(pred_data["wTc"])[0]
     wpTc = geom_utils.se3_to_matrix_v2(predwTc) # (4, 4)

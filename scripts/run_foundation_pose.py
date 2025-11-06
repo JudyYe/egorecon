@@ -353,6 +353,64 @@ def run_foundation_pose(seq, all_data, object_library, save_file=None, vis=False
     return
 
 
+def vis_fp(index, all_data, object_library):
+
+    seq, obj_id = index.split("_")
+    seq_data = all_data[seq]
+
+    fname = osp.join(data_dir, "foundation_pose", f"{seq}.npz")
+    fp_data = np.load(fname)
+    
+    wTo_list = torch.FloatTensor(fp_data["wTo"]).to(device)
+    hand_obj_list = fp_data["index"].tolist()
+    score_list = fp_data["score"]
+    valid_list = fp_data["valid"]
+    print('hand_obj_list', hand_obj_list, score_list.shape)
+
+    obj_idx = hand_obj_list.index(obj_id) - 2
+    wTo = wTo_list[obj_idx]
+
+    oObj = mesh_utils.load_mesh(object_library[obj_id]).to(device)
+    intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
+    wTc = torch.FloatTensor(seq_data["wTc"]).to(device)
+
+    viz = Pt3dVisualizer(
+        exp_name="log",
+        save_dir=vis_dir,
+        mano_models_dir=mano_model_folder,
+        object_mesh_dir=object_mesh_dir,
+    )
+    sided_model = HandWrapper(mano_model_folder).to(device)
+    left_hand_verts, left_hand_faces, _ = sided_model.hand_para2verts_faces_joints(
+        torch.FloatTensor(seq_data["left_hand"]["theta"]).to(device),
+        torch.FloatTensor(seq_data["left_hand"]["shape"]).to(device),
+        side="left",
+    )
+    left_meshes = Meshes(verts=left_hand_verts, faces=left_hand_faces).to(device)
+    right_hand_verts, right_hand_faces, _ = sided_model.hand_para2verts_faces_joints(
+        torch.FloatTensor(seq_data["right_hand"]["theta"]).to(device),
+        torch.FloatTensor(seq_data["right_hand"]["shape"]).to(device),
+        side="right",
+    )
+    right_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
+    hand_meshes = [left_meshes, right_meshes]
+
+    text_list = []
+    for t in range(wTo.shape[0]):
+        text_list.append([f"frame {t}: {score_list[obj_idx][t]:.4f} {valid_list[obj_idx][t]:.1f}"])
+    viz.log_hoi_step_from_cam_side(
+        *hand_meshes,
+        geom_utils.matrix_to_se3_v2(wTo),
+        oObj,
+        contact=None,
+        pref=f"{seq}_{obj_id}_pred",
+        intr_pix=intr,
+        wTc=geom_utils.matrix_to_se3_v2(wTc),
+        device=device,
+        debug_info=text_list
+    )
+
+
 def infill_obj(cTo, valid):
     """_summary_
     cTo: (T, 4, 4)
@@ -550,7 +608,7 @@ if __name__ == "__main__":
     # func = partial(get_mask, object_library=object_library, sided_model=hand_wrapper, all_data=all_data)
 
     # batch_prorcess(func,  split="test", save_dir=osp.join(data_dir, "gt_mask"))
-    get_mask("001870", all_data, object_library, hand_wrapper, save_file=osp.join(data_dir, "gt_mask", "001870.npz"))
+    # get_mask("001870", all_data, object_library, hand_wrapper, save_file=osp.join(data_dir, "gt_mask", "001870.npz"))
 
     object_library = Pt3dVisualizer.setup_template(
         object_mesh_dir=object_mesh_dir,
@@ -567,9 +625,16 @@ if __name__ == "__main__":
     #     vis=True,
     # )
 
-    func = partial[None](
-        run_foundation_pose,
-        object_library=object_library,
-        all_data=all_data,
-    )
-    batch_prorcess(func, split="test", save_dir=osp.join(data_dir, "foundation_pose"))
+    # func = partial[None](
+    #     run_foundation_pose,
+    #     object_library=object_library,
+    #     all_data=all_data,
+    # )
+    # batch_prorcess(func, split="test", save_dir=osp.join(data_dir, "foundation_pose"))
+
+    seq = "002862"
+    obj_list = ['000002', '000006', '000011', '000017', '000003', '000004']
+    # index = "002862_000006"
+    for obj in obj_list:
+        index = f"{seq}_{obj}"
+        vis_fp(index, all_data, object_library)

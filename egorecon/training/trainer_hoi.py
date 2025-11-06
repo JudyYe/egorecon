@@ -70,7 +70,7 @@ def vis_gen_process(x_list, model, viz_off, opt, step, batch, pref):
     imageio.mimwrite(save_dir, frames, fps=30)
 
 
-def vis_one_from_cam_side(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: OmegaConf, step: int, output: dict, camera: dict, name: str, debug_info: list = None):
+def vis_one_from_cam_side(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer, opt: OmegaConf, step: int, output: dict, camera: dict, name: str, debug_info: list = None, hand_meshes=None):
     oObj = output["newMesh"]  # a Mesh??
 
     oObj = Meshes(
@@ -79,11 +79,12 @@ def vis_one_from_cam_side(model: CondGaussianDiffusion, viz_off: Pt3dVisualizer,
     ).to(device)
 
     wTo = output["wTo"][0]
-    hand_meshes = model.decode_hand_mesh(
-        output["left_hand_params"][0],
-        output["right_hand_params"][0],
-        hand_rep="theta",
-    )
+    if hand_meshes is None:
+        hand_meshes = model.decode_hand_mesh(
+            output["left_hand_params"][0],
+            output["right_hand_params"][0],
+            hand_rep="theta",
+        )
 
     fname = viz_off.log_hoi_step_from_cam_side(
         *hand_meshes,

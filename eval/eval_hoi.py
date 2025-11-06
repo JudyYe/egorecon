@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from jutils import mesh_utils, geom_utils, image_utils, plot_utils
 from pytorch3d.structures import Meshes
 from fire import Fire
@@ -12,7 +13,7 @@ import pickle
 import numpy as np
 from eval.eval_utils import eval_jts
 from egorecon.utils.motion_repr import HandWrapper
-from eval.eval_utils import eval_pose
+from eval.eval_utils import eval_pose, csv_to_auc
 from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
 from pytorch3d.structures import Meshes
 from jutils import mesh_utils
@@ -75,11 +76,14 @@ def get_hand_meshes(seq, hand_wrapper: HandWrapper):
     return left_meshes, right_meshes
 
 
-def get_hotclip_split(split="test"):
+def get_hotclip_split(split="test50obj"):
     split_file = osp.join(data_dir, "sets", "split.json")
     with open(split_file, "r") as f:
         split2sesq = json.load(f)
     seqs = split2sesq[split]
+    if "_" in seqs[0]:
+        seqs = [seq.split("_")[0] for seq in seqs]
+        seqs = list(set(seqs))
     return seqs
 
 
@@ -90,7 +94,7 @@ def vis_hotclip(
     gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
     side="right",
     save_dir=None,
-    split="test",
+    split="test50obj",
     skip_not_there=True,
     chunk_length=-1,
 ):
@@ -113,6 +117,7 @@ def vis_hotclip(
     os.makedirs(save_dir, exist_ok=True)
 
     for seq in seqs:
+        print("seq=", seq)
         if skip_not_there and (seq not in pred_data or seq not in gt_data):
             print(f"Seq {seq} not in pred_data or gt_data")
             continue
@@ -140,9 +145,10 @@ def eval_hotclip_pose6d(
     pred_file="pred_points.pkl",
     gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
     save_dir=None,
-    split="test",
+    split="test50obj",
     skip_not_there=True,
     chunk_length=-1,
+    aligned=False,
 ):
     """
     Evaluate object pose using ADD, ADI, APD metrics.
@@ -155,7 +161,7 @@ def eval_hotclip_pose6d(
         skip_not_there: Skip sequences not in pred/gt
         chunk_length: Chunk length (-1 for full sequence)
     """
-    
+    print("Evaluating object pose using ADD, ADI, APD metrics...")
     seqs = get_hotclip_split(split)
     
     # Load mesh library
@@ -174,22 +180,27 @@ def eval_hotclip_pose6d(
         gt_data = gt_file
     
     metric_list = defaultdict(list)
+    per_time_metric_list = defaultdict(list)
     
-    for seq in seqs:
+    for seq in tqdm(seqs):
         if skip_not_there and (seq not in pred_data or seq not in gt_data):
             continue
         
         pred_seq = pred_data[seq]
         gt_seq = gt_data[seq]
-        
-        gt_wTc = torch.FloatTensor(gt_seq["wTc"])[0]
-        pred_wTc = torch.FloatTensor(pred_seq["wTc"])[0]
-        T = len(gt_seq["wTc"])
-        
-        # align by the 1st frame camera
-        wpTc = geom_utils.se3_to_matrix_v2(pred_wTc) # (4, 4)
-        wTwp = gt_wTc @ geom_utils.inverse_rt_v2(wpTc)
-        wTwp = wTwp[None].repeat(T, 1, 1)
+
+        if not aligned:
+            gt_wTc = torch.FloatTensor(gt_seq["wTc"])[0]
+            pred_wTc = torch.FloatTensor(pred_seq["wTc"])[0]
+            T = len(gt_seq["wTc"])
+            
+            # align by the 1st frame camera
+            wpTc = geom_utils.se3_to_matrix_v2(pred_wTc) # (4, 4)
+            wTwp = gt_wTc @ geom_utils.inverse_rt_v2(wpTc)
+            wTwp = wTwp[None].repeat(T, 1, 1)
+        else:
+            T = len(gt_seq["wTc"])
+            wTwp = torch.eye(4)[None].repeat(T, 1, 1)
 
         # Get object IDs from pred_seq (format: obj_{obj_id}_wTo or similar)
         # Or from gt_seq which should have objects list
@@ -240,20 +251,26 @@ def eval_hotclip_pose6d(
             for name, values in metrics.items():
                 # values is array of per-frame metrics, take mean
                 metric_list[name].append(np.mean(values))
+                
+                per_time_metric_list[name].append(values)
             metric_list["index"].append(f"{seq}_{obj_id}")
+            for t in range(T):
+                per_time_metric_list["index"].append(f"{seq}_{obj_id}_{t:04d}")
 
     # Compute mean metrics
     mean_metrics = {
         name: np.mean(value) for name, value in metric_list.items() if name != "index"
     }
     mean_metrics["index"] = "Mean"
-    
-    # Print mean metrics
-    print("Mean object pose metrics:")
-    for name, value in mean_metrics.items():
-        if name != "index":
-            print(f"{name}: {value:.4f}")
-    print("-" * 100)
+
+    # firstly concat per_time_metric_list into a single array
+    per_time_metric_cat = {name: np.concatenate(values, 0) for name, values in per_time_metric_list.items() if name != "index"}
+    index = per_time_metric_list["index"]
+    per_time_metric_list = per_time_metric_cat
+
+    mean_per_time_metrics = {name: np.mean(values, 0) for name, values in per_time_metric_cat.items()}
+    mean_per_time_metrics["index"] = "Mean"
+    per_time_metric_list["index"] = index
     
     # Save to CSV
     if save_dir is None:
@@ -276,14 +293,38 @@ def eval_hotclip_pose6d(
     df = pd.DataFrame(data, columns=["index"] + metrics_names)
     df.to_csv(csv_file, index=False)
     print("Saved metrics to csv file: ", csv_file)
-    return 
+    print("Computing AUC per trajectory...")
+    csv_to_auc(csv_file)
+
+    
+    # Save per-time metrics to CSV
+    per_time_csv_file = osp.join(save_dir, f"object_pose_metrics_per_time_chunk_{chunk_length}.csv")
+    
+    per_time_metrics_names = [name for name in per_time_metric_list.keys() if name != "index"]
+    per_time_data = []
+    # Add mean_per_time_metrics as first row
+    per_time_row = [mean_per_time_metrics["index"]] + [mean_per_time_metrics[name] for name in per_time_metrics_names]
+    per_time_data.append(per_time_row)
+    # Add individual per-time metrics
+    for i in range(len(per_time_metric_list["index"])):
+        per_time_row = [per_time_metric_list["index"][i]] + [
+            per_time_metric_list[name][i] for name in per_time_metrics_names
+        ]
+        per_time_data.append(per_time_row)
+    
+    per_time_df = pd.DataFrame(per_time_data, columns=["index"] + per_time_metrics_names)
+    per_time_df.to_csv(per_time_csv_file, index=False)
+    print("Saved per-time metrics to csv file: ", per_time_csv_file)
+    print("Computing AUC per time...")
+    csv_to_auc(per_time_csv_file)
+
 
 def eval_hotclip_joints(
     pred_file="pred_joints.pkl",
     gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
     side="both",
     save_dir=None,
-    split="test",
+    split="test50obj",
     skip_not_there=True,
     chunk_length=-1,
 ):
@@ -305,7 +346,6 @@ def eval_hotclip_joints(
     # for seq in gt_data.keys():
     for seq in seqs:
         if skip_not_there and (seq not in pred_data or seq not in gt_data):
-            print(f"Seq {seq} not in pred_data or gt_data")
             continue
         pred_seq = pred_data[seq]
         gt_seq = gt_data[seq]
@@ -399,8 +439,8 @@ def eval_hotclip_joints(
 
 
 
-def main(mode='quant',  **kwargs):
-    if mode == 'quant':
+def main(mode='hand',  **kwargs):
+    if mode == 'hand':
         eval_hotclip_joints(**kwargs)
     elif mode == 'pose6d':
         eval_hotclip_pose6d(**kwargs)

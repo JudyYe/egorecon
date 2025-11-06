@@ -478,7 +478,7 @@ class CondGaussianDiffusion(nn.Module):
         b = shape[0]
         x = torch.randn(shape, device=device)
 
-        obs = self.get_obs(kwargs.get('guide', False), kwargs.get('obs', {}), shape)
+        obs = self.get_obs(self.opt, kwargs.get('guide', False), kwargs.get('obs', {}), shape)
         kwargs['obs'] = obs
         rtn = {'x_list': [], 'x_0_packed_pred': []}
         for i in tqdm(
@@ -509,27 +509,98 @@ class CondGaussianDiffusion(nn.Module):
             return x, rtn
         return x  # BS X T X D
 
-    def get_obs(self, guide, batch, shape):
+    @staticmethod
+    def get_obs(opt, guide, batch, shape):
         obs = {}
         if guide:
-            # x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
-            x2d = project(batch['wTc'], batch['intr'], batch['newPoints'], batch['wTo'], ndc=True)
+            if opt.get('shelf', False):
+                mask = batch['mask']  # (T, H, W)
+                H, W = mask.shape[-2:]
+                mask_valid = batch['mask_valid']  # (T,)  # valid == 0 if all mask is 0
+                kP = 100
+                # sample (T, kP) points from mask== 1 region with replacement
+                # TODO 
+                # sample kP points, consider corner case where all mask is 0
+                
+                b, T = shape[:2]
+                device = mask.device
+                
+                # Batchify mask sampling: create coordinate grids and sample using multinomial
+                # Create coordinate grids: (H, W)
+                y_grid, x_grid = torch.meshgrid(
+                    torch.arange(H, device=device, dtype=torch.float32),
+                    torch.arange(W, device=device, dtype=torch.float32),
+                    indexing='ij'
+                )
+                
+                # Flatten coordinates: (T, H*W, 2)
+                coords_grid = torch.stack([x_grid.flatten(), y_grid.flatten()], dim=-1)  # (H*W, 2)
+                coords_grid = coords_grid[None, :, :].expand(T, -1, -1)  # (T, H*W, 2)
+                
+                # Flatten masks: (T, H*W)
+                mask_flat = mask.reshape(T, H * W)  # (T, H*W)
+                
+                # Normalize mask to probabilities for multinomial sampling
+                # Add small epsilon to avoid division by zero
+                mask_probs = mask_flat / (mask_flat.sum(dim=-1, keepdim=True) + 1e-8)  # (T, H*W)
+                
+                # Sample kP indices with replacement using multinomial: (T, kP)
+                # Use uniform distribution for invalid masks
+                uniform_probs = torch.ones_like(mask_probs) / (H * W)  # (T, H*W)
+                # Blend: use mask_probs if valid and has non-zero mask, uniform otherwise
+                sampling_probs = torch.where(
+                    (mask_valid[:, None] > 0) & (mask_flat.sum(dim=-1, keepdim=True) > 0),
+                    mask_probs,
+                    uniform_probs
+                )
+                
+                # Sample kP indices per frame: (T, kP) - multinomial samples from each row independently
+                sampled_indices = torch.multinomial(sampling_probs, kP, replacement=True)  # (T, kP)
+                
+                # Gather coordinates: (T, kP, 2)
+                sampled_indices_exp = sampled_indices[..., None].expand(-1, -1, 2)  # (T, kP, 2)
+                uv_samples = torch.gather(coords_grid, dim=1, index=sampled_indices_exp)  # (T, kP, 2)
+                
+                # convert uv coordinate to NDC space
+                # NDC: u_ndc = (u / W) * 2 - 1, v_ndc = (v / H) * 2 - 1
+                u_ndc = (uv_samples[..., 0] / W) * 2 - 1  # (T, kP)
+                v_ndc = (uv_samples[..., 1] / H) * 2 - 1  # (T, kP)
+                x2d = torch.stack([u_ndc, v_ndc], dim=-1)  # (T, kP, 2)
+                
+                # Identify frames with invalid masks (all zeros or mask_valid == 0)
+                mask_sum = mask_flat.sum(dim=-1)  # (T,)
+                is_valid_mask = (mask_valid > 0) & (mask_sum > 0)  # (T,)
+                
+                # Set x2d to zeros for invalid frames
+                x2d = torch.where(is_valid_mask[:, None, None], x2d, torch.zeros_like(x2d))  # (T, kP, 2)
+                
+                # Expand to batch dimension: (B, T, kP, 2)
+                x2d = x2d[None, ...].repeat(b, 1, 1, 1)  # (B, T, kP, 2)
+                
+                # Visibility: check if points are in valid NDC range [-1, 1]
+                x2d_vis = ((x2d <= 1) & (x2d >= -1)).all(dim=-1).all(dim=-1)  # (B, T)
+                # Set visibility to False for invalid masks
+                mask_valid_bool = mask_valid.bool() if mask_valid.dtype != torch.bool else mask_valid
+                x2d_vis = x2d_vis & mask_valid_bool[None, :].to(x2d_vis.device) & is_valid_mask[None, :].to(x2d_vis.device)
+            else:
+                # x2d = project(batch['newPoints'], batch['target_raw'], batch['wTc'], batch['intr'], ndc=True)
+                x2d = project(batch['wTc'], batch['intr'], batch['newPoints'], batch['wTo'], ndc=True)
+                # if self.opt.guide.hint == "reproj_cd":
+                b, T = shape[:2]
+                ind_list = []
+                kP = 100
+                for t in range(T):
+                    inds = torch.randperm(x2d.shape[2])[:kP]
+                    ind_list.append(inds)
+                ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
+                ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
+                x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
+                x2d_vis = ((x2d <= 1) & (x2d >= -1)).all(dim=-1).all(dim=-1)  # (B, T,)
 
-            num_kp = 5
-            kp2d = x2d[:, :, :num_kp]  # (B, T, num_kp, 2)
-            kp2d_vis = ((kp2d <= 1) & (kp2d >= -1)).all(dim=-1)  
+            # num_kp = 5
+            # kp2d = x2d[:, :, :num_kp]  # (B, T, num_kp, 2)
+            # kp2d_vis = ((kp2d <= 1) & (kp2d >= -1)).all(dim=-1)  
 
-            # if self.opt.guide.hint == "reproj_cd":
-            b, T = shape[:2]
-            ind_list = []
-            kP = 100
-            for t in range(T):
-                inds = torch.randperm(x2d.shape[2])[:kP]
-                ind_list.append(inds)
-            ind_list = torch.stack(ind_list, dim=0).to(x2d.device)  # (T, kP)
-            ind_list_exp = ind_list[None, :, :, None].repeat(b, 1, 1, 2)
-            x2d = torch.gather(x2d, dim=2, index=ind_list_exp)  # (B, T, Q, 2) --? (B, T, kP, 2)
-            x2d_vis = ((x2d <= 1) & (x2d >= -1)).all(dim=-1).all(dim=-1)  # (B, T,)
 
             j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=ndc)
             j2d_vis = ((j2d <= 1) & (j2d >= -1)).all(dim=-1)  # (B, T, J_2)
@@ -539,14 +610,16 @@ class CondGaussianDiffusion(nn.Module):
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,
-                "kp3d": batch["newPoints"][:, :num_kp],
-                "kp2d": kp2d,
-                "kp2d_vis": kp2d_vis,
+                # "kp3d": batch["newPoints"][:, :num_kp],
+                # "kp2d": kp2d,
+                # "kp2d_vis": kp2d_vis,
                 "x2d_vis": x2d_vis.reshape(b, T, 1),
                 "contact": batch['contact'],
                 "j3d": batch['hand_raw'].reshape(b, T, -1, 3),
                 "j2d": j2d.reshape(b, T, -1, 2),
                 "j2d_vis": j2d_vis.reshape(b, T, -1),
+                'wTo': se3_to_wxyz_xyz(batch['wTo_shelf']),
+                'wTo_vis': batch['wTo_valid_shelf'].reshape(b, T, 1),
             }
             # obs = {
             #     "contact": batch['contact'],
@@ -989,7 +1062,7 @@ class CondGaussianDiffusion(nn.Module):
         b = shape[0]
         x_t_packed = torch.randn(shape, device=device)
 
-        obs = self.get_obs(guide=guide, batch=kwargs.get('obs', {}), shape=shape)
+        obs = self.get_obs(self.opt, guide=guide, batch=kwargs.get('obs', {}), shape=shape)
         kwargs['obs'] = obs
         ts = quadratic_ts()
         # x_list = []
@@ -1097,7 +1170,7 @@ class CondGaussianDiffusion(nn.Module):
         b = shape[0]
         x_t_packed = torch.randn(shape, device=device)
 
-        obs = self.get_obs(guide=guide, batch=kwargs.get('obs', {}), shape=shape)
+        obs = self.get_obs(self.opt, guide=guide, batch=kwargs.get('obs', {}), shape=shape)
         kwargs['obs'] = obs
         ts = quadratic_ts()
         # x_list = []

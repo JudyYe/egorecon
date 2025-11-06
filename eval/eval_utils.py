@@ -1,7 +1,12 @@
 # from slamhr and haptic
 
+import json
+import os
+import os.path as osp
 import numpy as np
+import pandas as pd
 import torch
+from fire import Fire
 from .pcl import align_pcl
 from . import bop_utils as misc
 from scipy import spatial
@@ -43,6 +48,22 @@ def apd(R_est, t_est, R_gt, t_gt, pts, thre_list=[0.01, 0.02, 0.05, 0.1]):
         apd_dict[thre] = apd_value
     
     return apd_dict
+
+
+
+def compute_auc_sklearn(errs, max_val=0.1, step=0.001):
+  from sklearn import metrics
+  errs = np.sort(np.array(errs))
+  X = np.arange(0, max_val+step, step)
+  Y = np.ones(len(X))
+  for i,x in enumerate(X):
+    y = (errs<=x).sum()/len(errs)
+    Y[i] = y
+    if y>=1:
+      break
+  auc = metrics.auc(X, Y) / (max_val*1)
+  return auc
+
 
 
 def add(R_est, t_est, R_gt, t_gt, pts):
@@ -184,7 +205,7 @@ def compute_error_accel(joints_gt, joints_pred, vis=None):
     """
     from hawor? 
     Computes acceleration error:
-        1/(n-2) \sum_{i=1}^{n-1} X_{i-1} - 2X_i + X_{i+1}
+        1/(n-2) sum_{i=1}^{n-1} X_{i-1} - 2X_i + X_{i+1}
     Note that for each frame that is not visible, three entries in the
     acceleration error should be zero'd out.
     Args:
@@ -254,3 +275,77 @@ def local_align_joints(gt_joints, pred_joints):
         + t_loc[:, None]
     )
     return pred_loc
+
+
+def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_contact_ddim_long_shelf/object_pose_metrics_chunk_-1.csv', max_val=0.3, step=0.001):
+    """
+    Compute AUC for ADD, ADI, and center metrics from CSV file.
+    
+    Args:
+        csv_file: Path to CSV file with metrics
+        max_val: Maximum value for AUC computation (default: 0.1)
+        step: Step size for AUC computation (default: 0.001)
+    """
+    # Read CSV file
+    df = pd.read_csv(csv_file)
+    
+    # Set index column if it exists
+    if 'index' in df.columns:
+        df = df.set_index('index')
+    
+    # Remove "Mean" row if it exists
+    if 'Mean' in df.index:
+        df = df.drop('Mean')
+    
+    # Extract error values for add, adi, center
+    metrics_to_compute = ['add', 'adi', 'center']
+    auc_results = {}
+    
+    for metric_name in metrics_to_compute:
+        if metric_name not in df.columns:
+            print(f"Warning: {metric_name} column not found in CSV file")
+            continue
+        
+        # Extract error values (ignore NaN values)
+        errors = df[metric_name].dropna().values
+        
+        if len(errors) == 0:
+            print(f"Warning: No valid values found for {metric_name}")
+            auc_results[metric_name] = 0.0
+            continue
+        
+        # Compute AUC
+        auc = compute_auc_sklearn(errors, max_val=max_val, step=step)
+        auc_results[metric_name] = float(auc)
+        
+        # Print result
+        print(f"{metric_name.upper()} AUC: {auc:.6f} (from {len(errors)} samples)")
+    
+    # Print summary
+    print("\n" + "="*50)
+    print("AUC Summary:")
+    print("="*50)
+    for metric_name, auc_value in auc_results.items():
+        print(f"{metric_name.upper()}: {auc_value:.6f}")
+    print("="*50)
+    
+    # Save to JSON file
+    csv_dir = osp.dirname(csv_file)
+    csv_basename = osp.basename(csv_file)
+    csv_name_without_ext = osp.splitext(csv_basename)[0]
+    json_file = osp.join(csv_dir, f"{csv_name_without_ext}_auc.json")
+    
+    os.makedirs(csv_dir, exist_ok=True)
+    with open(json_file, 'w') as f:
+        json.dump(auc_results, f, indent=4)
+    
+    print(f"\nAUC results saved to: {json_file}")
+    
+    return auc_results
+    
+
+
+
+
+if __name__ == "__main__":
+    Fire(csv_to_auc)

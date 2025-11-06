@@ -51,19 +51,27 @@ def wxyz_xyz_to_se3(wxyz_xyz):
 
 # Modes for guidance
 GuidanceMode = Literal[
-    "with_smoothness",  # L2 + smoothness
-    "reproj_cd",  # Reprojection loss with points in correspondence
+    "fp", 
     "hoi_contact",  # reprojection + HOI contact loss
-    "kp2d",  # reprojection + KP2D loss
+    "hoi_fp",  # reprojection + HOI FP loss
+    "debug",
     "hand_only",
     "object_only",
     "contact_only",
+    "fp_simple",
+    "fp_full",
 ]
 
 
 @jdc.pytree_dataclass
 class JaxGuidanceParams:
     # Smoothness weights
+    use_fp_rot: jdc.Static[bool] = False
+    fp_rot_weight: float = 1e-3
+
+    use_fp: jdc.Static[bool] = False
+    fp_weight: float = 0.001
+
     use_j3d: jdc.Static[bool] = False
     j3d_weight: float = 10.0
 
@@ -90,6 +98,7 @@ class JaxGuidanceParams:
     # Reprojection cost weights
     reproj_weight: float = 1.0
     use_reproj_cd: jdc.Static[bool] = True
+    use_reproj_cd_one_way: jdc.Static[bool] = False
 
     use_kp2d: jdc.Static[bool] = False
     kp2d_weight: float = 1.0
@@ -134,8 +143,9 @@ class JaxGuidanceParams:
                     use_contact_obs=True,
                     use_static=True,
                     static_weight=1.,
-                    use_reproj_com=True,
+                    use_reproj_com=False,
                     use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
                     use_abs_contact=False,
                     use_rel_contact=False,
                     use_obj_smoothness=False,
@@ -143,7 +153,6 @@ class JaxGuidanceParams:
                     max_iters=5,
                     lambda_initial=1e-2,
                 )                
-                print('temporary, change back later')
 
             elif phase == "post":
                 params = JaxGuidanceParams( 
@@ -156,7 +165,8 @@ class JaxGuidanceParams:
                     use_static=True,
                     static_weight=100.,
                     use_reproj_com=False,
-                    use_reproj_cd=True,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
@@ -166,48 +176,123 @@ class JaxGuidanceParams:
                     max_iters=50,
                 )         
             return params        
-                
-        if mode == "kp2d":
+        elif mode == "hoi_fp":
             if phase == "inner":
                 params = JaxGuidanceParams( 
-                    use_kp2d=True,
+                    use_fp=True,
                     use_j2d=True,
+                    j2d_weight=20.,
                     use_hand_local=True,
+                    hand_local_weight=.1,
                     use_hand_smoothness=False,
                     use_j3d=False,
                     use_contact_obs=True,
-                    use_static=False,
-                    use_reproj_com=True,
+                    use_static=True,
+                    static_weight=1.,
+                    use_reproj_com=False,
                     use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
                     use_abs_contact=False,
                     use_rel_contact=False,
                     use_obj_smoothness=False,
                     use_delta_wTo=False,
                     max_iters=5,
+                    lambda_initial=1e-2,
                 )                
 
             elif phase == "post":
                 params = JaxGuidanceParams( 
-                    use_kp2d=True,
+                    use_fp=True,
                     use_j2d=True,
-                    j2d_weight=10.,
+                    j2d_weight=20.,
                     use_hand_smoothness=True,
-                    hand_acc_weight=10.,
+                    hand_acc_weight=1.,
                     use_j3d=False,
                     use_contact_obs=True,
                     use_static=True,
+                    static_weight=100.,
                     use_reproj_com=False,
-                    use_reproj_cd=True,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
+                    rel_contact_weight=1,
                     use_obj_smoothness=True,
                     use_delta_wTo=True,
                     max_iters=50,
                 )         
             return params        
+        if mode == "fp_simple":
+            return JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=1.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=1.,
+                    use_j3d=False,
+                    use_contact_obs=False,
+                    use_static=False,
+                    static_weight=.1,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    reproj_weight=100.,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    rel_contact_weight=1,
+                    use_obj_smoothness=True,
+                    use_delta_wTo=True,
+                    max_iters=50,
+                )                     
+        if mode == "fp_full":
+            return JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=1.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=1.,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=True,
+                    static_weight=.1,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    reproj_weight=100.,
+                    use_abs_contact=True,
+                    use_rel_contact=True,
+                    rel_contact_weight=1,
+                    use_obj_smoothness=True,
+                    use_delta_wTo=True,
+                    max_iters=50,
+                )                      
+            
+                              
+        if mode == "debug":
+            params = JaxGuidanceParams( 
+                use_fp_rot=True,
+                use_fp=True,
+                use_j2d=False,
+                j2d_weight=20.,
+                use_hand_local=False,
+                hand_local_weight=.1,
+                use_hand_smoothness=False,
+                use_j3d=False,
+                use_contact_obs=False,
+                use_static=False,
+                static_weight=1.,
+                use_reproj_com=False,
+                use_reproj_cd=False,
+                use_reproj_cd_one_way=True,
+                use_abs_contact=False,
+                use_rel_contact=False,
+                use_obj_smoothness=False,
+                use_delta_wTo=False,
+                max_iters=5,
+                lambda_initial=1e-2,
+            )          
+            return params      
 
-        elif mode == "contact_only":
+        if mode == "contact_only":
             max_iters = 5 if phase == "inner" else 50
             return JaxGuidanceParams(
                 use_j2d=False,
@@ -251,23 +336,8 @@ class JaxGuidanceParams:
                 use_obj_smoothness=False,
                 max_iters=max_iters,
             )
-        elif mode == "reproj_cd":
-            if phase == "fp":
-                max_iters = 200
-            elif phase == "inner":
-                max_iters = 25
-            elif phase == "post":
-                max_iters = 100
-            return JaxGuidanceParams(
-                use_l2=False,
-                use_reproj=False,
-                use_reproj_cd=True,
-                use_abs_contact=True,
-                use_rel_contact=True,
-                reproj_weight=1.0,
-                use_obj_smoothness=True,
-                max_iters=max_iters,
-            )
+
+                
         else:
             assert_never(mode)
 
@@ -369,6 +439,8 @@ def do_guidance_optimization(
         "kp3d",
         "kp2d",
         "kp2d_vis",
+        "wTo",
+        "wTo_vis",
     ]
     for key in keep_keys:
         if key in obs:
@@ -444,6 +516,8 @@ def _optimize_vmapped(
     target_kp3d: jax.Array = None,
     target_kp2d: jax.Array = None,
     target_kp2d_vis: jax.Array = None,
+    target_wTo: jax.Array = None,
+    target_wTo_vis: jax.Array = None,
 ) -> tuple[dict, dict]:
     return jax.vmap(
         partial(
@@ -470,6 +544,8 @@ def _optimize_vmapped(
         target_kp3d=target_kp3d,
         target_kp2d=target_kp2d,
         target_kp2d_vis=target_kp2d_vis,
+        target_wTo=target_wTo,
+        target_wTo_vis=target_wTo_vis,
     )
 
 
@@ -494,6 +570,8 @@ def _optimize(
     target_kp3d: jax.Array = None,
     target_kp2d: jax.Array = None,
     target_kp2d_vis: jax.Array = None,
+    target_wTo: jax.Array = None,
+    target_wTo_vis: jax.Array = None,
 ) -> jax.Array:
     timesteps = wTo.shape[0]
     assert wTo.shape == (timesteps, 7)
@@ -566,6 +644,56 @@ def _optimize(
     var_left_params = _LeftHandParamsVar(jnp.arange(timesteps))
     var_right_params = _RightHandParamsVar(jnp.arange(timesteps))
     var_contact = _ContactVar(jnp.arange(timesteps))
+
+    if guidance_params.use_fp:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            target_wTo,
+            target_wTo_vis,
+        )
+        def fp_cost(
+            vals: jaxls.VarValues,
+            var_traj: _SE3TrajectoryVar,
+            target_wTo: jax.Array,
+            target_wTo_vis: jax.Array,
+        ) -> jax.Array:
+            wTo = vals[var_traj]
+            wTo = jaxlie.SE3(wTo)
+
+            wTo_target = jaxlie.SE3(target_wTo)
+
+            res = dist_residual(guidance_params.fp_weight, wTo.inverse() @ wTo_target)
+            res = res * target_wTo_vis.flatten()
+            return res
+
+
+    if guidance_params.use_fp_rot:
+        @cost_with_args(
+            _SE3TrajectoryVar(jnp.arange(timesteps)),
+            target_wTo,
+            target_wTo_vis,
+        )
+        def fp_rot_cost(
+            vals: jaxls.VarValues,
+            var_traj: _SE3TrajectoryVar,
+            target_wTo: jax.Array,
+            target_wTo_vis: jax.Array,
+        ) -> jax.Array:
+            wTo = vals[var_traj]
+            wTo = jaxlie.SE3(wTo)
+
+            wTo_target = jaxlie.SE3(target_wTo)
+
+            wTo_rot = wTo.rotation() 
+            wTo_target_rot = wTo_target.rotation()
+
+            delta = wTo_rot.inverse() @ wTo_target_rot
+
+            res = target_wTo_vis * delta.log()
+            
+            res = guidance_params.fp_rot_weight * res.flatten()
+            return res
+            
 
     if guidance_params.use_j2d:
         @cost_with_args(
@@ -1041,7 +1169,7 @@ def _optimize(
 
             return guidance_params.kp2d_weight * diff.flatten()
 
-    if guidance_params.use_reproj_cd:
+    if guidance_params.use_reproj_cd or guidance_params.use_reproj_cd_one_way:
         assert (
             target_newPoints is not None
             and target_wTc is not None
@@ -1083,7 +1211,10 @@ def _optimize(
             dist1 = (projected_2d - x2d_nn.squeeze(1)) / projected_2d.shape[0]
             dist2 = (target_x2d - oPoints_nn.squeeze(1)) / target_x2d.shape[0]
 
-            diff = jnp.concatenate([dist1, dist2], axis=0)  # residual  # (P1+P2, 2)
+            if guidance_params.use_reproj_cd_one_way:
+                diff = dist2
+            else:
+                diff = jnp.concatenate([dist1, dist2], axis=0)  # residual  # (P1+P2, 2)
             diff = diff * target_x2d_vis.reshape(1, 1)
 
             return guidance_params.reproj_weight * diff.flatten()

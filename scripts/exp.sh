@@ -47,6 +47,45 @@ GT mask
 bowl: 194930206998778
 spoon: 225397651484143
 
+-
+
+test fp 
+python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor   dir=outputs/ready/ours/opt.yaml   \
+  testdata=hotclip_train testdata.testsplit=test50obj     dyn_only=true   \
+  test_folder=eval_test50obj_\${guide.hint} guide.hint=fp_simple   test_num=50    test_mode=fp \
+
+
+python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor   dir=outputs/ready/ours/opt.yaml   \
+  testdata=hotclip_train testdata.testsplit=test50obj     dyn_only=true   \
+  test_folder=eval_test50obj_\${guide.hint} guide.hint=fp_full   test_num=50    test_mode=fp \
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=baselines/fp_hawor \
+  dir=outputs/ready/ours/opt.yaml \
+  testdata=hotclip_train \
+  dyn_only=true \
+  test_folder=eval_\${guide.hint} guide.hint=fp_full \
+  test_num=50  \
+  test_mode=fp 
+  
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=baselines/fp_hawor \
+  dir=outputs/ready/ours/opt.yaml \
+  testdata=hotclip_train \
+  dyn_only=true \
+  test_folder=eval_\${guide.hint} guide.hint=fp_simple \
+  test_num=50  \
+  test_mode=fp 
+  
+
+
+-
+
 python -m eval.eval_joints   \
   --mode pose6d --skip_not_there True --split test50 \
   --pred_file outputs/first_frame_hoi/firstFalse_dynTrue_static100_contact_100_smoothness10/eval_hoi_contact_ddim_long_vis/post_objects.pkl

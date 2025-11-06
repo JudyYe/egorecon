@@ -5,6 +5,8 @@ defaults:
 
 sample: ddim_long
 
+shelf: true
+
 datasets:
   window: 150
   use_cache: true 

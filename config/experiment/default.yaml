@@ -100,7 +100,7 @@ datasets:
 ds_type: w_geom
 
 guide:
-  hint: reproj_cd
+  hint: hoi_contact
 
 legacy_bps: false
 legacy_mask: false

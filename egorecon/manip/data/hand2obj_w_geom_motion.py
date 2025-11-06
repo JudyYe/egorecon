@@ -70,8 +70,10 @@ class HandToObjectDataset(Dataset):
         noise_scheme="syn",  # 'syn', 'real'
         opt=None,
         data_cfg=None,
+        load_obs=False,
         **kwargs,
     ):
+        self.load_obs = load_obs
         self.is_train = is_train
         self.data_path = data_path
         self.window_size = window_size
@@ -128,7 +130,7 @@ class HandToObjectDataset(Dataset):
         print(f"Found {len(self.processed_data)} demonstrations")
         self.pose_dim = 9
 
-        self.processed_data = self._filter_data(single_demo, single_object)
+        self.processed_data = self._filter_data()
         print(
             f"Filtered to demo: {single_demo} object: {single_object}, total: {len(self.processed_data)} demonstrations for overfitting"
         )
@@ -216,58 +218,48 @@ class HandToObjectDataset(Dataset):
         for uid, mesh in self.object_library_mesh.items():
             self.object_library[uid] = sample_points_from_meshes(mesh, 50000)
 
-    def _filter_data(self, single_demo=None, single_object=None):
+    def _filter_data(self, ):
         """Filter data for overfitting on specific demo/object."""
         filtered_data = {}
-        # if self.split == "mini":
-        #     seq = list(self.processed_data.keys())[0]
-        #     seq_list = [seq]
-        # else:
         seq_list = json.load(open(self.split_file))[self.split]
-
-        logging.warning("Well let's remove this in the end!!")
-        for seq in seq_list:
-            if seq not in self.processed_data:
-                continue
-            filtered_data[seq] = {}
-            if single_object:
-                # 225397651484143 : bowl
-                obj_list = single_object.split("+")
-            else:
-                obj_list = list(self.processed_data[seq]["objects"].keys())
-
-            # if self.one_window:
-            #     t0 = self.t0
-            #     t1 = t0 + 120
-            # else:
-            t0 = 0
-            t1 = len(self.processed_data[seq]["wTc"])
-            for key, value in self.processed_data[seq].items():
-                if key == "objects":
+        
+        if len(seq_list) > 0 and "_" in seq_list[0]:
+            # seq_objid format, like '001874_000007' - filter by both sequence and object
+            # Group seq_objid pairs by sequence
+            seq_to_objs = {}
+            for seq_objid in seq_list:
+                if "_" not in seq_objid:
                     continue
-                filtered_data[seq][key] = value
-            filtered_data[seq]["objects"] = {}
-            for obj_id in obj_list:
-                filtered_data[seq]["objects"][obj_id] = self.processed_data[seq][
-                    "objects"
-                ][obj_id]
-
-            for key, value in filtered_data[seq].items():
-                if isinstance(value, dict):
-                    for k, v in value.items():
-                        if isinstance(v, dict):
-                            for kk, vv in v.items():
-                                filtered_data[seq][key][k][kk] = vv[t0:t1]
-                        else:
-                            filtered_data[seq][key][k] = v[t0:t1]
-                elif isinstance(value, np.ndarray):
-                    if key == "intrinsic":
-                        filtered_data[seq][key] = value
-                    else:
-                        filtered_data[seq][key] = value[t0:t1]
-                else:
-                    print(key, type(value))
+                seq, obj_id = seq_objid.split("_", 1)
+                if seq not in seq_to_objs:
+                    seq_to_objs[seq] = []
+                seq_to_objs[seq].append(obj_id)
+            
+            # Filter data: only include sequences and objects in seq_to_objs
+            for seq, obj_ids in seq_to_objs.items():
+                if seq not in self.processed_data:
+                    continue
+                
+                # Copy all non-object data
+                filtered_data[seq] = {}
+                for key, value in self.processed_data[seq].items():
+                    if key == "objects":
+                        continue
                     filtered_data[seq][key] = value
+                
+                # Only include specified objects
+                filtered_data[seq]["objects"] = {}
+                for obj_id in obj_ids:
+                    if obj_id in self.processed_data[seq]["objects"]:
+                        filtered_data[seq]["objects"][obj_id] = self.processed_data[seq]["objects"][obj_id]
+        else:
+            # Legacy format: just sequence IDs, filter by sequence only
+            for seq in seq_list:
+                if seq not in self.processed_data:
+                    continue
+                # Create a shallow copy of the data for this sequence
+                filtered_data[seq] = {k: v for k, v in self.processed_data[seq].items()}
+
 
         return filtered_data
 
@@ -707,7 +699,58 @@ class HandToObjectDataset(Dataset):
         else:
             return len(self.windows)
 
+    def load_mask_fp(self, window):
+
+        seq = window["demo_id"]
+        obj_id = window["object_id"]
+
+        mask_file = osp.join("data/HOT3D-CLIP/gt_mask", f"{seq}.npz")
+        mask_data = np.load(mask_file, allow_pickle=True)
+        index = mask_data["index"].tolist()
+        assert len(index) == mask_data["hand_obj_mask"].shape[0]
+        print(obj_id, index)
+        obj_idx = index.index(obj_id)
+        mask = mask_data["hand_obj_mask"][obj_idx]  # (T, H, W)
+        mask_valid = mask.sum(axis=(1,2)) > 10
+
+        fp_file = osp.join("data/HOT3D-CLIP/foundation_pose", f"{seq}.npz")
+        fp_data = np.load(fp_file, allow_pickle=True)
+        wTo_list = fp_data["wTo"]  # (num_objects, T, 4, 4)
+        valid_list = fp_data["valid"]  # (num_objects, T)
+        score_list = fp_data["score"]  # (num_objects, T)
+        valid_list = score_list > 0.9
+        index = fp_data["index"].tolist()  # array with object IDs
+        assert len(index) == wTo_list.shape[0] + 2
+        assert len(valid_list) == len(wTo_list)
+        
+        obj_idx = index.index(obj_id) - 2
+        wTo = wTo_list[obj_idx]  # (T, 4, 4)
+        T = self.window_size
+        
+        orig_wTc = self.processed_data[seq]["wTc"]
+        canwTc = torch.FloatTensor(window["wTc"])
+        canwTc = geom_utils.se3_to_matrix_v2(canwTc)
+        cTw = geom_utils.inverse_rt_v2(torch.FloatTensor(orig_wTc))
+        # cTo = cTw @ wTo
+        canwTw = canwTc[0] @ cTw[0]
+        canwTo = canwTw[None].repeat(T, 1, 1) @ wTo 
+        canwTo = geom_utils.matrix_to_se3_v2(canwTo)
+
+        valid = valid_list[obj_idx]
+        # if int(obj_id) == 6 and int(seq) == 2862:
+        #     print('valid', valid, score_list[obj_idx], valid_list[obj_idx])
+        #     import ipdb; ipdb.set_trace()
+
+        obs = {
+            "mask": mask,
+            "mask_valid": mask_valid,
+            "wTo_shelf": canwTo,
+            "wTo_valid_shelf": valid, 
+        }
+        return obs
+
     def __getitem__(self, idx):
+
         idx = idx % len(self.windows)
         window = deepcopy(self.windows[idx])
 
@@ -859,6 +902,14 @@ class HandToObjectDataset(Dataset):
             "end_idx": window["end_idx"],
             "ind": idx,
         }
+
+        if self.load_obs:
+            obs = self.load_mask_fp(window)
+            data.update(obs)
+            # also add noisy hand, just for basleines
+            data["noisy_left_hand_params"] = to_tensor(window_noisy["left_hand_params"])
+            data["noisy_right_hand_params"] = to_tensor(window_noisy["right_hand_params"])
+
         return data
 
     def transform_wTo_traj(self, wTo, newTo):

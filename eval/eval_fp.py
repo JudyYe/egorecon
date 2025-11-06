@@ -4,7 +4,7 @@ import pickle
 import json
 import numpy as np
 from glob import glob
-from eval.eval_joints import eval_hotclip_pose6d
+from eval.eval_hoi import eval_hotclip_pose6d
 
 def aggregate_fp(fp_dir, save_file, split_obj=None):
     """
@@ -102,4 +102,4 @@ if __name__ == "__main__":
     aggregate_fp(osp.join(data_dir, "foundation_pose"), new_file, split_obj=split_obj)
 
 
-eval_hotclip_pose6d(pred_file=new_file, split="test50", skip_not_there=True, )
+eval_hotclip_pose6d(pred_file=new_file, split="test50obj", skip_not_there=True, aligned=True)

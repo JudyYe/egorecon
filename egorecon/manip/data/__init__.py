@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data._utils.collate import collate, default_collate_fn_map
 
 
-def build_dataset(ds_name, opt, data_cfg, is_train=True):
+def build_dataset(ds_name, opt, data_cfg, is_train=True, load_obs=False):
     ds_type = opt.get('ds_type', 'w_motion')
     if ds_type == "w_geom":
         from .hand_to_object_dataset_w_geometry import HandToObjectDataset as Dataset
@@ -30,6 +30,7 @@ def build_dataset(ds_name, opt, data_cfg, is_train=True):
         t0=300,
         one_window=not is_train,
         data_cfg=data_cfg,
+        load_obs=load_obs,
         **opt.datasets.augument,
     )
     ds.set_metadata()
@@ -37,9 +38,10 @@ def build_dataset(ds_name, opt, data_cfg, is_train=True):
 
 
 def build_dataloader(
-    data_cfg, opt, is_train=True, shuffle=None, batch_size=None, num_workers=4,
+    data_cfg, opt, is_train=True, shuffle=None, batch_size=None, num_workers=4, 
+    load_obs=False,
 ):
-    ds = build_dataset(data_cfg.name, opt, data_cfg, is_train=is_train)
+    ds = build_dataset(data_cfg.name, opt, data_cfg, is_train=is_train, load_obs=load_obs)
 
     if shuffle is None:
         shuffle = is_train  # train -> shuffle
