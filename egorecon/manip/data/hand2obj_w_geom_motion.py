@@ -10,7 +10,6 @@ import pickle
 from copy import deepcopy
 
 import numpy as np
-import smplx
 import torch
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
@@ -28,7 +27,8 @@ from bps_torch.bps import bps_torch
 from bps_torch.tools import sample_sphere_uniform
 from preprocess.est_noise import generate_noisy_trajectory
 from .utils import get_norm_stats, load_pickle, to_tensor
-
+from scripts.run_foundation_pose import linear_interpolation_nd
+from preprocess.vlm_query_hot3d import load_vlm_contact
 
 class HandToObjectDataset(Dataset):
     """
@@ -747,6 +747,27 @@ class HandToObjectDataset(Dataset):
             "wTo_shelf": canwTo,
             "wTo_valid_shelf": valid, 
         }
+
+        # addiontally load VLM predicted contact
+        vlm_contact = load_vlm_contact(seq, obj_id, self.window_size)  # (T, 2) 0: no contact, 1: contact. -1: unknown
+        vlm_vis = vlm_contact >= 0  # (T, 2)
+        vlm_contact = linear_interpolation_nd(vlm_contact[None], vlm_vis[None], start_end=False)[0]
+        obs["vlm_contact"] = vlm_contact > 0.5
+        obs["vlm_vis"] = vlm_vis
+
+        if self.opt.get('contact_every', 1) > 1:
+            # put window['contact'] every self.opt.get('contact_every') frames
+            contact = window['contact'].copy()
+            zeros = np.zeros_like(contact)
+            dt = self.opt.get('contact_every')
+            zeros[::dt] = contact[::dt]
+            contact = linear_interpolation_nd(zeros[None], contact[None], start_end=False)[0]
+            obs["contact"] = contact > 0.5
+            
+            vis = np.zeros_like(vlm_vis)
+            vis[::dt] = 1
+            obs["contact_vis"] = vis
+
         return obs
 
     def __getitem__(self, idx):

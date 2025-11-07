@@ -531,7 +531,7 @@ def slerp_interpolation_quat(pos, valid):
     return pos_interp
 
 
-def linear_interpolation_nd(pos, valid):
+def linear_interpolation_nd(pos, valid, start_end=True):
     """_summary_"""
     B, T = pos.shape[:2]  # 取出批次大小B和时间步长T
     feature_dim = pos.shape[2]  # ** 代表的任意维度
@@ -557,7 +557,7 @@ def linear_interpolation_nd(pos, valid):
                 pos_interp[b, :, idx] = pos_b_idx  # 保存插值结果
 
             # NOTE: judy's code
-            if len(valid_idxs) == 1:
+            if start_end and len(valid_idxs) == 1:
                 # just repeat the only valid value for the whole sequence
                 # print('before', pos_interp[b, :, idx])
                 pos_interp[b, :, idx] = pos_b_idx[valid_idxs[0]]

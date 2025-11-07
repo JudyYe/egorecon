@@ -328,7 +328,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
             )
 
             if opt.vis_x:
-                info_per_time = get_info_str(info["info_inner"][-1])
+                info_per_time = get_info_str(info["info_inner"][-1], B, T)
                 pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
                 pred_dict["newMesh"] = sample["newMesh"]
                 vis_one_from_cam_side(
@@ -370,6 +370,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         if opt.post_guidance:
             # directly guide object_pred_raw
             obs = diffusion_model.get_obs(
+                model_cfg,
                 guide=True, batch=sample, shape=guided_object_pred_raw.shape
             )
 
@@ -429,7 +430,7 @@ def save_prediction(pred_dict, index, fname, wTc):
 
 def aggregate_prediction(opt):
     if opt.dir is None:
-        save_dir = osp.join(opt.exp_dir, opt.test_folder)
+        save_dir = osp.join(opt.exp_dir, opt.test_folder, "post")
     else:
         save_dir = opt.dir
     pred_list = glob(osp.join(save_dir, "*.pkl"))
@@ -469,7 +470,7 @@ def aggregate_prediction(opt):
         pickle.dump(seq_dict, f)
 
     # Save object evaluation format
-    save_file_obj = osp.dirname(save_dir) + "_objects.pkl"
+    save_file_obj = save_dir.rstrip("/") + "_objects.pkl"
     print(f"Saving object predictions to {save_file_obj}")
     with open(save_file_obj, "wb") as f:
         pickle.dump(seq_obj_dict, f)
@@ -541,8 +542,8 @@ def main(opt):
 
     hand_file, obj_file = aggregate_prediction(opt)
     
-    eval_hotclip_pose6d(pred_file=obj_file, split="test50", skip_not_there=True, )
-    eval_hotclip_joints(pred_file=hand_file, split="test50", skip_not_there=True, )
+    eval_hotclip_pose6d(pred_file=obj_file, split=opt.testdata.testsplit, skip_not_there=True, )
+    eval_hotclip_joints(pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True, )
 
     return
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import os.path as osp
+import json
 from glob import glob
 from typing import Dict, Iterable, List, Optional
 
@@ -262,6 +263,36 @@ def main():
                 f"{seq}: F1={f1:.4f} BalancedAcc={bal_acc:.4f}" if (f1 is not None and bal_acc is not None)
                 else f"{seq}: metrics summary written to metrics_summary.json"
             )
+
+
+def load_vlm_contact(seq, obj_id, T, vlm_output_dir=osp.join(save_dir, "vlm_output_hot3d")):
+    predictions_root = osp.abspath(osp.join(vlm_output_dir, seq, seq))
+    contact = np.zeros((T, 2)) - 1
+
+    glob_pattern = osp.join(predictions_root, "*_prediction.json")
+    pred_files = sorted(glob(glob_pattern))
+    obj_id_str = str(obj_id)
+
+    for pred_file in pred_files:
+        with open(pred_file, "r") as f:
+            prediction_data = json.load(f)
+        frame_idx = prediction_data.get("frame_idx")
+        frame_idx = int(frame_idx)
+
+        predictions = prediction_data.get("predictions", [])
+
+        for item in predictions:
+            if str(item.get("object_name")) != obj_id_str:
+                continue
+            left_val = item.get("left_hand_contact")
+            right_val = item.get("right_hand_contact")
+            if left_val in (0, 1):
+                contact[frame_idx, 0] = int(left_val)
+            if right_val in (0, 1):
+                contact[frame_idx, 1] = int(right_val)
+            break
+
+    return contact
 
 
 if __name__ == "__main__":

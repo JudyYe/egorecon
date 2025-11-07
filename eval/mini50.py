@@ -91,6 +91,23 @@ def get_mini50_seq_obj():
     print(f"\n# Total: {len(split2seq_obj['test50obj'])} sequence-object pairs")    
     return split2seq_obj
 
+
+def get_mini5_seq_obj():
+    "valid sequences are in "
+    # 001874/
+    # 002043/
+    # 003034/
+    split_file = osp.join("data/HOT3D-CLIP/sets", "split.json")
+
+    with open(split_file, "r") as f:
+        split_dict = json.load(f)
+    split_dict["testmini3"] = ["001874", "002043", "003034"]
+    with open(split_file, "w") as f:
+        json.dump(split_dict, f, indent=4)
+
+
 if __name__ == "__main__":
     # Get and print sequence-object pairs
-    split2seq_obj = get_mini50_seq_obj()
+    # split2seq_obj = get_mini50_seq_obj()
+    get_mini5_seq_obj()
+

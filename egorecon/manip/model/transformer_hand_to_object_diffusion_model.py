@@ -621,15 +621,10 @@ class CondGaussianDiffusion(nn.Module):
                 'wTo': se3_to_wxyz_xyz(batch['wTo_shelf']),
                 'wTo_vis': batch['wTo_valid_shelf'].reshape(b, T, 1),
             }
-            # obs = {
-            #     "contact": batch['contact'],
-            #     "x": se3_to_wxyz_xyz(batch['target_raw']),
-            #     "newPoints": batch['newPoints'],
-            #     "wTc": se3_to_wxyz_xyz(batch['wTc']),
-            #     "intr": batch['intr'],
-            #     "x2d": x2d,
-            #     "joints_traj": batch["hand_raw"]
-            # }
+        if opt.get('vlm', False):
+            obs["contact"] = batch['vlm_contact']
+            obs["contact_vis"] = batch['vlm_vis']
+
         return obs
 
     @torch.no_grad()

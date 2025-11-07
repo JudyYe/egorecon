@@ -55,6 +55,15 @@ GT mask
 bowl: 194930206998778
 spoon: 225397651484143
 
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=testmini3 \
+  dyn_only=true \
+  test_folder=vlm_test_\${guide.hint}_vlm\${vlm}_skip\${contact_every} guide.hint=hoi_contact \
+  contact_every=10  vlm=true,false \
+
 -
 
 test fp 

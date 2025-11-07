@@ -56,3 +56,6 @@ oracle_cond: false
 
 # test_num: 100
 
+
+vlm: false
+contact_every: 1  # by default

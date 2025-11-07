@@ -170,7 +170,7 @@ class JaxGuidanceParams:
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
-                    rel_contact_weight=1,
+                    rel_contact_weight=.01,
                     use_obj_smoothness=True,
                     use_delta_wTo=True,
                     max_iters=50,
@@ -434,6 +434,7 @@ def do_guidance_optimization(
         "j3d",
         "j2d",
         "contact",
+        "contact_vis",
         "x2d_vis",
         "j2d_vis",
         "kp3d",
@@ -511,6 +512,7 @@ def _optimize_vmapped(
     target_j3d: jax.Array = None,
     target_j2d: jax.Array = None,
     target_contact: jax.Array = None,
+    target_contact_vis: jax.Array = None,
     target_x2d_vis: jax.Array = None,
     target_j2d_vis: jax.Array = None,
     target_kp3d: jax.Array = None,
@@ -565,6 +567,7 @@ def _optimize(
     target_j3d: jax.Array = None,
     target_j2d: jax.Array = None,
     target_contact: jax.Array = None,
+    target_contact_vis: jax.Array = None,
     target_x2d_vis: jax.Array = None,
     target_j2d_vis: jax.Array = None,
     target_kp3d: jax.Array = None,
@@ -906,6 +909,7 @@ def _optimize(
             _RightHandParamsVar(jnp.arange(timesteps)),
             target_newPoints[None],
             target_contact,
+            target_contact_vis,
         )
         def abs_contact_cost(
             vals: jaxls.VarValues,
@@ -914,6 +918,7 @@ def _optimize(
             right_params: _RightHandParamsVar,
             target_newPoints: jax.Array,
             target_contact: jax.Array,
+            target_contact_vis: jax.Array,
         ) -> jax.Array:
             left_posed, right_posed = do_forward_kinematics_two_hands(
                 vals, left_params, right_params
@@ -970,6 +975,8 @@ def _optimize(
             cost = jnp.where(
                 target_contact.reshape(2, 1), contact_cost, non_contact_cost
             )
+            if target_contact_vis is not None:
+                cost = cost * target_contact_vis.reshape(2, 1)
             return cost.flatten()
 
     if guidance_params.use_rel_contact:
