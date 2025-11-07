@@ -22,9 +22,12 @@ vlm_output_dir = "outputs/debug_vlm/vlm_output"
 split = "test50"
 
 # VLM model configuration
-DEFAULT_VLM_MODEL = "gpt-4o"
+# DEFAULT_VLM_MODEL = "gpt-4o"
+GPT4_MODEL = "gpt-4o"
 GPT5_MODEL = "gpt-5"
 GPT5_PRO_MODEL = "gpt-5-pro"
+DEFAULT_VLM_MODEL = GPT5_MODEL
+
 SUPPORTED_VLM_MODELS = {DEFAULT_VLM_MODEL, GPT5_MODEL, GPT5_PRO_MODEL}
 
 
@@ -388,20 +391,8 @@ NO Contact (label = 0) in all of these cases:
 - There is only a tiny, ambiguous intersection (1–2 pixels) that could be noise or occlusion. In such uncertain cases, choose 0 (no contact).
 
 IMPORTANT:
-- Reaching or hovering is NOT contact.
-- If you are unsure whether contact is happening, choose 0 (no contact).
-
-SPATIAL REASONING STEPS:
-1. For each object:
-   - Check if its mask intersects with the Left hand (GREEN) mask.
-   - Check if its mask intersects with the Right hand (RED) mask.
-2. If there is no mask intersection, label that hand–object pair as 0 (no contact).
-3. If there is mask intersection, zoom in mentally on fingertip regions to confirm whether the contact is real. Assess if it looks like true touching (fingers/palm on the object) versus:
-   - accidental overlap from occlusion,
-   - motion blur,
-   - or ambiguous edge contact.
-   Only if it clearly looks like touching, assign 1 (contact).
-4. If a hand appears to touch multiple objects, choose the object with the largest, clearest overlap as contact = 1, and set contact = 0 for the others.
+- **Reaching or hovering is NOT contact.**
+- **If you are unsure whether contact is happening, choose 0 (no contact).**
 
 CONSTRAINTS (VALIDATION CHECK):
 - Each hand can touch AT MOST ONE object.
@@ -423,6 +414,18 @@ Where:
 - 0 = the specified hand is not touching that object in this frame."""
 
     return system_instruction, user_prompt
+
+# SPATIAL REASONING STEPS:
+# 1. For each object:
+#    - Check if its mask intersects with the Left hand (GREEN) mask.
+#    - Check if its mask intersects with the Right hand (RED) mask.
+# 2. If there is no mask intersection, label that hand–object pair as 0 (no contact).
+# 3. If there is mask intersection, zoom in mentally on fingertip regions to confirm whether the contact is real. Assess if it looks like true touching (fingers/palm on the object) versus:
+#    - accidental overlap from occlusion,
+#    - motion blur,
+#    - or ambiguous edge contact.
+#    Only if it clearly looks like touching, assign 1 (contact).
+# 4. If a hand appears to touch multiple objects, choose the object with the largest, clearest overlap as contact = 1, and set contact = 0 for the others.
 
 
 def call_vlm_for_contact(
@@ -1244,9 +1247,9 @@ img_path_list = [osp.join(save_dir, img_path) for img_path in img_path_list]
 
 train_index_list = [
     "001885_0070",
-    "001885_0076",
+    # "001885_0076",
     "001910_0011",
-    "001910_0084",
+    # "001910_0084",  # ?
     "001971_0131", 
     "002197_0110",
     "002197_0116",
