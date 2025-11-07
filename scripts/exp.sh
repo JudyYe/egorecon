@@ -1,3 +1,11 @@
+python preprocess/call_vlm_for_contact.py \
+  --images_dir "data/HOT3D-CLIP/extract_images-rot90/clip-001911/" \
+  --objects "milk bottle" \
+  --prompt "For each listed object, determine whether the LEFT and RIGHT human hands are physically touching the object. 'Touching' means direct physical contact with the object, including grasping, holding, or pressing. If in contact, output 1; otherwise, output 0. Return only the contact labels according to the schema." \
+  --model "gpt-4o" \
+  --output contact_by_object.jsonl
+
+
 [] relative contact: something is wrong for printing????? 
 [] why guided last step != post first step? 
 
