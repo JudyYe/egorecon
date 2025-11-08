@@ -10,7 +10,7 @@ from fire import Fire
 from .pcl import align_pcl
 from . import bop_utils as misc
 from scipy import spatial
-
+from jutils import mesh_utils
 def w_rje(gt, pred):
     """world relative joint error
 
@@ -114,8 +114,7 @@ def adi(R_est, t_est, R_gt, t_gt, pts):
     e = nn_dists.mean()
     return e
 
-
-def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center"]):
+def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center", "acc-norm"]):
     # Handle apd separately since it returns multiple thresholds
     apd_thre_list = [0.01, 0.02, 0.05, 0.1]  # Default thresholds for apd
     apd_metric_names = [f"apd@{thre}" for thre in apd_thre_list] if "apd" in metric_names else []
@@ -124,12 +123,27 @@ def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center
     all_metric_names = [name for name in metric_names if name != "apd"] + apd_metric_names
     cur_metrics = {name: [] for name in all_metric_names}
 
+
+    if "acc-norm" in metric_names:
+        points = mesh.verts_padded()
+        T = gt_wTo.shape[0]
+        points_exp = points.repeat(T, 1, 1)
+
+        gt_wPoints = mesh_utils.apply_transform(points_exp, gt_wTo)
+        pred_wPoints = mesh_utils.apply_transform(points_exp, pred_wTo)  # (T, P, 3)
+
+        # use slamhr's compute_accel_norm
+        gt_accel = compute_accel_norm(gt_wPoints)  # (T - 2, P, )
+        pred_accel = compute_accel_norm(pred_wPoints)
+        score = torch.linalg.norm(gt_accel - pred_accel, dim=-1)
+        cur_metrics["acc-norm"].append(score.cpu().numpy())  
+
     gt_wTo = gt_wTo.cpu().numpy()
     pred_wTo = pred_wTo.cpu().numpy()
 
     gt_wTo_rot, gt_wTo_t = gt_wTo[..., :3, :3], gt_wTo[..., :3, 3:4]
     pred_wTo_rot, pred_wTo_t = pred_wTo[..., :3, :3], pred_wTo[..., :3, 3:4]
-    
+
     for t in range(gt_wTo.shape[0]):
         points = mesh.verts_packed().detach().cpu().numpy()  # (P, 3)
         
@@ -151,6 +165,8 @@ def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center
                     apd_key = f"apd@{thre}"
                     value = apd_dict[thre]  # apd_dict[thre] is now a scalar value
                     cur_metrics[apd_key].append(value)
+            elif name == "acc-norm":
+                continue
             else:
                 raise NotImplementedError(f"metric {name} not implemented")
     
@@ -169,6 +185,7 @@ def eval_jts(gt_seq_joints, res_joints, metric_names=["ga_jmse", "ga_rmse", "fa_
     cur_metrics = {name: np.nan for name in metric_names}
     for name in metric_names:
         if name == "acc_norm":
+            # this is from slamhr
             target = compute_accel_norm(gt_seq_joints)  # (T-2, J)
             pred = compute_accel_norm(res_joints)
         else:
@@ -219,7 +236,7 @@ def compute_error_accel(joints_gt, joints_pred, vis=None):
     accel_gt = joints_gt[:-2] - 2 * joints_gt[1:-1] + joints_gt[2:]
     accel_pred = joints_pred[:-2] - 2 * joints_pred[1:-1] + joints_pred[2:]
 
-    normed = np.linalg.norm(accel_pred - accel_gt, axis=2)
+    normed = np.linalg.norm(accel_pred - accel_gt, axis=2)  # (T, xxx)
 
     if vis is None:
         new_vis = np.ones(len(normed), dtype=bool)
@@ -277,7 +294,7 @@ def local_align_joints(gt_joints, pred_joints):
     return pred_loc
 
 
-def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_contact_ddim_long_shelf/object_pose_metrics_chunk_-1.csv', max_val=0.3, step=0.001):
+def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_contact_ddim_long_shelf/object_pose_metrics_chunk_-1.csv', max_val=0.3, step=0.001, silence=False):
     """
     Compute AUC for ADD, ADI, and center metrics from CSV file.
     
@@ -287,7 +304,11 @@ def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_co
         step: Step size for AUC computation (default: 0.001)
     """
     # Read CSV file
-    df = pd.read_csv(csv_file)
+    dataframe_input = not isinstance(csv_file, str)
+    if not dataframe_input:
+        df = pd.read_csv(csv_file)
+    else:
+        df = csv_file
     
     # Set index column if it exists
     if 'index' in df.columns:
@@ -319,27 +340,32 @@ def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_co
         auc_results[metric_name] = float(auc)
         
         # Print result
-        print(f"{metric_name.upper()} AUC: {auc:.6f} (from {len(errors)} samples)")
+        # if not silence:
+            # print(f"{metric_name.upper()} AUC: {auc:.6f} (from {len(errors)} samples)")
     
     # Print summary
-    print("\n" + "="*50)
-    print("AUC Summary:")
-    print("="*50)
-    for metric_name, auc_value in auc_results.items():
-        print(f"{metric_name.upper()}: {auc_value:.6f}")
-    print("="*50)
+    if not silence:
+        print("\n" + "="*50)
+        print("AUC Summary: ")
+        # separate by comma
+        keys = ",".join([key.upper() for key in auc_results.keys()])
+        values = ",".join([str(auc_results[key]) for key in auc_results.keys()])
+        print(keys)
+        print(values)
+        print("="*50)
     
     # Save to JSON file
-    csv_dir = osp.dirname(csv_file)
-    csv_basename = osp.basename(csv_file)
-    csv_name_without_ext = osp.splitext(csv_basename)[0]
-    json_file = osp.join(csv_dir, f"{csv_name_without_ext}_auc.json")
-    
-    os.makedirs(csv_dir, exist_ok=True)
-    with open(json_file, 'w') as f:
-        json.dump(auc_results, f, indent=4)
-    
-    print(f"\nAUC results saved to: {json_file}")
+    if not dataframe_input:
+        csv_dir = osp.dirname(csv_file)
+        csv_basename = osp.basename(csv_file)
+        csv_name_without_ext = osp.splitext(csv_basename)[0]
+        json_file = osp.join(csv_dir, f"{csv_name_without_ext}_auc.json")
+        
+        os.makedirs(csv_dir, exist_ok=True)
+        with open(json_file, 'w') as f:
+            json.dump(auc_results, f, indent=4)
+        
+        print(f"\nAUC results saved to: {json_file}")
     
     return auc_results
     

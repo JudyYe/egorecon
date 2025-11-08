@@ -176,53 +176,6 @@ class JaxGuidanceParams:
                     max_iters=50,
                 )         
             return params        
-        elif mode == "hoi_fp":
-            if phase == "inner":
-                params = JaxGuidanceParams( 
-                    use_fp=True,
-                    use_j2d=True,
-                    j2d_weight=20.,
-                    use_hand_local=True,
-                    hand_local_weight=.1,
-                    use_hand_smoothness=False,
-                    use_j3d=False,
-                    use_contact_obs=True,
-                    use_static=True,
-                    static_weight=1.,
-                    use_reproj_com=False,
-                    use_reproj_cd=False,
-                    use_reproj_cd_one_way=True,
-                    use_abs_contact=False,
-                    use_rel_contact=False,
-                    use_obj_smoothness=False,
-                    use_delta_wTo=False,
-                    max_iters=5,
-                    lambda_initial=1e-2,
-                )                
-
-            elif phase == "post":
-                params = JaxGuidanceParams( 
-                    use_fp=True,
-                    use_j2d=True,
-                    j2d_weight=20.,
-                    use_hand_smoothness=True,
-                    hand_acc_weight=1.,
-                    use_j3d=False,
-                    use_contact_obs=True,
-                    use_static=True,
-                    static_weight=100.,
-                    use_reproj_com=False,
-                    use_reproj_cd=False,
-                    use_reproj_cd_one_way=True,
-                    reproj_weight=10.,
-                    use_abs_contact=True,
-                    use_rel_contact=True,
-                    rel_contact_weight=1,
-                    use_obj_smoothness=True,
-                    use_delta_wTo=True,
-                    max_iters=50,
-                )         
-            return params        
         if mode == "fp_simple":
             return JaxGuidanceParams( 
                     use_j2d=True,
@@ -1049,8 +1002,8 @@ def _optimize(
             next_rot = wTo_next.rotation()
 
             # normalzie p_near to unit length
-            p_near = p_near / (jnp.linalg.norm(p_near, axis=-1, keepdims=True) + 1e-8)
-            p_near_next = p_near_next / (jnp.linalg.norm(p_near_next, axis=-1, keepdims=True) + 1e-8)
+            # p_near = p_near / (jnp.linalg.norm(p_near, axis=-1, keepdims=True) + 1e-8)
+            # p_near_next = p_near_next / (jnp.linalg.norm(p_near_next, axis=-1, keepdims=True) + 1e-8)
 
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 

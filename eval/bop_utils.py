@@ -271,6 +271,25 @@ def iou(bb_a, bb_b):
     return iou
 
 
+def transform_pts_Rt_batch(pts, R, t):
+    """Applies a rigid transformation to a batch of 3D points.
+
+    :param pts: (B/1, P, 3) ndarray with 3D points.
+    :param R: (B, 3, 3) ndarray with a rotation matrix.
+    :param t: (B, 3, 1) ndarray with a translation vector.
+    :return: (B, P, 3) ndarray with transformed 3D points.
+    """
+    T = R.shape[0]
+    if pts.shape[0] == 1:
+        pts = np.tile(pts, (T, 1, 1))
+
+    assert pts.shape[0] == T, f"Mismatch: pts batch {pts.shape[0]} != rotations batch {T}"
+    assert pts.shape[-1] == 3, "Points must have shape (B, P, 3)"
+
+    pts_t = np.matmul(R, pts.transpose(0, 2, 1)) + t  # (B, 3, P)
+    return pts_t.transpose(0, 2, 1)
+
+
 def transform_pts_Rt(pts, R, t):
     """Applies a rigid transformation to 3D points.
 

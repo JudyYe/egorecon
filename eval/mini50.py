@@ -1,6 +1,9 @@
 import os
 import os.path as osp
 import json
+import numpy as np
+import pickle
+from egorecon.manip.data.utils import load_pickle
 # Extract sequence names from filenames
 # Format: 001874_000007.pkl --> 001874
 
@@ -106,8 +109,72 @@ def get_mini5_seq_obj():
         json.dump(split_dict, f, indent=4)
 
 
+
+def mark_trunc_contact_frames(split="test50obj"):
+    data_root = "/move/u/yufeiy2/egorecon/data/HOT3D-CLIP"
+    split_file = osp.join(data_root, "sets", "split.json")
+    gt_data_file = osp.join(data_root, "preprocess", "dataset_contact.pkl")
+    mask_dir = osp.join(data_root, "gt_mask")
+
+    frame_subsplit = {}
+
+    with open(split_file, "r") as f:
+        split_dict = json.load(f)
+    seq_obj_list = split_dict[split]
+
+    gt_data = load_pickle(gt_data_file)
+
+    for seq_obj in seq_obj_list:
+        seq, obj = seq_obj.split("_")
+        seq_meta = gt_data[seq]
+        obj_meta = seq_meta["objects"]
+        obj_key = obj
+
+        contact_lr = np.asarray(obj_meta[obj_key]["contact_lr"])
+
+        contact = (contact_lr > 0.5).any(axis=-1).astype(np.int32)
+        T = contact.shape[0]
+
+        truncate = np.zeros(T, dtype=np.int32)
+        mask_file = osp.join(mask_dir, f"{seq}.npz")
+        
+        if osp.exists(mask_file):
+            mask_data = np.load(mask_file, allow_pickle=True)
+            hand_obj_mask = mask_data["hand_obj_mask"]  # (2+O, T, H, W)
+            index = mask_data["index"].tolist()
+
+            obj_idx = index.index(obj_key)
+            obj_mask = hand_obj_mask[obj_idx]  # (T, H, W)
+            obj_mask = obj_mask.astype(bool)
+
+            edge_slices = (
+                obj_mask[:, 0, :],
+                obj_mask[:, -1, :],
+                obj_mask[:, :, 0],
+                obj_mask[:, :, -1],
+            )
+
+            has_pixels = obj_mask.reshape(T, -1).any(axis=1)
+            touches_edge = np.logical_or.reduce([edge.any(axis=1) for edge in edge_slices])
+
+            truncate = np.where(~has_pixels, 2, truncate)
+            truncate = np.where(has_pixels & touches_edge & (truncate == 0), 1, truncate)
+        frame_subsplit[seq_obj] = {
+            "contact": contact.astype(int).tolist(),
+            "truncate": truncate.astype(int).tolist(),
+        }
+
+    output_file = osp.join(data_root, "sets", f"frame_subsplit_{split}.pkl")
+    with open(output_file, "wb") as f:
+        pickle.dump(frame_subsplit, f)
+
+    print(f"Saved frame subsplit to {output_file}")
+    return frame_subsplit
+
+
 if __name__ == "__main__":
     # Get and print sequence-object pairs
     # split2seq_obj = get_mini50_seq_obj()
-    get_mini5_seq_obj()
+    # get_mini5_seq_obj()
+    mark_trunc_contact_frames()
 

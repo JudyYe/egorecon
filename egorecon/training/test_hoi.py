@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from pytorch3d.structures import Meshes
 from tqdm import tqdm
-from eval.eval_hoi import eval_hotclip_pose6d, eval_hotclip_joints
+from eval.eval_hoi import eval_hotclip_pose6d, eval_hotclip_joints, eval_hotclip_hoi
 from ..manip.data import build_dataloader
 from ..manip.model import build_model, fncmano_jax
 from ..manip.model.guidance_optimizer_hoi_jax import (
@@ -224,7 +224,7 @@ def get_info_str(info, B, T):
 
 
 @torch.no_grad()
-def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
+def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip=False):
     model_cfg = diffusion_model.opt
     viz_off = Pt3dVisualizer(
         exp_name=opt.expname,
@@ -242,6 +242,10 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt):
         #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
         B, T = batch["condition"].shape[:2]
+
+        post_file = osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl")
+        if skip and osp.exists(post_file):
+            continue
 
         sample = batch = model_utils.to_cuda(batch)
 
@@ -510,7 +514,7 @@ def main(opt):
             num_workers=1,
             load_obs=True,
         )
-        test_guided_generation(diffusion_model, dl, opt)
+        test_guided_generation(diffusion_model, dl, opt, skip=opt.skip)
     elif opt.test_mode == "patch":
         diffusion_model = build_model_from_ckpt(opt)
         set_test_cfg(opt, diffusion_model.opt)
@@ -544,6 +548,7 @@ def main(opt):
     
     eval_hotclip_pose6d(pred_file=obj_file, split=opt.testdata.testsplit, skip_not_there=True, )
     eval_hotclip_joints(pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True, )
+    eval_hotclip_hoi(obj_pred_file=obj_file, hand_pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True)
 
     return
 
