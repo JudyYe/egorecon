@@ -3,7 +3,7 @@
 """Utilities to run VLM contact queries over HOT3D videos one-by-one."""
 
 from __future__ import annotations
-
+from tqdm import tqdm
 import argparse
 import os
 import os.path as osp
@@ -161,12 +161,12 @@ def process_video(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Query HOT3D videos with VLM contact detector.")
-    parser.add_argument(
-        "--videos",
-        nargs="+",
-        default=video_list,
-        help="Sequences to process (default: predefined video_list).",
-    )
+    # parser.add_argument(
+    #     "--videos",
+    #     nargs="+",
+    #     default=video_list,
+    #     help="Sequences to process (default: predefined video_list).",
+    # )
     parser.add_argument(
         "--model",
         default=GPT5_MODEL,
@@ -222,6 +222,12 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
+    # use test50 
+    split_file = osp.join("data/HOT3D-CLIP/sets", "split.json")
+    with open(split_file, "r") as f:
+        split_dict = json.load(f)
+    args.videos = split_dict["test50"]
+
     videos = [str(v) for v in args.videos]
     train_indices = args.train_indices if args.train_indices is not None else train_index_list
 
@@ -233,7 +239,19 @@ def main():
     dataset = _load_dataset_cache()
 
     summaries = {}
-    for seq in videos:
+    
+    for seq in tqdm(videos):
+        # done_file = osp.join(args.output_root, "done", f"{seq}.done")
+        done_file = osp.join(args.output_root, seq, "metrics_summary.json")
+        lock_file = osp.join(args.output_root, "lock", f"{seq}.lock")
+
+        if osp.exists(done_file):
+            continue
+        try:
+            os.makedirs(lock_file)
+        except FileExistsError:
+            continue
+
         try:
             summary = process_video(
                 seq,
@@ -252,6 +270,9 @@ def main():
                 summaries[seq] = summary
         except Exception as exc:  # pragma: no cover - CLI convenience
             print(f"[ERROR] Failed to process {seq}: {exc}")
+        
+        # os.makedirs(done_file)
+        os.rmdir(lock_file)
 
     if summaries:
         print("\n=== Summary ===")

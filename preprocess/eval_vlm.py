@@ -71,7 +71,7 @@ def create_one_folder(seq, t_index, save_dir, all_contact_data, all_data):
     
     # Copy images from extract_images-rot90/clip-{seq}/ to seq/images/
     source_image_dir = osp.join(data_dir, "extract_images-rot90", f"clip-{seq}")
-    image_list = sorted(glob(osp.join(source_image_dir, "*.jpg")))
+    image_list = sorted(glob(osp.join(source_image_dir, "0*.jpg")))
     assert len(image_list) == T, f"Image count mismatch: {len(image_list)} != {T}"
     
     for i, img_path in enumerate(image_list):

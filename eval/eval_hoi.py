@@ -1,5 +1,5 @@
 from tqdm import tqdm
-from jutils import mesh_utils, geom_utils, image_utils, plot_utils
+from jutils import mesh_utils, geom_utils, image_utils
 from pytorch3d.structures import Meshes
 from fire import Fire
 import os
@@ -15,8 +15,7 @@ from eval.eval_utils import eval_jts
 from egorecon.utils.motion_repr import HandWrapper
 from eval.eval_utils import eval_pose, csv_to_auc
 from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
-from pytorch3d.structures import Meshes
-from jutils import mesh_utils
+from eval.pcl import align_pcl
 
 device = "cuda"
 data_dir = "/move/u/yufeiy2/data/HOT3D-CLIP"
@@ -139,6 +138,235 @@ def vis_hotclip(
         image_list = torch.stack(image_list, axis=0).reshape(-1, 1, 3, H, W)
         image_utils.save_gif(image_list, osp.join(save_dir, f"{seq}"), fps=30, ext=".mp4")
 
+
+def eval_hotclip_hoi(
+    obj_pred_file="", 
+    hand_pred_file="",
+    gt_file="/move/u/yufeiy2/egorecon/data/HOT3D-CLIP/preprocess/dataset_contact.pkl",
+    save_dir=None,
+    split="test50obj",
+    skip_not_there=True,
+    chunk_length=-1,
+    per_traj_align=True,
+    ):
+    """
+    Evaluate HOI by aligning predicted object poses with ground-truth poses
+    using hand joints as reference for each frame.
+    """
+    print("Evaluating HOI with hand-aligned object poses...")
+
+    seqs = get_hotclip_split(split)
+
+    object_mesh_dir = osp.join(data_dir, "object_models_eval")
+    object_library = Pt3dVisualizer.setup_template(object_mesh_dir, lib="hotclip", load_mesh=True)
+
+    if isinstance(obj_pred_file, str):
+        with open(obj_pred_file, "rb") as f:
+            obj_pred_data = pickle.load(f)
+    else:
+        obj_pred_data = obj_pred_file
+
+    if isinstance(hand_pred_file, str):
+        with open(hand_pred_file, "rb") as f:
+            hand_pred_data = pickle.load(f)
+    else:
+        hand_pred_data = hand_pred_file
+
+    if isinstance(gt_file, str):
+        with open(gt_file, "rb") as f:
+            gt_data = pickle.load(f)
+    else:
+        gt_data = gt_file
+
+    hand_wrapper = HandWrapper(mano_model_path).to(device)
+
+    metric_list = defaultdict(list)
+    per_time_metric_list = defaultdict(list)
+
+    def apply_transform_to_points(transform, points):
+        """
+        Apply a batch of rigid transforms to point sets.
+
+        Args:
+            transform: (T, 4, 4)
+            points: (T, N, 3)
+        Returns:
+            transformed points with shape (T, N, 3)
+        """
+        rot = transform[:, :3, :3]
+        trans = transform[:, :3, 3]
+        return torch.einsum("tij,tnj->tni", rot, points) + trans[:, None, :]
+
+    for seq in tqdm(seqs):
+        if skip_not_there and (
+            seq not in obj_pred_data or seq not in hand_pred_data or seq not in gt_data
+        ):
+            continue
+
+        obj_pred_seq = obj_pred_data[seq]
+        hand_pred_seq = hand_pred_data[seq]
+        gt_seq = gt_data[seq]
+
+        # try:
+        left_pred, right_pred = get_hand_joints(hand_pred_seq, hand_wrapper)
+        left_gt, right_gt = get_hand_joints(gt_seq, hand_wrapper)
+        # except KeyError:
+        #     print(f"Skipping {seq}: missing hand joint data.")
+        #     continue
+
+        pred_hands = torch.cat([left_pred, right_pred], dim=1).float()
+        gt_hands = torch.cat([left_gt, right_gt], dim=1).float()
+
+        T = gt_hands.shape[0]
+        if per_traj_align:
+            s_align, R_align, t_align = align_pcl(
+                gt_hands.reshape(1, -1, 3), pred_hands.reshape(1, -1, 3), fixed_scale=True
+            )
+            R_align = R_align.repeat(T, 1, 1)
+            t_align = t_align.repeat(T, 1)
+        else:
+            s_align, R_align, t_align = align_pcl(
+                gt_hands, pred_hands, fixed_scale=True
+            )
+
+        T_align = torch.eye(4, device=pred_hands.device)[None].repeat(
+            T, 1, 1
+        )
+        T_align[:, :3, :3] = R_align
+        T_align[:, :3, 3] = t_align
+
+        total_transform = T_align #  torch.matmul(T_align, wTwp)
+
+        if "objects" in gt_seq:
+            object_ids = gt_seq["objects"]
+        else:
+            object_ids = []
+            for key in obj_pred_seq.keys():
+                if "wTo" in key and key.startswith("obj_"):
+                    obj_id = key.split("_")[1]
+                    if obj_id not in object_ids:
+                        object_ids.append(obj_id)
+
+        for obj_id in object_ids:
+            pred_wTo_key = f"obj_{obj_id}_wTo"
+            gt_wTo_key = f"obj_{obj_id}_wTo"
+
+            if pred_wTo_key not in obj_pred_seq:
+                pred_wTo_key = f"{obj_id}_wTo"
+            if gt_wTo_key not in gt_seq:
+                gt_wTo_key = f"{obj_id}_wTo"
+
+            if pred_wTo_key not in obj_pred_seq or gt_wTo_key not in gt_seq:
+                continue
+
+            pred_wpTo = torch.FloatTensor(obj_pred_seq[pred_wTo_key]).to(
+                pred_hands.device
+            )
+            gt_wTo = torch.FloatTensor(gt_seq[gt_wTo_key]).to(pred_hands.device)
+
+            frame_count = min(
+                pred_wpTo.shape[0], gt_wTo.shape[0], total_transform.shape[0]
+            )
+            if frame_count == 0:
+                continue
+
+            pred_wpTo = pred_wpTo[:frame_count]
+            gt_wTo = gt_wTo[:frame_count]
+            transform = total_transform[:frame_count]
+
+            pred_wTo = torch.matmul(transform, pred_wpTo)
+
+            mesh_obj = object_library[obj_id]
+
+            metrics = eval_pose(
+                gt_wTo.cpu(),
+                pred_wTo.cpu(),
+                mesh_obj,
+                metric_names=["add", "adi", "apd", "center"],
+            )
+
+            for name, values in metrics.items():
+                metric_list[name].append(np.mean(values))
+                per_time_metric_list[name].append(values)
+
+            metric_list["index"].append(f"{seq}_{obj_id}")
+            for t in range(frame_count):
+                per_time_metric_list["index"].append(f"{seq}_{obj_id}_{t:04d}")
+
+    if len(metric_list["index"]) == 0:
+        print("No valid sequences found for evaluation.")
+        return
+
+    mean_metrics = {
+        name: np.mean(value) for name, value in metric_list.items() if name != "index"
+    }
+    mean_metrics["index"] = "Mean"
+
+    per_time_metric_cat = {
+        name: np.concatenate(values, 0)
+        for name, values in per_time_metric_list.items()
+        if name != "index"
+    }
+    index = per_time_metric_list["index"]
+    per_time_metric_list = per_time_metric_cat
+
+    mean_per_time_metrics = {
+        name: np.mean(values, 0) for name, values in per_time_metric_cat.items()
+    }
+    mean_per_time_metrics["index"] = "Mean"
+    per_time_metric_list["index"] = index
+
+    if save_dir is None:
+        if isinstance(obj_pred_file, str):
+            save_dir = osp.join(osp.dirname(obj_pred_file))
+        else:
+            save_dir = osp.join(os.getcwd(), "eval_results")
+
+    os.makedirs(save_dir, exist_ok=True)
+    csv_file = osp.join(save_dir, f"hoi_metrics_chunk_{chunk_length}.csv")
+
+    metrics_names = [name for name in metric_list.keys() if name != "index"]
+    data = []
+    row = [mean_metrics["index"]] + [mean_metrics[name] for name in metrics_names]
+    data.append(row)
+    for i in range(len(metric_list["index"])):
+        row = [metric_list["index"][i]] + [
+            metric_list[name][i] for name in metrics_names
+        ]
+        data.append(row)
+
+    df = pd.DataFrame(data, columns=["index"] + metrics_names)
+    df.to_csv(csv_file, index=False)
+    print("Saved HOI metrics to csv file:", csv_file)
+
+    print("Computing AUC per trajectory...")
+    csv_to_auc(csv_file)
+
+    per_time_csv_file = osp.join(
+        save_dir, f"hoi_metrics_per_time_chunk_{chunk_length}.csv"
+    )
+
+    per_time_metrics_names = [
+        name for name in per_time_metric_list.keys() if name != "index"
+    ]
+    per_time_data = []
+    per_time_row = [mean_per_time_metrics["index"]] + [
+        mean_per_time_metrics[name] for name in per_time_metrics_names
+    ]
+    per_time_data.append(per_time_row)
+    for i in range(len(per_time_metric_list["index"])):
+        per_time_row = [per_time_metric_list["index"][i]] + [
+            per_time_metric_list[name][i] for name in per_time_metrics_names
+        ]
+        per_time_data.append(per_time_row)
+
+    per_time_df = pd.DataFrame(per_time_data, columns=["index"] + per_time_metrics_names)
+    per_time_df.to_csv(per_time_csv_file, index=False)
+    print("Saved per-time HOI metrics to csv file:", per_time_csv_file)
+    print("Computing AUC per time...")
+    csv_to_auc(per_time_csv_file)
+
+    return
 
 
 def eval_hotclip_pose6d(
@@ -444,6 +672,8 @@ def main(mode='hand',  **kwargs):
         eval_hotclip_joints(**kwargs)
     elif mode == 'pose6d':
         eval_hotclip_pose6d(**kwargs)
+    elif mode == 'hoi':
+        eval_hotclip_hoi(**kwargs)
     elif mode == 'vis':
         vis_hotclip(**kwargs)
 

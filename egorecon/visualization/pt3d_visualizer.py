@@ -78,7 +78,7 @@ class Pt3dVisualizer:
             )
             contact_left = contact[..., 0].reshape(B, 1, 1).to(device)  # (B, )
             contact_right = contact[..., 1].reshape(B, 1, 1).to(device)  # (B, )
-            contact_obj = ((contact_left > 0.5) & (contact_right > 0.5)).float()
+            contact_obj = ((contact_left > 0.5) | (contact_right > 0.5)).float()
 
             left_textures = (
                 contact_left * contact_hand_textures

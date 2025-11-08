@@ -170,7 +170,7 @@ class JaxGuidanceParams:
                     reproj_weight=10.,
                     use_abs_contact=True,
                     use_rel_contact=True,
-                    rel_contact_weight=.01,
+                    rel_contact_weight=1,
                     use_obj_smoothness=True,
                     use_delta_wTo=True,
                     max_iters=50,
@@ -985,8 +985,10 @@ def _optimize(
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
             _SE3TrajectoryVar(jnp.arange(1, timesteps)),
+
             _LeftHandParamsVar(jnp.arange(timesteps - 1)),
             _RightHandParamsVar(jnp.arange(timesteps - 1)),
+
             _LeftHandParamsVar(jnp.arange(1, timesteps)),
             _RightHandParamsVar(jnp.arange(1, timesteps)),
             target_newPoints[None],
@@ -1009,10 +1011,6 @@ def _optimize(
             wTo_next = jaxlie.SE3(vals[wTo_next]) 
             contact_cur = vals[contact_cur]
             contact_next = vals[contact_next]
-            # left_params_cur = vals[left_params_cur]
-            # right_params_cur = vals[right_params_cur]
-            # left_params_next = vals[left_params_next]
-            # right_params_next = vals[right_params_next]
 
             # forward to get joints
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
@@ -1036,20 +1034,23 @@ def _optimize(
 
             J = joints_traj_cur.shape[0]
 
-            # minimal pairwise distance 
-            dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_cur[None, :, :], axis=-1)  # (P, J)
+            dist, nn_idx, nn_points = knn_jax(joints_traj_cur, current_points, k=1)  # (J, 1)
+            p_near_ind = nn_idx.squeeze(1)  # (J, )
 
-            # is_contact = (contact_cur < th) & (contact_next < th)  # (2,)
-            # array((0, 1))
-            is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
+            # minimal pairwise distance 
+            # dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_cur[None, :, :], axis=-1)  # (P, J)
 
             # p_near is the nearest point on the object to the current each joint
-            p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
+            # p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
             p_near = current_points[p_near_ind] - joints_traj_cur # (J, 3)  # relative position to the joint
             p_near_next = next_points[p_near_ind] - joints_traj_next # (J, 3)  # relative position to the joint
 
             current_rot = wTo_cur.rotation()
             next_rot = wTo_next.rotation()
+
+            # normalzie p_near to unit length
+            p_near = p_near / (jnp.linalg.norm(p_near, axis=-1, keepdims=True) + 1e-8)
+            p_near_next = p_near_next / (jnp.linalg.norm(p_near_next, axis=-1, keepdims=True) + 1e-8)
 
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
@@ -1059,6 +1060,7 @@ def _optimize(
             
             contact_cost = guidance_params.rel_contact_weight * dist_prox
 
+            is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
             no_contact_cost = jnp.ones((2, D)) * 0 * guidance_params.rel_contact_weight  # (2, D)
             cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
 
