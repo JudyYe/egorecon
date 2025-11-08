@@ -10,14 +10,11 @@ defaults:
   - hydra: default.yaml
   - experiment: hoi
   - traindata: hotclip_train
-  - testdata: hotclip_mini
+  - testdata: hotclip_train
   - eval: ddim_long
 
 
-# This is just a placeholder to create the 'traindata' config node.
-# It will be overridden by the actual dataset config.
-# You can leave it empty or add a default target.
-
+testdata.testsplit: test50obj
 
 # task name, determines output directory path
 expname: dev/tmp
