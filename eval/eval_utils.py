@@ -354,18 +354,18 @@ def csv_to_auc(csv_file='/move/u/yufeiy2/egorecon/outputs/ready/ours/eval_hoi_co
         print(values)
         print("="*50)
     
-    # Save to JSON file
-    if not dataframe_input:
-        csv_dir = osp.dirname(csv_file)
-        csv_basename = osp.basename(csv_file)
-        csv_name_without_ext = osp.splitext(csv_basename)[0]
-        json_file = osp.join(csv_dir, f"{csv_name_without_ext}_auc.json")
+    # # Save to JSON file
+    # if not dataframe_input:
+    #     csv_dir = osp.dirname(csv_file)
+    #     csv_basename = osp.basename(csv_file)
+    #     csv_name_without_ext = osp.splitext(csv_basename)[0]
+    #     json_file = osp.join(csv_dir, f"{csv_name_without_ext}_auc.json")
         
-        os.makedirs(csv_dir, exist_ok=True)
-        with open(json_file, 'w') as f:
-            json.dump(auc_results, f, indent=4)
+    #     os.makedirs(csv_dir, exist_ok=True)
+    #     with open(json_file, 'w') as f:
+    #         json.dump(auc_results, f, indent=4)
         
-        print(f"\nAUC results saved to: {json_file}")
+    #     print(f"\nAUC results saved to: {json_file}")
     
     return auc_results
     

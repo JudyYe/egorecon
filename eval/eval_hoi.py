@@ -325,24 +325,6 @@ def eval_hotclip_hoi(
             save_dir = osp.join(os.getcwd(), "eval_results")
 
     os.makedirs(save_dir, exist_ok=True)
-    csv_file = osp.join(save_dir, f"hoi_metrics_chunk_{chunk_length}.csv")
-
-    metrics_names = [name for name in metric_list.keys() if name != "index"]
-    data = []
-    row = [mean_metrics["index"]] + [mean_metrics[name] for name in metrics_names]
-    data.append(row)
-    for i in range(len(metric_list["index"])):
-        row = [metric_list["index"][i]] + [
-            metric_list[name][i] for name in metrics_names
-        ]
-        data.append(row)
-
-    df = pd.DataFrame(data, columns=["index"] + metrics_names)
-    df.to_csv(csv_file, index=False)
-    print("Saved HOI metrics to csv file:", csv_file)
-
-    print("Computing AUC per trajectory...")
-    csv_to_auc(csv_file, silence=True)
 
     per_time_csv_file = osp.join(
         save_dir, f"hoi_metrics_per_time_chunk_{chunk_length}.csv"
@@ -392,25 +374,43 @@ def eval_hotclip_hoi(
         per_time_df[subset_key] = subset_masks[subset_key]
 
     per_time_df.to_csv(per_time_csv_file, index=False)
+    key_list = ["add", "adi", "center"]
     print("Saved per-time ***HOI*** metrics to csv file:", per_time_csv_file)
     print("Computing AUC per time...")
     print("-" * 30, "HOI", "-" * 30)
-    csv_to_auc(per_time_df)
+    overall_auc = csv_to_auc(per_time_df, silence=True)
+    if overall_auc:
+        keys = ",".join([key.upper() for key in overall_auc.keys()])
+        values = ",".join([f"{overall_auc[key]:.6f}" for key in overall_auc.keys()])
+        print(keys)
+        print(values)
 
     print("-" * 30, "HOI Subset AUC", "-" * 30)
     frame_rows = per_time_df["index"] != "Mean"
+    subset_rows = [
+        ["all-test"]
+        + [overall_auc.get(k, np.nan) if overall_auc else np.nan for k in key_list]
+        + [float(mean_metrics["acc-norm"])]
+    ]
     for subset_key, label, _ in subset_specs:
         subset_df = per_time_df[per_time_df[subset_key] & frame_rows]
         frame_count = len(subset_df)
         print(f"{label} (frames={frame_count})")
-        if frame_count == 0:
-            continue
         auc_dict = csv_to_auc(subset_df, silence=True)
         if auc_dict:
             keys = ",".join([key.upper() for key in auc_dict.keys()])
             values = ",".join([f"{auc_dict[key]:.6f}" for key in auc_dict.keys()])
             print(keys)
             print(values)
+        subset_rows.append(
+            [label] + [auc_dict.get(k, np.nan) for k in key_list] + ["NA"]
+        )
+
+    subset_columns = ["subset"] + [f"{k}_auc" for k in key_list] + ["acc-norm"]
+    subset_csv = pd.DataFrame(subset_rows, columns=subset_columns)
+    subset_csv_file = osp.join(save_dir, f"hoi_auc.csv")
+    subset_csv.to_csv(subset_csv_file, index=False)
+    print("Saved HOI subset AUC to csv file:", subset_csv_file)
     # also print mean acc-norm
     print(f"Mean acc-norm: {mean_metrics['acc-norm']:.6f}")
     return
@@ -557,25 +557,6 @@ def eval_hotclip_pose6d(
     if save_dir is None:
         save_dir = osp.join(osp.dirname(pred_file))
     os.makedirs(save_dir, exist_ok=True)
-    # csv_file = osp.join(save_dir, f"object_pose_metrics_chunk_{chunk_length}.csv")
-    
-    # metrics_names = [name for name in metric_list.keys() if name != "index"]
-    # data = []
-    # # Add mean_metrics as first row
-    # row = [mean_metrics["index"]] + [mean_metrics[name] for name in metrics_names]
-    # data.append(row)
-    # # Add individual metrics
-    # for i in range(len(metric_list["index"])):
-    #     row = [metric_list["index"][i]] + [
-    #         metric_list[name][i] for name in metrics_names
-    #     ]
-    #     data.append(row)
-    
-    # df = pd.DataFrame(data, columns=["index"] + metrics_names)
-    # df.to_csv(csv_file, index=False)
-    # print("Saved metrics to csv file: ", csv_file)
-    # csv_to_auc(csv_file, silence=True)
-
     
     # Save per-time metrics to CSV
     per_time_csv_file = osp.join(save_dir, f"object_pose_metrics_per_time_chunk_{chunk_length}.csv")
@@ -622,18 +603,30 @@ def eval_hotclip_pose6d(
         per_time_df[subset_key] = subset_masks[subset_key]
 
     per_time_df.to_csv(per_time_csv_file, index=False)
+    key_list = ["add", "adi", "center"]
     print("Saved per-time metrics to csv file: ", per_time_csv_file)
     print("Computing AUC per time...")
     print("-" * 30, "Object Pose", "-" * 30)
-    csv_to_auc(per_time_df)
+    overall_auc = csv_to_auc(per_time_df, silence=True)
+    if overall_auc:
+        keys = ",".join([key.upper() for key in overall_auc.keys()])
+        values = ",".join([f"{overall_auc[key]:.6f}" for key in overall_auc.keys()])
+        print(keys)
+        print(values)
 
     print("-" * 30, "Object Pose Subset AUC", "-" * 30)
     frame_rows = per_time_df["index"] != "Mean"
+    subset_rows = [
+        ["all-test"]
+        + [overall_auc.get(k, np.nan) if overall_auc else np.nan for k in key_list]
+        + [float(mean_metrics["acc-norm"])]
+    ]
     for subset_key, label, _ in subset_specs:
         subset_df = per_time_df[per_time_df[subset_key] & frame_rows]
         frame_count = len(subset_df)
         print(f"{label} (frames={frame_count})")
         if frame_count == 0:
+            subset_rows.append([label] + [np.nan for _ in key_list] + ["NA"])
             continue
         auc_dict = csv_to_auc(subset_df, silence=True)
         if auc_dict:
@@ -641,6 +634,15 @@ def eval_hotclip_pose6d(
             values = ",".join([f"{auc_dict[key]:.6f}" for key in auc_dict.keys()])
             print(keys)
             print(values)
+        subset_rows.append(
+            [label] + [auc_dict.get(k, np.nan) for k in key_list] + ["NA"]
+        )
+
+    subset_columns = ["subset"] + [f"{k}_auc" for k in key_list] + ["acc-norm"]
+    subset_csv = pd.DataFrame(subset_rows, columns=subset_columns)
+    subset_csv_file = osp.join(save_dir, f"pose_auc.csv")
+    subset_csv.to_csv(subset_csv_file, index=False)
+    print("Saved Object Pose subset AUC to csv file:", subset_csv_file)
     print(f"Mean acc-norm: {mean_metrics['acc-norm']:.6f}")
 
 
@@ -721,12 +723,6 @@ def eval_hotclip_joints(
             for name, value in metrics.items():
                 metric_list[name].append(value)
             metric_list["index"].append(seq)
-        # print(seq, metrics)
-        # for name, value in metrics.items():
-        #     metric_list[name].append(value)
-
-    # save metrics as csv, column: metrics, rows: 1st Mean, 2nd to last : each indivisual.
-
     mean_metrics = {
         name: np.mean(value) for name, value in metric_list.items() if name != "index"
     }

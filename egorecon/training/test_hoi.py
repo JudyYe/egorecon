@@ -4,6 +4,7 @@ import pickle
 from copy import deepcopy
 from glob import glob
 from pathlib import Path
+import json
 
 import hydra
 import imageio
@@ -437,7 +438,16 @@ def aggregate_prediction(opt):
         save_dir = osp.join(opt.exp_dir, opt.test_folder, "post")
     else:
         save_dir = opt.dir
-    pred_list = glob(osp.join(save_dir, "*.pkl"))
+
+    with open(opt.testdata.split_file, "r") as f:
+        split_dict = json.load(f)
+    seq_obj_list = split_dict[opt.testdata.testsplit]
+
+    pred_list = [
+        osp.join(save_dir, f"{seq_obj}.pkl")
+        for seq_obj in seq_obj_list
+        if osp.exists(osp.join(save_dir, f"{seq_obj}.pkl"))
+    ]
     # for hand, ignore object id
     seq_dict = {}
     # for object evaluation, save with object id
@@ -547,8 +557,8 @@ def main(opt):
     hand_file, obj_file = aggregate_prediction(opt)
     
     eval_hotclip_pose6d(pred_file=obj_file, split=opt.testdata.testsplit, skip_not_there=True, )
-    eval_hotclip_joints(pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True, )
     eval_hotclip_hoi(obj_pred_file=obj_file, hand_pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True)
+    eval_hotclip_joints(pred_file=hand_file, split=opt.testdata.testsplit, skip_not_there=True, )
 
     return
 

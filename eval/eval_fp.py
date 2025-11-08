@@ -96,7 +96,7 @@ if __name__ == "__main__":
     with open(osp.join(data_dir, "sets", "split_obj.json"), "r") as f:
         split_obj = json.load(f)
     split_obj = split_obj[split]
-    new_file = osp.join(data_dir, "eval/foundation_pose", f"split_{split}.pkl")
+    new_file = osp.join(data_dir, "eval/foundation_pose", f"post_objects.pkl")
 
     
     aggregate_fp(osp.join(data_dir, "foundation_pose"), new_file, split_obj=split_obj)
