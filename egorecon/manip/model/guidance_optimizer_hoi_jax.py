@@ -56,6 +56,7 @@ GuidanceMode = Literal[
     "hoi_fp",  # reprojection + HOI FP loss
     "debug",
     "no_contact",
+    "no_contact_static",
     "only_post",
     "fp_simple",
     "fp_full",
@@ -258,8 +259,8 @@ class JaxGuidanceParams:
                 use_rel_contact=False,
                 use_obj_smoothness=True,
                 max_iters=max_iters,
-            )            
-        elif mode == "no_contact":
+            )       
+        elif mode == "no_contact_static":
             if phase == "inner":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
@@ -285,11 +286,56 @@ class JaxGuidanceParams:
             elif phase == "post":
                 params = JaxGuidanceParams( 
                     use_j2d=True,
-                    j2d_weight=20.,
+                    j2d_weight=10.,
                     use_hand_smoothness=True,
                     hand_acc_weight=1.,
                     use_j3d=False,
                     use_contact_obs=True,
+                    use_static=True,
+                    static_weight=100.,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    reproj_weight=10.,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    rel_contact_weight=1,
+                    use_obj_smoothness=True,
+                    use_delta_wTo=True,
+                    max_iters=50,
+                )         
+            return params                         
+        elif mode == "no_contact":
+            if phase == "inner":
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=20.,
+                    use_hand_local=True,
+                    hand_local_weight=.1,
+                    use_hand_smoothness=False,
+                    use_j3d=False,
+                    use_contact_obs=False,
+                    use_static=False,
+                    static_weight=1.,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    use_obj_smoothness=False,
+                    use_delta_wTo=False,
+                    max_iters=5,
+                    lambda_initial=1e-2,
+                )                
+
+            elif phase == "post":
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=10.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=1.,
+                    use_j3d=False,
+                    use_contact_obs=False,
                     use_static=False,
                     static_weight=100.,
                     use_reproj_com=False,
