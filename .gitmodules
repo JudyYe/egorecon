@@ -4,3 +4,6 @@
 [submodule "FoundationPose"]
 	path = FoundationPose
 	url = git@github.com:JudyYe/FoundationPose.git
+[submodule "mayday"]
+	path = mayday
+	url = git@github.com:JudyYe/mayday.git
