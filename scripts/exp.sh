@@ -55,7 +55,19 @@ GT mask
 bowl: 194930206998778
 spoon: 225397651484143
 
+/move/u/yufeiy2/Package/blender-4.3.2-linux-x64/blender \
+  --background \
+  --python mayday/blender_vis.py -- \
+  --mode render_assets \
+  --asset-dir outputs/debug_blender/post_meshes/001874_000007 \
+  --output-dir outputs/debug_blender/001874_000007 \
+  --target-frame 0 \
+  --allocentric-step 1 \
+  --external-camera-location 1.5 -1.5 1.0 \
+  --external-camera-target 0.0 0.0 0.3
 
+
+-
 python -m egorecon.training.test_hoi  -m  \
   expname=ready/ours \
   ckpt_index=model-20.pt \
