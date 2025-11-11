@@ -1,8 +1,5 @@
 # from slamhr and haptic
 
-import json
-import os
-import os.path as osp
 import numpy as np
 import pandas as pd
 import torch
@@ -114,7 +111,7 @@ def adi(R_est, t_est, R_gt, t_gt, pts):
     e = nn_dists.mean()
     return e
 
-def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center", "acc-norm"]):
+def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center", "acc-norm"], align_rt=False):
     # Handle apd separately since it returns multiple thresholds
     apd_thre_list = [0.01, 0.02, 0.05, 0.1]  # Default thresholds for apd
     apd_metric_names = [f"apd@{thre}" for thre in apd_thre_list] if "apd" in metric_names else []
@@ -123,14 +120,37 @@ def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center
     all_metric_names = [name for name in metric_names if name != "apd"] + apd_metric_names
     cur_metrics = {name: [] for name in all_metric_names}
 
+    gt_wTo_torch = gt_wTo.clone()
+    pred_wTo_torch = pred_wTo.clone()
+    T = gt_wTo_torch.shape[0]
+
+    points_padded = None
+    points_expanded = None
+    if align_rt or "acc-norm" in metric_names:
+        points_padded = mesh.verts_padded().to(gt_wTo_torch.device)
+        points_expanded = points_padded.repeat(T, 1, 1)
+
+    if align_rt:
+        gt_wPoints = mesh_utils.apply_transform(points_expanded, gt_wTo_torch)
+        pred_wPoints = mesh_utils.apply_transform(points_expanded, pred_wTo_torch)
+        s_align, R_align, t_align = align_pcl(
+            gt_wPoints.reshape(-1, 3),
+            pred_wPoints.reshape(-1, 3),
+        )
+        align_mat = torch.eye(
+            4, device=pred_wTo_torch.device, dtype=pred_wTo_torch.dtype
+        )
+        align_mat[:3, :3] = R_align * s_align
+        align_mat[:3, 3] = t_align
+        pred_wTo_torch = torch.matmul(align_mat.unsqueeze(0), pred_wTo_torch)
 
     if "acc-norm" in metric_names:
-        points = mesh.verts_padded()
-        T = gt_wTo.shape[0]
-        points_exp = points.repeat(T, 1, 1)
+        if points_expanded is None:
+            points_padded = mesh.verts_padded().to(gt_wTo_torch.device)
+            points_expanded = points_padded.repeat(T, 1, 1)
 
-        gt_wPoints = mesh_utils.apply_transform(points_exp, gt_wTo)
-        pred_wPoints = mesh_utils.apply_transform(points_exp, pred_wTo)  # (T, P, 3)
+        gt_wPoints = mesh_utils.apply_transform(points_expanded, gt_wTo_torch)
+        pred_wPoints = mesh_utils.apply_transform(points_expanded, pred_wTo_torch)  # (T, P, 3)
 
         # use slamhr's compute_accel_norm
         gt_accel = compute_accel_norm(gt_wPoints)  # (T - 2, P, )
@@ -138,13 +158,13 @@ def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center
         score = torch.linalg.norm(gt_accel - pred_accel, dim=-1)
         cur_metrics["acc-norm"].append(score.cpu().numpy())  
 
-    gt_wTo = gt_wTo.cpu().numpy()
-    pred_wTo = pred_wTo.cpu().numpy()
+    gt_wTo_np = gt_wTo_torch.cpu().numpy()
+    pred_wTo_np = pred_wTo_torch.cpu().numpy()
 
-    gt_wTo_rot, gt_wTo_t = gt_wTo[..., :3, :3], gt_wTo[..., :3, 3:4]
-    pred_wTo_rot, pred_wTo_t = pred_wTo[..., :3, :3], pred_wTo[..., :3, 3:4]
+    gt_wTo_rot, gt_wTo_t = gt_wTo_np[..., :3, :3], gt_wTo_np[..., :3, 3:4]
+    pred_wTo_rot, pred_wTo_t = pred_wTo_np[..., :3, :3], pred_wTo_np[..., :3, 3:4]
 
-    for t in range(gt_wTo.shape[0]):
+    for t in range(gt_wTo_np.shape[0]):
         points = mesh.verts_packed().detach().cpu().numpy()  # (P, 3)
         
         for name in metric_names:
@@ -163,7 +183,7 @@ def eval_pose(gt_wTo, pred_wTo, mesh, metric_names=["add", "adi", "apd", "center
                 # Convert dict to separate metric entries
                 for thre in apd_thre_list:
                     apd_key = f"apd@{thre}"
-                    value = apd_dict[thre]  # apd_dict[thre] is now a scalar value
+                    value = apd_dict[thre]
                     cur_metrics[apd_key].append(value)
             elif name == "acc-norm":
                 continue

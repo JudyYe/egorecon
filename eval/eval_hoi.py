@@ -505,6 +505,7 @@ def eval_hotclip_pose6d(
     skip_not_there=True,
     chunk_length=-1,
     aligned=False,
+    align_rt=False,
 ):
     """
     Evaluate object pose using ADD, ADI, APD metrics.
