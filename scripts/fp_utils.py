@@ -21,6 +21,7 @@ from torchvision import transforms
 depth_zero = True
 zero_depth = 0
 depth_model = 'metric3d' #  'metric3d'
+# depth_model = 'unidepth' #  'metric3d'
 only_init = False
 # 37787722328019: keyboard
 alpha = 1
@@ -113,7 +114,7 @@ class UniDepthWrapper:
         depth = prediction["depth"]
         
         depth = depth.squeeze().cpu().numpy().copy()
-        return depth, prediction
+        return depth
 
 
 class PoseWrapper:
@@ -187,8 +188,8 @@ class PoseWrapper:
         Returns:
             pose: 4x4 pose matrix or None if failed
         """
-        if self.process_check_mask(obj_mask) is False:
-            return np.eye(4), False
+        # if self.process_check_mask(obj_mask) is False:
+        #     return np.eye(4), False
         
         depth, intrinsic= self.predict_depth(rgb, intrinsic, self.alpha)
         fx, fy, cx, cy = intrinsic
@@ -206,7 +207,7 @@ class PoseWrapper:
             K=K, rgb=rgb_down.copy(), depth=depth_down, ob_mask=obj_mask_down, 
             iteration=5, zero_depth=zero_depth
         )
-        success = self.estimator.pose_last is not None
+        success = self.estimator.pose_last is not None            
         return pose, success
 
     @staticmethod
@@ -223,6 +224,81 @@ class PoseWrapper:
             return False
         
         return True
+    
+    def track_video_from_best_frame(self, image_list, intrinsic):
+        """Register on the frame with maximum mask coverage, then track forward/backward."""
+        if self.mask_list is None or len(self.mask_list) == 0:
+            raise ValueError("mask_list is required for track_video_from_best_frame")
+
+        num_frames = len(image_list)
+        if num_frames == 0:
+            raise ValueError("Empty image_list passed to track_video_from_best_frame")
+        if num_frames != len(self.mask_list):
+            raise ValueError("mask_list length mismatch with image_list")
+
+        mask_sums = self.mask_list.reshape(num_frames, -1).sum(axis=1)
+        best_idx = int(np.argmax(mask_sums))
+        if mask_sums[best_idx] <= 0:
+            logging.warning("No valid mask pixels found; falling back to sequential tracking")
+            return self.track_video(image_list, intrinsic)
+
+        fx, fy, cx, cy = intrinsic
+        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+
+        cTo_list = [np.eye(4) for _ in range(num_frames)]
+        valid_list = np.zeros(num_frames, dtype=bool)
+        score_list = np.zeros(num_frames, dtype=float)
+        tracked_list = np.zeros(num_frames, dtype=float)
+
+        # Register on best frame
+        self.index = best_idx
+        rgb_best = self.read_image(image_list[best_idx])
+        obj_mask_best = self.mask_list[best_idx].copy()
+        pose_best, success = self.register_one(rgb_best, intrinsic, obj_mask_best)
+        tracked_list[best_idx] = 0
+        if not success:
+            logging.warning("Registration failed on best mask frame; falling back to sequential tracking")
+            return self.track_video(image_list, intrinsic)
+
+        best_pose_last = self.estimator.pose_last.clone()
+        reproj_best = self.evaluate_tracking_score(pose_best, K, rgb_best, obj_mask_best, self.estimator)
+        cTo_list[best_idx] = pose_best
+        valid_list[best_idx] = True
+        score_list[best_idx] = reproj_best
+
+        # Track forward from best_idx + 1 to end
+        current_pose = pose_best
+        for frame_idx in range(best_idx + 1, num_frames):
+            self.index = frame_idx
+            rgb = self.read_image(image_list[frame_idx])
+            obj_mask = self.mask_list[frame_idx]
+            current_pose = self.track_one(rgb, intrinsic)
+            reproj_iou = self.evaluate_tracking_score(current_pose, K, rgb, obj_mask, self.estimator)
+            cTo_list[frame_idx] = current_pose
+            valid_list[frame_idx] = mask_sums[frame_idx] > 0
+            score_list[frame_idx] = reproj_iou
+            tracked_list[frame_idx] = 1
+
+        # Track backward from best_idx - 1 to start
+        self.estimator.pose_last = best_pose_last.clone()
+        current_pose = pose_best
+        for frame_idx in range(best_idx - 1, -1, -1):
+            self.index = frame_idx
+            rgb = self.read_image(image_list[frame_idx])
+            obj_mask = self.mask_list[frame_idx]
+            current_pose = self.track_one(rgb, intrinsic)
+            reproj_iou = self.evaluate_tracking_score(current_pose, K, rgb, obj_mask, self.estimator)
+            cTo_list[frame_idx] = current_pose
+            valid_list[frame_idx] = mask_sums[frame_idx] > 0
+            score_list[frame_idx] = reproj_iou
+            tracked_list[frame_idx] = 1
+
+        cTo = np.array(cTo_list)
+        valid = valid_list
+        score = score_list
+        tracked = np.array(tracked_list)
+        return cTo, valid, score, tracked
+
 
     def track_video(self, image_list, intrinsic):
         """
@@ -245,6 +321,7 @@ class PoseWrapper:
         cTo_list = []
         valid_list = []
         score_list = []
+        tracked_list = []
         fx, fy, cx, cy = intrinsic
         K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         
@@ -270,6 +347,7 @@ class PoseWrapper:
                 # Initialize pose
                 print(f"Frame {i}: Initializing pose...")
                 current_pose, success = self.register_one(rgb, intrinsic, obj_mask.copy())
+                tracked_list.append(0)
                 
                 if success:
                     pose_initialized = True
@@ -287,21 +365,22 @@ class PoseWrapper:
                 current_pose = self.track_one(rgb, intrinsic)
                 # get reprojection IoU for reset
                 reproj_iou = self.evaluate_tracking_score(current_pose, K, rgb, obj_mask, self.estimator)
-                th = 0.5
+                th = 0.
                 pose_initialized = reproj_iou >= th
 
                 logging.info(f"Frame {i}: Tracking successful")
                 cTo_list.append(current_pose)
                 valid_list.append(pose_initialized)
                 score_list.append(reproj_iou)
-                
+                tracked_list.append(1)
         
         # Convert to numpy arrays
         cTo = np.array(cTo_list)  # (T, 4, 4)
         valid = np.array(valid_list)  # (T,)
         score = np.array(score_list)  # (T,)
+        tracked = np.array(tracked_list)  # (T,)
 
-        return cTo, valid, score
+        return cTo, valid, score, tracked
 
     def evaluate_tracking_score(self, pose, K, color, current_mask, estimator=None):
         """

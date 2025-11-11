@@ -14,46 +14,25 @@ test hand
 GT mask 
 [] change contact 
 
-
-[x] order of condition? t? cond? 
-[x] correct masking: in train, test, and dataset? previously: validation mask is wrong! (last condition is thrown away!!)
-[] set up quant
-  - hand yes! 
-[x] noisy hand?????????? why model change soooo much? 
-[x] jax: no lbs()
-[] add off-the-shelf obs pipeline p(O, H, C | \hat H), at least joint visibility. 
-
-
-[x] add hand motion rep as joint + theta
-[x]some are black?? and nan? 
-
-[x] hand_rep: jonit+hA? 
-[x] bps: hand surface instead of joints? 
-
-[x] long seq
-
-[x] change model | TODO
-[x] norm in data, data done
-[] contact point on object? 
-
-[x] get a mini hot3d clip? 
-[x] vis: contact, vis other motion 
-
-[x] faster vis
-
-
-[x] change coord frame
-
-[x] why vis in guidance is wrong? 
-[x] only dynamic object 
-[x] only hand conditioned 
-[x] data cano??? data is somehow wrong? 
-[x] guidance 
-[x] noise eval
-[x] metadata
-
 bowl: 194930206998778
 spoon: 225397651484143
+
+
+
+python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor   dir=outputs/ready/ours/opt.yaml   \
+  testdata=hotclip_train testdata.testsplit=test50obj     dyn_only=true   \
+  fp_index
+  test_folder=eval_test50obj_\${guide.hint} guide.hint=fp_simple   test_num=50    test_mode=fp \
+
+
+python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor_\${fp_index}   dir=outputs/ready/ours/opt.yaml   \
+  testdata=hotclip_train testdata.testsplit=test50obj     dyn_only=true   \
+  fp_index=foundation_pose_metric3d \
+  test_folder=eval_\${fp_index}_test50obj_\${guide.hint} guide.hint=fp_full   test_num=50    test_mode=fp \
+
+
+
+
 
 /move/u/yufeiy2/Package/blender-4.3.2-linux-x64/blender \
   --background \
@@ -92,6 +71,7 @@ python -m egorecon.training.test_hoi  -m  \
   contact_every=10  vlm=true,false \
 
 -
+
 
 test fp 
 python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor   dir=outputs/ready/ours/opt.yaml   \

@@ -4,12 +4,11 @@ from scipy.spatial.transform import Slerp, Rotation
 import os.path as osp
 import json
 from tqdm import tqdm
-from functools import partial
 import os
 from glob import glob
 import numpy as np
 import torch
-from jutils import geom_utils, hand_utils, image_utils, mesh_utils
+from jutils import geom_utils, image_utils, mesh_utils
 from pytorch3d.renderer import PerspectiveCameras
 from pytorch3d.renderer.materials import Materials
 from pytorch3d.renderer.mesh.shader import HardFlatShader
@@ -31,11 +30,11 @@ device = torch.device("cuda:0")
 
 
 # vis_dir = "outputs/debug_fp_mask"
-vis_dir = "outputs/debug_fp_pose"
+vis_dir = "outputs/debug_fp_pose_unidepth"
 
 
 def batch_prorcess(func, split, skip=True, save_dir=""):
-    split_file = osp.join("data/HOT3D-CLIP/sets", f"split.json")
+    split_file = osp.join("data/HOT3D-CLIP/sets", "split.json")
     with open(split_file, "r") as f:
         split_dict = json.load(f)
     seq_list = split_dict[split]
@@ -237,17 +236,36 @@ def get_mask(
 
 
 def run_foundation_pose(seq, all_data, object_library, save_file=None, vis=False):
-    seq_data = all_data[seq]
-    image_dir = osp.join(data_dir, "extract_images-rot90", f"clip-{seq}")
+    seq_key = seq
+    selected_objects = None
+    if seq not in all_data:
+        if "_" in seq:
+            parts = seq.split("_", 1)
+            base_seq = parts[0]
+            if base_seq in all_data:
+                seq_key = base_seq
+                selected_objects = [parts[1]]
+            else:
+                raise KeyError(f"Sequence {seq} not found in all_data and base sequence {base_seq} missing as well")
+        else:
+            raise KeyError(f"Sequence {seq} not found in all_data")
+
+    seq_data = all_data[seq_key]
+    object_ids = selected_objects or list(seq_data["objects"].keys())
+    if len(object_ids) == 0:
+        print(f"No objects available for sequence {seq_key}. Skipping.")
+        return
+
+    image_dir = osp.join(data_dir, "extract_images-rot90", f"clip-{seq_key}")
     image_list = sorted(glob(osp.join(image_dir, "*.jpg")))
     print(f"query {image_dir}, found {len(image_list)} images")
     T = len(image_list)
     assert T == len(seq_data["wTc"]), f"T mismatch: {T} != {len(seq_data['wTc'])}"
 
-    mask_file = osp.join(data_dir, "gt_mask", f"{seq}.npz")
+    mask_file = osp.join(data_dir, "gt_mask", f"{seq_key}.npz")
     mask_data = np.load(mask_file)
     hand_obj_mask = mask_data["hand_obj_mask"]
-    index = mask_data["index"]
+    index = mask_data["index"].tolist()
 
     wTc = torch.FloatTensor(seq_data["wTc"]).to(device)
     intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
@@ -276,56 +294,59 @@ def run_foundation_pose(seq, all_data, object_library, save_file=None, vis=False
         right_meshes = Meshes(verts=right_hand_verts, faces=right_hand_faces).to(device)
         hand_meshes = [left_meshes, right_meshes]
 
-    # save to wTo
     wTo_list = []
     valid_list = []
     score_list = []
-    for o, obj_id in enumerate(seq_data["objects"]):
-        i = o + 2
+    processed_objects = []
 
-        obj_mask = hand_obj_mask[i]  # (T, H, W)
+    for obj_id in object_ids:
+        if obj_id not in seq_data["objects"]:
+            print(f"Object {obj_id} not present in sequence data for {seq_key}, skipping")
+            continue
+        if obj_id not in object_library:
+            print(f"Object {obj_id} missing from object library, skipping")
+            continue
+        if obj_id not in index:
+            print(f"Object {obj_id} not present in mask index for {seq_key}, skipping")
+            continue
+
+        mask_idx = index.index(obj_id)
+        obj_mask = hand_obj_mask[mask_idx]
         intr = torch.FloatTensor(seq_data["intrinsic"]).to(device)
         intr[..., :2, :] /= down
 
-        # Get mesh file path from object library or construct it
-
         mesh_file = object_library[obj_id]
         textured_file = mesh_file.replace("/object_models_eval/", "/object_models/")
-        # Convert intrinsics to numpy [fx, fy, cx, cy] format
-        if isinstance(intr, torch.Tensor):
-            intr_np = intr.cpu().numpy()
-        else:
-            intr_np = intr
+        intr_np = intr.cpu().numpy() if isinstance(intr, torch.Tensor) else intr
         if intr_np.shape == (3, 3):
             fx, fy = intr_np[0, 0], intr_np[1, 1]
             cx, cy = intr_np[0, 2], intr_np[1, 2]
             intr_np = np.array([fx, fy, cx, cy])
 
-        cTo, valid, score = track_obj(
-            textured_file, obj_mask, image_list, intr_np
-        )  # (T, 4, 4), (T, )
+        cTo, valid, score, tracked = track_obj(textured_file, obj_mask, image_list, intr_np)
         wTo = wTc @ cTo
+        # "001890_000009"
+        # import pdb; pdb.set_trace()
         wTo = infill_obj(wTo, valid)
 
         wTo_list.append(wTo)
         valid_list.append(valid)
         score_list.append(score)
-
-        # tmp_file = save_file.replace(".npz", f"_{obj_id}.npz")
-        # os.makedirs(osp.dirname(tmp_file), exist_ok=True)
-        # np.savez_compressed(tmp_file, wTo=wTo.cpu().numpy(), valid=valid.cpu().numpy())
+        processed_objects.append(obj_id)
 
         if vis:
+            print('wTo', wTo.shape)
             oObj = mesh_utils.load_mesh(mesh_file).to(device)
             viz.log_hoi_step_from_cam_side(
                 *hand_meshes,
                 geom_utils.matrix_to_se3_v2(wTo),
                 oObj,
                 contact=None,
-                pref=f"{seq}_{obj_id}_pred",
+                pref=f"{seq_key}_{obj_id}_pred",
                 intr_pix=intr,
                 wTc=geom_utils.matrix_to_se3_v2(wTc),
                 device=device,
+                debug_info=[[f"frame {t}: {score[t]:.4f} {valid[t]:.1f} {tracked[t]:.1f}"] for t in range(len(wTo))],
             )
             wTo_gt = torch.FloatTensor(seq_data["objects"][obj_id]["wTo"]).to(device)
             viz.log_hoi_step_from_cam_side(
@@ -333,21 +354,32 @@ def run_foundation_pose(seq, all_data, object_library, save_file=None, vis=False
                 geom_utils.matrix_to_se3_v2(wTo_gt),
                 oObj,
                 contact=None,
-                pref=f"{seq}_{obj_id}_gt",
+                pref=f"{seq_key}_{obj_id}_gt",
                 intr_pix=intr,
                 wTc=geom_utils.matrix_to_se3_v2(wTc),
                 device=device,
             )
 
-    wTo_list = torch.stack(wTo_list, 0).cpu().numpy()
-    valid_list = torch.stack(valid_list, 0).cpu().numpy()
-    score_list = torch.stack(score_list, 0).cpu().numpy()
-    print("wTo_list", wTo_list.shape, valid_list.shape, score_list.shape)
-    if save_file is not None:
-        os.makedirs(osp.dirname(save_file), exist_ok=True)
-        np.savez_compressed(
-            save_file, wTo=wTo_list, valid=valid_list, index=index, score=score_list
-        )
+    if not processed_objects:
+        print(f"No objects processed for sequence {seq}. Nothing saved.")
+        return
+
+    wTo_array = torch.stack(wTo_list, 0).cpu().numpy()
+    valid_array = torch.stack(valid_list, 0).cpu().numpy()
+    score_array = torch.stack(score_list, 0).cpu().numpy()
+    print("wTo_list", wTo_array.shape, valid_array.shape, score_array.shape)
+
+    if save_file is None:
+        save_file = osp.join(vis_dir, f"{seq}.npz")
+    os.makedirs(osp.dirname(save_file), exist_ok=True)
+    index_saved = np.array(["left_hand", "right_hand", *processed_objects])
+    np.savez_compressed(
+        save_file,
+        wTo=wTo_array,
+        valid=valid_array,
+        index=index_saved,
+        score=score_array,
+    )
 
     print(f"Saved foundation pose to {save_file}")
     return
@@ -588,13 +620,14 @@ def track_obj(mesh_file, obj_mask, image_list, intr):
     pose_wrapper = PoseWrapper(mesh_file=mesh_file, intrinsic=intr, mask_list=obj_mask)
 
     # Track through video
-    cTo, valid, score = pose_wrapper.track_video(image_list, intr)
+    # cTo, valid, score, tracked = pose_wrapper.track_video(image_list, intr)
+    cTo, valid, score, tracked = pose_wrapper.track_video_from_best_frame(image_list, intr)
     cTo = torch.FloatTensor(cTo).to(device)
     valid = torch.FloatTensor(valid).to(device)
     score = torch.FloatTensor(score).to(device)
     print("cTo", cTo.shape, valid.shape, score.shape)
 
-    return cTo, valid, score
+    return cTo, valid, score, tracked
 
 
 down = 4
@@ -616,7 +649,7 @@ if __name__ == "__main__":
         load_mesh=False,
     )
     # seq_name = "001992"
-    # seq_name = "001890"
+    # seq_name = "001890_000009"
     # run_foundation_pose(
     #     seq_name,
     #     all_data,
@@ -624,17 +657,20 @@ if __name__ == "__main__":
     #     save_file=osp.join(vis_dir, f"{seq_name}.npz"),
     #     vis=True,
     # )
+    from functools import partial
+    from scripts.fp_utils import depth_model
 
-    # func = partial[None](
-    #     run_foundation_pose,
-    #     object_library=object_library,
-    #     all_data=all_data,
-    # )
-    # batch_prorcess(func, split="test", save_dir=osp.join(data_dir, "foundation_pose"))
+    func = partial(
+        run_foundation_pose,
+        object_library=object_library,
+        all_data=all_data,
+        vis=True
+    )
+    batch_prorcess(func, split="test50obj", save_dir=osp.join(data_dir, f"foundation_pose_{depth_model}"))
 
-    seq = "002862"
-    obj_list = ['000002', '000006', '000011', '000017', '000003', '000004']
-    # index = "002862_000006"
-    for obj in obj_list:
-        index = f"{seq}_{obj}"
-        vis_fp(index, all_data, object_library)
+    # seq = "002862"
+    # obj_list = ['000002', '000006', '000011', '000017', '000003', '000004']
+    # # index = "002862_000006"
+    # for obj in obj_list:
+    #     index = f"{seq}_{obj}"
+    #     vis_fp(index, all_data, object_library)
