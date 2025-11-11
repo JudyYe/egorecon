@@ -121,7 +121,9 @@ def test_fp(dl, opt, model_cfg):
         #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
         B, T = batch["condition"].shape[:2]
-
+        post_file = osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl")
+        if osp.exists(post_file):
+            continue
         sample = batch = model_utils.to_cuda(batch)
         # guide FP !
         pred_dict, obs = get_pred_obs_from_fp(sample, model_cfg)

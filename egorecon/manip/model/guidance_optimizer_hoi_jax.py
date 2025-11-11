@@ -179,13 +179,13 @@ class JaxGuidanceParams:
         if mode == "fp_simple":
             return JaxGuidanceParams( 
                     use_j2d=True,
-                    j2d_weight=1.,
+                    j2d_weight=10.,
                     use_hand_smoothness=True,
                     hand_acc_weight=1.,
                     use_j3d=False,
-                    use_contact_obs=False,
+                    use_contact_obs=True,
                     use_static=False,
-                    static_weight=.1,
+                    static_weight=1.,
                     use_reproj_com=False,
                     use_reproj_cd=False,
                     use_reproj_cd_one_way=True,
