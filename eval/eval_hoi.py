@@ -6,11 +6,16 @@ import os
 import os.path as osp
 import json
 from collections import defaultdict
+import math
 import torch
 import pandas as pd
 
 import pickle
 import numpy as np
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from eval.eval_utils import eval_jts
 from egorecon.utils.motion_repr import HandWrapper
 from eval.eval_utils import eval_pose, csv_to_auc
@@ -22,6 +27,81 @@ data_dir = "/move/u/yufeiy2/data/HOT3D-CLIP"
 
 mano_model_path = "assets/mano"
 
+
+def _plot_add_curves(
+    per_time_df: pd.DataFrame,
+    subset_specs,
+    png_path: str,
+    add_column: str = "add",
+    max_val: float = 0.3,
+    step: float = 0.001,
+) -> None:
+    if add_column not in per_time_df.columns:
+        print(f"[AUC] Column '{add_column}' not found. Skip plotting curves.")
+        return
+
+    df = per_time_df.copy()
+    if "index" in df.columns:
+        df = df[df["index"] != "Mean"]
+
+    if df.empty:
+        print("[AUC] No rows available for curve plotting.")
+        return
+
+    def _compute_curve(errors: np.ndarray):
+        if errors.size == 0:
+            return None
+        xs = np.arange(0.0, max_val + step, step)
+        sorted_errs = np.sort(errors)
+        counts = np.searchsorted(sorted_errs, xs, side="right")
+        ys = counts.astype(np.float64) / float(sorted_errs.size)
+        ys = np.clip(ys, 0.0, 1.0)
+        auc = np.trapz(ys, xs) / max(max_val, np.finfo(float).eps)
+        return xs, ys, auc
+
+    curve_entries = []
+
+    overall_errors = df[add_column].dropna().to_numpy()
+    curve = _compute_curve(overall_errors)
+    if curve is not None:
+        curve_entries.append(("all-test", curve))
+
+    for subset_key, label, _ in subset_specs:
+        if subset_key not in df.columns:
+            continue
+        subset_errors = df[df[subset_key]][add_column].dropna().to_numpy()
+        curve = _compute_curve(subset_errors)
+        if curve is not None:
+            curve_entries.append((label, curve))
+
+    if not curve_entries:
+        print("[AUC] No valid curves to plot.")
+        return
+
+    num_curves = len(curve_entries)
+    cols = min(3, num_curves)
+    rows = math.ceil(num_curves / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.0, rows * 3.2), squeeze=False)
+
+    for ax in axes.flat:
+        ax.set_visible(False)
+
+    for idx, (label, (xs, ys, auc)) in enumerate(curve_entries):
+        r, c = divmod(idx, cols)
+        ax = axes[r][c]
+        ax.set_visible(True)
+        ax.plot(xs, ys, label="ADD curve", color="tab:blue")
+        ax.set_xlim(0.0, max_val)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlabel("Threshold (m)")
+        ax.set_ylabel("Success rate")
+        ax.set_title(f"{label} (AUC={auc:.3f})")
+        ax.grid(True, linestyle="--", alpha=0.4)
+
+    fig.tight_layout()
+    fig.savefig(png_path, dpi=200)
+    plt.close(fig)
+    print(f"Saved ADD curves to {png_path}")
 
 
 def get_hand_joints(seq, hand_wrapper: HandWrapper, force_fk=True):
@@ -408,9 +488,10 @@ def eval_hotclip_hoi(
 
     subset_columns = ["subset"] + [f"{k}_auc" for k in key_list] + ["acc-norm"]
     subset_csv = pd.DataFrame(subset_rows, columns=subset_columns)
-    subset_csv_file = osp.join(save_dir, f"hoi_auc.csv")
+    subset_csv_file = osp.join(save_dir, "hoi_auc.csv")
     subset_csv.to_csv(subset_csv_file, index=False)
     print("Saved HOI subset AUC to csv file:", subset_csv_file)
+    _plot_add_curves(per_time_df, subset_specs, subset_csv_file.replace(".csv", ".png"))
     # also print mean acc-norm
     print(f"Mean acc-norm: {mean_metrics['acc-norm']:.6f}")
     return
@@ -508,6 +589,8 @@ def eval_hotclip_pose6d(
                 gt_wTo_key = f"{obj_id}_wTo"
             
             if pred_wTo_key not in pred_seq or gt_wTo_key not in gt_seq:
+                # print(f"Object {obj_id} {pred_wTo_key} not found in pred_seq or gt_seq", pred_wTo_key in pred_seq, gt_wTo_key in gt_seq)
+                # print(pred_seq.keys())
                 continue
             
             pred_wpTo = torch.FloatTensor(pred_seq[pred_wTo_key])
@@ -640,9 +723,10 @@ def eval_hotclip_pose6d(
 
     subset_columns = ["subset"] + [f"{k}_auc" for k in key_list] + ["acc-norm"]
     subset_csv = pd.DataFrame(subset_rows, columns=subset_columns)
-    subset_csv_file = osp.join(save_dir, f"pose_auc.csv")
+    subset_csv_file = osp.join(save_dir, "pose_auc.csv")
     subset_csv.to_csv(subset_csv_file, index=False)
     print("Saved Object Pose subset AUC to csv file:", subset_csv_file)
+    _plot_add_curves(per_time_df, subset_specs, subset_csv_file.replace(".csv", ".png"))
     print(f"Mean acc-norm: {mean_metrics['acc-norm']:.6f}")
 
 

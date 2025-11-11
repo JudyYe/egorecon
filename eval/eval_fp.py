@@ -1,3 +1,4 @@
+from fire import Fire
 import os
 import os.path as osp
 import pickle
@@ -31,49 +32,54 @@ def aggregate_fp(fp_dir, save_file, split_obj=None):
     # Convert split_obj to set for faster lookup if provided
     if split_obj is None:
         split_obj_set = None
+        split_seq_set = None
     else:
-        split_obj_set = set(split_obj)
+        split_obj_set = set()
+        split_seq_set = set()
+        for item in split_obj:
+            if "_" in item:
+                split_obj_set.add(item)
+            else:
+                split_seq_set.add(item)
     # Aggregate predictions by sequence
     seq_dict = {}
     included_count = 0
     excluded_count = 0
     
     for fp_file in fp_files:
-        # Extract sequence name from filename (e.g., 001874.npz -> 001874)
-        seq = osp.basename(fp_file).replace(".npz", "")
+        basename = osp.basename(fp_file).replace(".npz", "")
+        if "_" in basename:
+            seq, obj_suffix = basename.split("_", 1)
+            file_objects = {obj_suffix}
+        else:
+            seq = basename
+            file_objects = None
         
-        # Load foundation pose data
         data = np.load(fp_file, allow_pickle=True)
-        wTo_list = data["wTo"]  # (num_objects, T, 4, 4)
-        valid_list = data["valid"]  # (num_objects, T)
-        index = data["index"]  # array with object IDs
-        score_list = data.get("score", None)  # (num_objects, T), optional
+        wTo_list = data["wTo"]
+        _valid_list = data["valid"]
+        print("Mean valid", np.mean(_valid_list))
+        index = data["index"]
+        _score_list = data.get("score", None)
         
-        # Initialize sequence dict if not exists
         if seq not in seq_dict:
             seq_dict[seq] = {}
         
-        # Extract object IDs from index (skip first 2 which are hands)
-        # index format: ["left_hand", "right_hand", obj_id1, obj_id2, ...]
-        # wTo_list[o] corresponds to index[o+2]
         num_objects = wTo_list.shape[0]
-        
         for o in range(num_objects):
-            # Get object ID from index (objects start at index 2)
             obj_id = str(index[o + 2])
-            
-            # If split_obj is provided, only include if {seq}_{obj_id} is in the list
+            if file_objects is not None and obj_id not in file_objects:
+                continue
             if split_obj_set is not None:
                 seq_obj_key = f"{seq}_{obj_id}"
-                if seq_obj_key not in split_obj_set:
+                if (
+                    seq_obj_key not in split_obj_set
+                    and (split_seq_set is None or seq not in split_seq_set)
+                ):
                     excluded_count += 1
                     continue
-            
             included_count += 1
-            # Get wTo for this object: (T, 4, 4)
             wTo = wTo_list[o]
-            
-            # Store with key format: obj_{obj_id}_wTo
             obj_key = f"obj_{obj_id}_wTo"
             seq_dict[seq][obj_key] = wTo
     
@@ -87,19 +93,21 @@ def aggregate_fp(fp_dir, save_file, split_obj=None):
     print(f"Included objects: {included_count}, Excluded objects: {excluded_count}")
     
     return seq_dict
+
+
+def eval_fp(fp_dir, split="test50obj"):
     
-if __name__ == "__main__":
-    data_dir = "/move/u/yufeiy2/egorecon/data/HOT3D-CLIP"
-    split = "test50obj"
-    # load split_obj.json
-    
-    with open(osp.join(data_dir, "sets", "split_obj.json"), "r") as f:
+    with open(osp.join(data_dir, "sets", "split.json"), "r") as f:
         split_obj = json.load(f)
     split_obj = split_obj[split]
-    new_file = osp.join(data_dir, "eval/foundation_pose", f"post_objects.pkl")
-
+    # new_file = osp.join(data_dir, "eval/foundation_pose", "post_objects.pkl")
+    new_file = osp.join(fp_dir, "eval/post_objects.pkl")
     
-    aggregate_fp(osp.join(data_dir, "foundation_pose"), new_file, split_obj=split_obj)
+    # aggregate_fp(osp.join(data_dir, "foundation_pose"), new_file, split_obj=split_obj)
+    aggregate_fp(fp_dir, new_file, split_obj=split_obj)
+    eval_hotclip_pose6d(pred_file=new_file, split=split, skip_not_there=True, aligned=True)    
 
-
-eval_hotclip_pose6d(pred_file=new_file, split="test50obj", skip_not_there=True, aligned=True)
+if __name__ == "__main__":
+    data_dir = "/move/u/yufeiy2/egorecon/data/HOT3D-CLIP"
+    fp_dir = osp.join(data_dir, "foundation_pose_unidepth")
+    Fire(eval_fp)

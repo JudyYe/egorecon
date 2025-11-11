@@ -1,3 +1,4 @@
+from fire import Fire
 import os
 import os.path as osp
 import json
@@ -124,45 +125,60 @@ def mark_trunc_contact_frames(split="test50obj"):
 
     gt_data = load_pickle(gt_data_file)
 
+    processed_keys = set()
     for seq_obj in seq_obj_list:
-        seq, obj = seq_obj.split("_")
-        seq_meta = gt_data[seq]
-        obj_meta = seq_meta["objects"]
-        obj_key = obj
+        if "_" in seq_obj:
+            seq, obj = seq_obj.split("_", 1)
+            candidates = [(seq, obj)]
+        else:
+            seq = seq_obj
+            seq_meta = gt_data.get(seq)
+            if seq_meta is None:
+                raise KeyError(f"Sequence '{seq}' missing in GT metadata.")
+            candidates = [(seq, obj_key) for obj_key in seq_meta["objects"].keys()]
 
-        contact_lr = np.asarray(obj_meta[obj_key]["contact_lr"])
+        for seq, obj in candidates:
+            seq_meta = gt_data[seq]
+            obj_meta = seq_meta["objects"]
+            obj_key = obj
+            frame_key = f"{seq}_{obj_key}"
+            if frame_key in processed_keys:
+                continue
 
-        contact = (contact_lr > 0.5).any(axis=-1).astype(np.int32)
-        T = contact.shape[0]
+            contact_lr = np.asarray(obj_meta[obj_key]["contact_lr"])
 
-        truncate = np.zeros(T, dtype=np.int32)
-        mask_file = osp.join(mask_dir, f"{seq}.npz")
-        
-        if osp.exists(mask_file):
-            mask_data = np.load(mask_file, allow_pickle=True)
-            hand_obj_mask = mask_data["hand_obj_mask"]  # (2+O, T, H, W)
-            index = mask_data["index"].tolist()
+            contact = (contact_lr > 0.5).any(axis=-1).astype(np.int32)
+            T = contact.shape[0]
 
-            obj_idx = index.index(obj_key)
-            obj_mask = hand_obj_mask[obj_idx]  # (T, H, W)
-            obj_mask = obj_mask.astype(bool)
+            truncate = np.zeros(T, dtype=np.int32)
+            mask_file = osp.join(mask_dir, f"{seq}.npz")
 
-            edge_slices = (
-                obj_mask[:, 0, :],
-                obj_mask[:, -1, :],
-                obj_mask[:, :, 0],
-                obj_mask[:, :, -1],
-            )
+            if osp.exists(mask_file):
+                mask_data = np.load(mask_file, allow_pickle=True)
+                hand_obj_mask = mask_data["hand_obj_mask"]  # (2+O, T, H, W)
+                index = mask_data["index"].tolist()
 
-            has_pixels = obj_mask.reshape(T, -1).any(axis=1)
-            touches_edge = np.logical_or.reduce([edge.any(axis=1) for edge in edge_slices])
+                obj_idx = index.index(obj_key)
+                obj_mask = hand_obj_mask[obj_idx]  # (T, H, W)
+                obj_mask = obj_mask.astype(bool)
 
-            truncate = np.where(~has_pixels, 2, truncate)
-            truncate = np.where(has_pixels & touches_edge & (truncate == 0), 1, truncate)
-        frame_subsplit[seq_obj] = {
-            "contact": contact.astype(int).tolist(),
-            "truncate": truncate.astype(int).tolist(),
-        }
+                edge_slices = (
+                    obj_mask[:, 0, :],
+                    obj_mask[:, -1, :],
+                    obj_mask[:, :, 0],
+                    obj_mask[:, :, -1],
+                )
+
+                has_pixels = obj_mask.reshape(T, -1).any(axis=1)
+                touches_edge = np.logical_or.reduce([edge.any(axis=1) for edge in edge_slices])
+
+                truncate = np.where(~has_pixels, 2, truncate)
+                truncate = np.where(has_pixels & touches_edge & (truncate == 0), 1, truncate)
+            frame_subsplit[frame_key] = {
+                "contact": contact.astype(int).tolist(),
+                "truncate": truncate.astype(int).tolist(),
+            }
+            processed_keys.add(frame_key)
 
     output_file = osp.join(data_root, "sets", f"frame_subsplit_{split}.pkl")
     with open(output_file, "wb") as f:
@@ -176,5 +192,5 @@ if __name__ == "__main__":
     # Get and print sequence-object pairs
     # split2seq_obj = get_mini50_seq_obj()
     # get_mini5_seq_obj()
-    mark_trunc_contact_frames()
+    Fire(mark_trunc_contact_frames)
 
