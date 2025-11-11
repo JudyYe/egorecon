@@ -713,7 +713,15 @@ class HandToObjectDataset(Dataset):
         mask = mask_data["hand_obj_mask"][obj_idx]  # (T, H, W)
         mask_valid = mask.sum(axis=(1,2)) > 10
 
-        fp_file = osp.join("data/HOT3D-CLIP/foundation_pose", f"{seq}.npz")
+        fp_dir = osp.join("data/HOT3D-CLIP", self.opt.get("fp_index", "foundation_pose"))
+        seq_path = osp.join(fp_dir, f"{seq}.npz")
+        seq_obj_path = osp.join(fp_dir, f"{seq}_{obj_id}.npz")
+        if osp.exists(seq_path):
+            fp_file = seq_path
+        elif osp.exists(seq_obj_path):
+            fp_file = seq_obj_path
+        else:
+            raise FileNotFoundError(f"Foundation pose file not found for {seq} ({obj_id}) in {fp_dir}")
         fp_data = np.load(fp_file, allow_pickle=True)
         wTo_list = fp_data["wTo"]  # (num_objects, T, 4, 4)
         valid_list = fp_data["valid"]  # (num_objects, T)

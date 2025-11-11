@@ -57,3 +57,4 @@ oracle_cond: false
 vlm: false
 contact_every: 1  # by default
 skip: false
+fp_index: foundation_pose
