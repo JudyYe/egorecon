@@ -10,6 +10,26 @@ python preprocess/call_vlm_for_contact.py \
 [] why guided last step != post first step? 
 
 
+generation 
+python -m mayday.blender_wrapper \
+  --image_folder sample \
+  --method_list '["ours-gen"]' \
+  --vis_contact \
+  --allocentric_step 30 \
+  --target_frames [] \
+  --seq_obj 001896_000001 
+
+
+compare 
+
+python -m mayday.blender_wrapper \
+  --image_folder image \
+  --method_list '[ "gt", "fp_simple", "fp_full", "ours"]' \
+  --allocentric_step 50 \
+  --seq_obj 001896_000001 
+
+
+
 test hand 
 GT mask 
 [] change contact 
@@ -43,9 +63,8 @@ python -m egorecon.training.test_hoi  -m    expname=baselines/fp_hawor_\${fp_ind
   mayday/blender_vis.py -- --mode render_assets \
   --asset-dir outputs/debug_blender/post_meshes/001874_000007 \
   --output-dir outputs/debug_blender/001874_000007 \
-  --target-frame 50 --allocentric-step 30 --hand-color blue1,blue2 \
-  --object-color pink --render-camera \
-  --save-blend outputs/debug_blender/001874_000007/pred_scene.blend
+  --target-frame 50 --allocentric-step 50 --hand-color blue1,blue2 \
+  --object-color pink --render-camera 
 
 
 -
