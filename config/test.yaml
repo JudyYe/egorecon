@@ -15,7 +15,7 @@ defaults:
 
 
 testdata.testsplit: test50obj
-
+sample_num: 1
 # task name, determines output directory path
 expname: dev/tmp
 exp_dir: ${paths.output_dir}/${expname}

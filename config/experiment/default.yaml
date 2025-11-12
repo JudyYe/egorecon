@@ -55,6 +55,7 @@ model:
   objective: pred_x0
 
 datasets:
+  slam: false
   t0: 0
   one_window: false
   noise_scheme: syn

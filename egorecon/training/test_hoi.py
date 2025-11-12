@@ -285,7 +285,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip
             name=f"{index}_gt",
         )
 
-        for i in range(1):
+        for i in range(opt.sample_num):
             guided_object_pred_raw, info = diffusion_model.sample_raw(
                 torch.randn_like(sample["target"]),
                 sample["condition"],
@@ -312,7 +312,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip
             save_prediction(
                 pred_dict,
                 index,
-                osp.join(model_cfg.exp_dir, opt.test_folder, "sample", f"{index}.pkl"),
+                osp.join(model_cfg.exp_dir, opt.test_folder, f"sample_{i}", f"{index}.pkl"),
                 wTc=sample["wTc"][0],
             )
 
@@ -506,6 +506,8 @@ def set_test_cfg(opt, model_cfg):
     model_cfg.datasets.save_cache = opt.datasets.save_cache
     model_cfg.dyn_only = opt.dyn_only
     model_cfg.oracle_cond = opt.oracle_cond
+
+    model_cfg.datasets.slam = opt.datasets.slam
 
 
 @hydra.main(config_path="../../config", config_name="test", version_base=None)

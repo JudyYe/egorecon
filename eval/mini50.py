@@ -188,9 +188,24 @@ def mark_trunc_contact_frames(split="test50obj"):
     return frame_subsplit
 
 
+def make_teaser_split():
+    with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "r") as f:
+        split_dict = json.load(f)
+    clip_list = list(range(1905, 1910))
+    clip_list = [f"{clip:06d}" for clip in clip_list]
+
+    split_dict["teaser"] = clip_list
+    with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "w") as f:
+        json.dump(split_dict, f, indent=4)
+
+    return 
+
+
 if __name__ == "__main__":
     # Get and print sequence-object pairs
     # split2seq_obj = get_mini50_seq_obj()
     # get_mini5_seq_obj()
-    Fire(mark_trunc_contact_frames)
+    # Fire(mark_trunc_contact_frames)
+
+    make_teaser_split()
 

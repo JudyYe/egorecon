@@ -283,7 +283,8 @@ class HandToObjectDataset(Dataset):
         )
         if self.window_size != 120:
             cache_name = cache_name.replace(".npz", f"_window{self.window_size}.npz")
-        
+        if self.opt.datasets.slam:
+            cache_name = cache_name.replace(".npz", f"_slam.npz")
 
         if osp.exists(cache_name) and use_cache:
             print("loading window cache from ", cache_name)

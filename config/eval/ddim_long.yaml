@@ -12,4 +12,4 @@ datasets:
   use_cache: true 
   save_cache: true
 
-  
+  slam: false

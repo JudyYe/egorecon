@@ -12,6 +12,7 @@ seed: null
 
 sample: ddim
 datasets:
+  slam: false
   window: 120
   use_cache: true
   save_cache: false

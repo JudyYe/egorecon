@@ -666,7 +666,8 @@ if __name__ == "__main__":
         all_data=all_data,
         vis=True
     )
-    batch_prorcess(func, split="test50obj", save_dir=osp.join(data_dir, f"foundation_pose_{depth_model}"))
+    # batch_prorcess(func, split="test50obj", save_dir=osp.join(data_dir, f"foundation_pose_{depth_model}"))
+    batch_prorcess(func, split="teaser", save_dir=osp.join(data_dir, f"foundation_pose_{depth_model}"))
 
     # seq = "002862"
     # obj_list = ['000002', '000006', '000011', '000017', '000003', '000004']

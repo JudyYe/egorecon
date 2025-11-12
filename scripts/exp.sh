@@ -13,7 +13,7 @@ python preprocess/call_vlm_for_contact.py \
 generation 
 python -m mayday.blender_wrapper \
   --image_folder sample \
-  --method_list '["ours-gen"]' \
+  --method_list '["ours-gen-0", "ours-gen-1", "ours-gen-2", "ours-gen-3", "ours-gen-4"]' \
   --vis_contact \
   --allocentric_step 30 \
   --target_frames [] \
@@ -27,6 +27,32 @@ python -m mayday.blender_wrapper \
   --method_list '[ "gt", "fp_simple", "fp_full", "ours"]' \
   --allocentric_step 50 \
   --seq_obj 001896_000001 
+
+-
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=teaser dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=teaser   \
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false datasets.slam=true \
+  test_folder=slam   \
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  test_folder=generation sample_num=5  \
+  inner_guidance=false post_guidance=false \
 
 
 
