@@ -181,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default=osp.join(save_dir, "vlm_output_hot3d"),
+        default=osp.join(save_dir, "vlm_output_hot3d_ablation"),
         help="Directory to store VLM predictions and metrics.",
     )
     parser.add_argument(
