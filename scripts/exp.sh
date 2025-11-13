@@ -10,6 +10,13 @@ python preprocess/call_vlm_for_contact.py \
 [] why guided last step != post first step? 
 
 
+python -m mayday.blender_teaser   \
+  --bundle_root outputs/blender_results/teaser/video1/   \
+  --seq_objs 001907_000025,001908_000011,001909_000018   \
+  --output_dir outputs/blender_results/teaser/video1   \
+  --target_frames 0+30+50+149,0+10+20+149,0+20+30+40+50+60+149   \
+  --spacing 0   --vis_obj_trail   --render_hand_per_method 1,0,0
+
 generation 
 python -m mayday.blender_wrapper \
   --image_folder sample \
@@ -35,7 +42,7 @@ python -m egorecon.training.test_hoi  -m  \
   ckpt_index=model-20.pt \
   testdata=hotclip_train testdata.testsplit=teaser dyn_only=true \
   datasets.save_cache=false datasets.use_cache=false  \
-  test_folder=teaser   \
+  test_folder=teaser   \  
 
 
 python -m egorecon.training.test_hoi  -m  \

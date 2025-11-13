@@ -191,7 +191,7 @@ def mark_trunc_contact_frames(split="test50obj"):
 def make_teaser_split():
     with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "r") as f:
         split_dict = json.load(f)
-    clip_list = list(range(1905, 1910))
+    clip_list = list(range(1905, 1924))
     clip_list = [f"{clip:06d}" for clip in clip_list]
 
     split_dict["teaser"] = clip_list

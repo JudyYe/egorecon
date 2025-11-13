@@ -739,8 +739,10 @@ def eval_hotclip_joints(
     split="test50obj",
     skip_not_there=True,
     chunk_length=-1,
+    force_fk=True,
 ):
     seqs = get_hotclip_split(split)
+    device = "cuda:0"
 
     hand_wrapper = HandWrapper(mano_model_path).to(device)
     if isinstance(pred_file, str):
@@ -762,8 +764,13 @@ def eval_hotclip_joints(
         pred_seq = pred_data[seq]
         gt_seq = gt_data[seq]
 
-        left_pred, right_pred = get_hand_joints(pred_seq, hand_wrapper)  # (T, J, 3)
-        left_gt, right_gt = get_hand_joints(gt_seq, hand_wrapper)
+        left_gt, right_gt = get_hand_joints(gt_seq, hand_wrapper, force_fk=force_fk)
+        left_pred, right_pred = get_hand_joints(pred_seq, hand_wrapper, force_fk=force_fk   )  # (T, J, 3)
+        print("left pred", left_pred.device, left_gt.device)
+        left_pred = left_pred.to(device)
+        right_pred = right_pred.to(device)
+        left_gt = left_gt.to(device)
+        right_gt = right_gt.to(device)
 
         if side == "right":
             pred = right_pred
