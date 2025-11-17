@@ -298,15 +298,16 @@ def create_mask_overlay_image(image_path, mask_data, frame_idx, draw_numbers=Tru
     pil_image = Image.fromarray(overlay)
  
     # Draw numbers/labels on the image
+    font_size = 100
     if draw_numbers:
         draw = ImageDraw.Draw(pil_image)
  
-        # Use default font
-        font = ImageFont.load_default()
+        # Use a larger, bold font for better readability
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", size=font_size)
  
         # Draw hand markers first (filled circles with outline)
         for x, y, label, color in hand_markers:
-            radius = 5
+            radius = font_size
             bbox = [
                 (x - radius, y - radius),
                 (x + radius, y + radius),
@@ -326,8 +327,8 @@ def create_mask_overlay_image(image_path, mask_data, frame_idx, draw_numbers=Tru
 
         for x, y, label, name in label_positions:
             # Draw text with outline for better visibility
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
+            for dx in [-2, -1, 0, 1, 2]:
+                for dy in [-2, -1, 0, 1, 2]:
                     if dx != 0 or dy != 0:
                         draw.text((x + dx, y + dy), label, fill=(0, 0, 0), font=font)
 

@@ -1,3 +1,14 @@
+python -m preprocess.vlm_ablation \
+--num-samples 10 --force-gt --variants vanilla one_of_k one_of_k_visual full \
+--output-dir outputs/vlm_ablation \
+--gt-dir outputs/vlm_ablation/gt
+
+python preprocess/vlm_ablation.py \
+ --num-samples 2 \
+ --variants vanilla one_of_k one_of_k_visual full
+
+
+-
 python preprocess/call_vlm_for_contact.py \
   --images_dir "data/HOT3D-CLIP/extract_images-rot90/clip-001911/" \
   --objects "milk bottle" \
