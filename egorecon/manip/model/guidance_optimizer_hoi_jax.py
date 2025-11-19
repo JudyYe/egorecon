@@ -53,6 +53,7 @@ def wxyz_xyz_to_se3(wxyz_xyz):
 GuidanceMode = Literal[
     "fp", 
     "hoi_contact",  # reprojection + HOI contact loss
+    "hoi_better",  # reprojection + HOI better loss
     "hoi_fp",  # reprojection + HOI FP loss
     "debug",
     "no_contact",
@@ -79,7 +80,7 @@ class JaxGuidanceParams:
     j2d_weight: float = 10.0
 
     use_contact_obs: jdc.Static[bool] = True
-    contact_obs_weight: float = 1
+    contact_obs_weight: float = 1.
 
     use_static: jdc.Static[bool] = True
     static_weight: float = 1.0
@@ -176,6 +177,52 @@ class JaxGuidanceParams:
                     max_iters=50,
                 )         
             return params        
+        if mode == "hoi_better":
+            if phase == "inner":
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=10.,
+                    use_hand_local=True,
+                    hand_local_weight=.1,
+                    use_hand_smoothness=False,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=False,
+                    static_weight=.1,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    use_abs_contact=False,
+                    use_rel_contact=False,
+                    use_obj_smoothness=True,
+                    use_delta_wTo=False,
+                    max_iters=5,
+                    lambda_initial=1e-2,
+                )                
+
+            elif phase == "post":
+                params = JaxGuidanceParams( 
+                    use_j2d=True,
+                    j2d_weight=10.,
+                    use_hand_smoothness=True,
+                    hand_acc_weight=1.,
+                    use_j3d=False,
+                    use_contact_obs=True,
+                    use_static=True,
+                    static_weight=100.,
+                    use_reproj_com=False,
+                    use_reproj_cd=False,
+                    use_reproj_cd_one_way=True,
+                    reproj_weight=10.,
+                    use_abs_contact=True,
+                    use_rel_contact=True,
+                    rel_contact_weight=10,
+                    use_obj_smoothness=True,
+                    obj_vel_weight=.1,
+                    use_delta_wTo=True,
+                    max_iters=50,
+                )         
+            return params                    
         if mode == "fp_simple":
             return JaxGuidanceParams( 
                     use_j2d=True,
@@ -780,7 +827,7 @@ def _optimize(
         ) -> jax.Array:
             contact = vals[contact]
             diff = contact - target_contact
-            diff = guidance_params.contact_weight * diff.flatten()
+            diff = guidance_params.contact_obs_weight * diff.flatten()
             return diff
 
     if guidance_params.use_hand_local:

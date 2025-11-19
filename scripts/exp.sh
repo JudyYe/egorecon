@@ -1,3 +1,131 @@
+
+render sample 
+python -m mayday.blender_wrapper --mode=render_sample
+
+no hand 
+
+python -m move_utils.slurm_wrapper --sl_name fp --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 5 \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_hand   --no_hand  \
+  --method_list '["fp"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip 
+
+  
+python -m move_utils.slurm_wrapper --sl_name gt --slurm --sl_time_hr 10 --sl_ngpu 1     \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_hand   --no_hand  \
+  --method_list '["gt"]'     \
+  --render_video   \
+  --render_cam_h 600
+
+python -m move_utils.slurm_wrapper --sl_name fp_simple --slurm --sl_time_hr 10 --sl_ngpu 1     \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_hand   --no_hand  \
+  --method_list '["fp_simple"]'     \
+  --render_video   \
+  --render_cam_h 600 
+
+python -m move_utils.slurm_wrapper --sl_name fp_full --slurm --sl_time_hr 10 --sl_ngpu 1     \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_hand   --no_hand  \
+  --method_list '["fp_full"]'     \
+  --render_video   \
+  --render_cam_h 600 
+
+
+python -m move_utils.slurm_wrapper --sl_name ours --slurm --sl_time_hr 10 --sl_ngpu 1     \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_hand   --no_hand  \
+  --method_list '["ours"]'     \
+  --render_video   \
+  --render_cam_h 600  --skip
+
+
+-
+
+render comparison video from allocentric camera
+
+python -m mayday.blender_wrapper   \
+  --image_folder video_new_no_hand   \
+  --method_list '["gt", "fp", "fp_simple", "fp_full", "ours"]'   \
+  --render_video_alloc_joint --no_hand  \
+  --divide 0.  \
+  --render_width 1440 \
+  --render_height 1080  \
+  --dynamic_floor  \
+  --skip &
+
+
+python -m mayday.blender_wrapper   \
+  --image_folder video_new   \
+  --method_list '["gt", "fp", "fp_simple", "fp_full", "ours"]'   \
+  --render_video_alloc_joint --no_hand  \
+  --divide 0.  \
+  --render_width 1440 \
+  --render_height 1080  \
+  --dynamic_floor  \
+  --skip &
+
+
+python -m move_utils.slurm_wrapper --slurm --sl_time_hr 5 --sl_ngpu 1    --sl_name our \
+python -m mayday.blender_wrapper   \
+  --image_folder video_new   \
+  --method_list '["gt", "fp_simple", "fp_full", "ours"]'   \
+  --render_video_alloc_joint   \
+  --divide 0.5  \
+  --render_width 1920 \
+  --render_height 800  \
+  --dynamic_floor  \
+  --skip &
+
+
+python -m move_utils.slurm_wrapper --slurm --sl_time_hr 5 --sl_ngpu 1    --sl_name our \
+python -m mayday.blender_wrapper     \
+  --image_folder video     \
+  --method_list '["ours"]'     \
+  --render_video   \
+  --render_cam_h 600
+
+
+
+python -m mayday.blender_wrapper     \
+  --image_folder video     \
+  --method_list '["gt"]'     \
+  --render_video   \
+  --render_cam_h 600
+
+
+python -m move_utils.slurm_wrapper --slurm --sl_time_hr 5 --sl_ngpu 1    --sl_name fp_simple \
+python -m mayday.blender_wrapper     \
+  --image_folder video     \
+  --method_list '["fp_simple"]'     \
+  --render_video   \
+  --render_cam_h 600
+
+python -m move_utils.slurm_wrapper --slurm --sl_time_hr 5 --sl_ngpu 1    --sl_name fp_full \
+python -m mayday.blender_wrapper     \
+  --image_folder video     \
+  --method_list '["fp_full"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip 
+
+
+python -m move_utils.slurm_wrapper --slurm --sl_time_hr 5 --sl_ngpu 1    --sl_name fp_full \
+python -m mayday.blender_wrapper     \
+  --image_folder video     \
+  --method_list '["ours"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip 
+
+
+python -m mayday.blender_wrapper   \
+  --image_folder video   \
+  --method_list '["gt", "fp_simple", "fp_full", "ours"]'   \
+  --render_video 
+
+
 python -m preprocess.vlm_ablation \
 --num-samples 10 --force-gt --variants vanilla one_of_k one_of_k_visual full \
 --output-dir outputs/vlm_ablation \
@@ -6,6 +134,40 @@ python -m preprocess.vlm_ablation \
 python preprocess/vlm_ablation.py \
  --num-samples 2 \
  --variants vanilla one_of_k one_of_k_visual full
+
+
+-
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt eval=ddim_long \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  test_folder=rot_\${guide.hint}_vlm\${vlm}_skip\${contact_every}_\${post.rel_contact_weight}  \
+  contact_every=10  vlm=true  post.rel_contact_weight=10 \
+  +engine=move engine.exclude=move1+move2+humanoid1 engine.slurm_job_name=\${test_folder}
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt eval=ddim_long_better \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  test_folder=rot_\${guide.hint}_vlm\${vlm}_skip\${contact_every}_\${inner.use_static}_\${inner.static_weight}  \
+  contact_every=10  vlm=true inner.use_static=true inner.static_weight=0.1,0.01,1 \
+  +engine=move engine.exclude=move1+move2+move3+humanoid1 engine.slurm_job_name=\${test_folder}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 -

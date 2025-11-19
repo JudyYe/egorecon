@@ -1,55 +1,50 @@
 # @package _global_
 
+defaults:
+  - default.yaml
 
-post_guidance: true
-inner_guidance: true
-# simply provide checkpoint path to resume training
-ckpt: ${exp_dir}/weights/${ckpt_index}
-ckpt_index: null
+sample: ddim_long
 
-# seed for random number generators in pytorch, numpy and python.random
-seed: null
-
-sample: ddim
-datasets:
-  slam: false
-  window: 120
-  use_cache: true
-  save_cache: false
-
-test_mode: guided
-legacy_mask: false
-vis_x0_list: false
-vis_x: true
-
-test_num: 100
 
 shelf: true
 
+datasets:
+  window: 150
+  use_cache: true 
+  save_cache: true
+
+  slam: false
+
+guide:
+  hint: hoi_better
 
 inner:
   use_j2d: true
-  j2d_weight: 20.0
+  j2d_weight: 10.0
   use_hand_local: true
   hand_local_weight: 0.1
-  use_hand_smoothness: false
+  use_hand_smoothness: true
+  hand_vel_weight: 0.01
+  hand_acc_weight: 0.01
   use_j3d: false
   use_contact_obs: true
-  use_static: true
-  static_weight: 1.0
+  use_static: false
+  static_weight: 0.1
   use_reproj_com: false
   use_reproj_cd: false
   use_reproj_cd_one_way: true
   use_abs_contact: false
   use_rel_contact: false
-  use_obj_smoothness: false
+  use_obj_smoothness: true
+  obj_vel_weight: 0.01
+  obj_acc_weight: 0.01
   use_delta_wTo: false
   max_iters: 5
   lambda_initial: 0.01
  
 post:
   use_j2d: true
-  j2d_weight: 20.0
+  j2d_weight: 10.0
   use_hand_smoothness: true
   hand_acc_weight: 1.0
   use_j3d: false
@@ -62,7 +57,8 @@ post:
   reproj_weight: 10.0
   use_abs_contact: true
   use_rel_contact: true
-  rel_contact_weight: 1.0
+  rel_contact_weight: 10.0
   use_obj_smoothness: true
+  obj_vel_weight: 0.1
   use_delta_wTo: true
   max_iters: 50

@@ -42,9 +42,6 @@ oracle_cond: false
 # # seed for random number generators in pytorch, numpy and python.random
 # seed: null
 
-# # sample: ddim_long
-# # datasets:
-# #   window: 150
 
 # test_mode: guided
 # legacy_mask: false

@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+# print compute node name
 import pickle
 from copy import deepcopy
 from glob import glob
@@ -20,7 +21,7 @@ from eval.eval_hoi import eval_hotclip_pose6d, eval_hotclip_joints, eval_hotclip
 from ..manip.data import build_dataloader
 from ..manip.model import build_model, fncmano_jax
 from ..manip.model.guidance_optimizer_hoi_jax import (
-    do_guidance_optimization,
+    do_guidance_optimization, JaxGuidanceParams
 )
 from ..manip.model.transformer_hand_to_object_diffusion_model import (
     CondGaussianDiffusion,
@@ -117,8 +118,7 @@ def test_fp(dl, opt, model_cfg):
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
-        # if b.item() != 484:
-        #     continue
+        # 001890_000030
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
         B, T = batch["condition"].shape[:2]
         post_file = osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl")
@@ -241,6 +241,11 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip
         if opt.test_num > 0 and b >= opt.test_num:
             break
         b = batch["ind"][0]
+        # list of example 001890_000030, 002858_000011, 001874_000007
+        # if batch["demo_id"][0] not in ["001890", "002858", "001874"] or batch["object_id"][0] not in ["000030", "000011", "000007"]:
+        #     continue
+        # if batch["demo_id"][0] != "001890" or batch["object_id"][0] != "000030":
+        #     continue
         # if b.item() != 484:
         #     continue
         index = f"{batch['demo_id'][0]}_{batch['object_id'][0]}"
@@ -380,6 +385,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip
                 model_cfg,
                 guide=True, batch=sample, shape=guided_object_pred_raw.shape
             )
+            post_params = JaxGuidanceParams(**model_cfg.post)
 
             post_pred_dict, debug_info = do_guidance_optimization(
                 pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
@@ -389,6 +395,7 @@ def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip
                 guidance_mode=opt.guide.hint,
                 phase="post",
                 verbose=True,
+                guidance_params=post_params,
             )
             info_per_time = get_info_str(debug_info, B, T)
             post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
@@ -507,12 +514,21 @@ def set_test_cfg(opt, model_cfg):
     model_cfg.dyn_only = opt.dyn_only
     model_cfg.oracle_cond = opt.oracle_cond
 
+    model_cfg.inner = opt.inner
+    model_cfg.post = opt.post
+
     model_cfg.datasets.slam = opt.datasets.slam
 
 
 @hydra.main(config_path="../../config", config_name="test", version_base=None)
 @slurm_utils.slurm_engine()
 def main(opt):
+    if "SLURM_JOB_NAME" in os.environ:
+        print(f"Running on SLURM node: {os.environ['SLURM_JOB_NAME']}")
+    else:
+        print("Not running on SLURM")
+
+
     if opt.test_mode == "guided":
         diffusion_model = build_model_from_ckpt(opt)
         set_test_cfg(opt, diffusion_model.opt)

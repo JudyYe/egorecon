@@ -22,7 +22,7 @@ from ..data.utils import get_norm_stats
 # from .guidance_optimizer_jax import (do_guidance_optimization, project,
 #                                      se3_to_wxyz_xyz, wxyz_xyz_to_se3)
 from .guidance_optimizer_hoi_jax import (do_guidance_optimization, project,
-                                     se3_to_wxyz_xyz, wxyz_xyz_to_se3, ndc)
+                                     se3_to_wxyz_xyz, wxyz_xyz_to_se3, ndc, JaxGuidanceParams)
 from .transformer_module import Decoder
 
 from . import fncmano_jax
@@ -440,15 +440,6 @@ class CondGaussianDiffusion(nn.Module):
         x_start_raw = self.denormalize_data(x_start)
         x_dict = self.decode_dict(x_start_raw)
 
-        # x_0_pred, _ = do_guidance_optimization(
-        #     traj=se3_to_wxyz_xyz(x_start),
-        #     obs=model_kwargs['obs'],
-        #     guidance_mode=self.opt.guide.hint,
-        #     phase="inner",
-        #     verbose=True,
-        #     # verbose=False,
-        # )
-        # x_0_pred = wxyz_xyz_to_se3(x_0_pred)
         info = {}
         if t is not None and t >= 500:
             print(f"Inner-init guidance at t={t}")
@@ -456,6 +447,7 @@ class CondGaussianDiffusion(nn.Module):
             pred_dict = x_dict
         else:
             phase = "inner"
+            inner_params = JaxGuidanceParams(**self.opt.inner)
 
             pred_dict, info = do_guidance_optimization(
                 pred_dict=x_dict,
@@ -465,6 +457,7 @@ class CondGaussianDiffusion(nn.Module):
                 guidance_mode=self.opt.guide.hint,
                 phase=phase,
                 verbose=True,
+                guidance_params=inner_params,
             )
         x_0_pred = self.encode_dict_to_params(pred_dict)
         x_start_opt = self.normalize_data(x_0_pred)
