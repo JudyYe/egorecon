@@ -197,8 +197,26 @@ def make_teaser_split():
     split_dict["teaser"] = clip_list
     with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "w") as f:
         json.dump(split_dict, f, indent=4)
-
     return 
+
+
+def merge_segments():
+    # put segments.json into data/HOT3D-CLIP/sets/split.json
+    with open(osp.join("data/HOT3D-CLIP/sets", "segments.json"), "r") as f:
+        segments = json.load(f)
+    with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "r") as f:
+        split_dict = json.load(f)
+
+    # first pop out segment* in split_dict
+    key_to_pop = [key for key in split_dict.keys() if key.startswith("segment")]
+    for key in key_to_pop:
+        split_dict.pop(key)
+    
+    for segment_name, clip_list in segments.items():
+        assert segment_name not in split_dict
+        split_dict[segment_name] = clip_list
+    with open(osp.join("data/HOT3D-CLIP/sets", "split.json"), "w") as f:
+        json.dump(split_dict, f, indent=4)
 
 
 if __name__ == "__main__":
@@ -207,5 +225,6 @@ if __name__ == "__main__":
     # get_mini5_seq_obj()
     # Fire(mark_trunc_contact_frames)
 
-    make_teaser_split()
+    # make_teaser_split()
 
+    merge_segments()

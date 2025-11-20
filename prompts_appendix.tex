@@ -1,0 +1,143 @@
+% Prompts Appendix Component
+% This file can be included in an existing LaTeX document using: \input{prompts_appendix}
+% 
+% Required packages:
+% - longtable
+% - array
+% - fancyvrb (or listings if preferred)
+
+\section{System Prompt}
+
+\begin{longtable}{|p{0.95\textwidth}|}
+\hline
+\textbf{System Instruction} \\
+\hline
+\begin{Verbatim}[fontsize=\small]
+You are a precise visual classifier for hand-object contact detection in 
+cluttered scenes.
+
+CRITICAL CONSTRAINTS:
+1. Each hand (left/right) can be in contact with AT MOST ONE object at a time.
+2. "In contact" means direct physical touch: grasping, holding, pressing, or 
+   any visible contact.
+3. If a hand is not clearly touching any object, you must mark all objects as 0 
+   for that hand.
+\end{Verbatim} \\
+\hline
+\end{longtable}
+
+\section{User Prompt}
+
+\begin{longtable}{|p{0.95\textwidth}|}
+\hline
+\textbf{User Prompt Template} \\
+\hline
+\begin{Verbatim}[fontsize=\small]
+Analyze this image for hand–object contact (actual touching, not just reaching).
+
+VISUAL GUIDANCE:
+The image has been annotated with colored masks:
+- GREEN mask = Left hand
+- RED mask = Right hand
+- Other COLORED masks = Candidate objects (each object has a unique color)
+
+CANDIDATE OBJECTS (in order):
+1. obj1
+2. obj2
+3. obj3
+...
+
+STRICT DEFINITION OF CONTACT:
+For this task, contact means clear physical touching in this frame only.
+
+Contact (label = 1) requires BOTH:
+1. Mask intersection:
+   - The hand mask and the object mask share some pixels or directly overlap 
+     at the boundary (no visible gap).
+2. Touching region:
+   - The overlap is at a plausible touching area (finger tips, fingers, palm, 
+     side of hand) on the visible surface of the object.
+
+NO Contact (label = 0) in all of these cases:
+- The hand is reaching toward, hovering above, or very close to an object with 
+  a visible gap between masks.
+- The hand is aligned in depth (e.g., above or behind the object) but the masks 
+  do not intersect.
+- The hand is in a pose that suggests future contact, but there is no current 
+  touching in this single frame.
+- There is only a tiny, ambiguous intersection (1–2 pixels) that could be noise 
+  or occlusion. In such uncertain cases, choose 0 (no contact).
+
+IMPORTANT:
+- **Reaching or hovering is NOT contact.**
+- **If you are unsure whether contact is happening, choose 0 (no contact).**
+
+CONSTRAINTS (VALIDATION CHECK):
+- Each hand can touch AT MOST ONE object.
+  - Sum of left across all objects must be ≤ 1.
+  - Sum of right across all objects must be ≤ 1.
+- If a hand is not clearly touching any object, it should have 0 for all objects.
+
+OUTPUT FORMAT:
+Return only a JSON object in this exact format (no extra text):
+
+{
+  "obj1": {"left": 0, "right": 1},
+  "obj2": {"left": 0, "right": 0},
+  "obj3": {"left": 1, "right": 0}
+}
+
+Where:
+- 1 = the specified hand is clearly touching that object in this frame.
+- 0 = the specified hand is not touching that object in this frame.
+\end{Verbatim} \\
+\hline
+\end{longtable}
+
+\section{In-Context Learning (ICL) Prompt}
+
+\begin{longtable}{|p{0.95\textwidth}|}
+\hline
+\textbf{ICL Example Format (User Message)} \\
+\hline
+\begin{Verbatim}[fontsize=\small]
+Example 1 (Ground Truth)
+Sequence 002043, frame 0085
+Candidate objects:
+1. 000016
+2. 000008
+Respond only with the JSON contact labels for this frame.
+[Overlay Image]
+\end{Verbatim} \\
+\hline
+\textbf{ICL Example Format (Assistant Response)} \\
+\hline
+\begin{Verbatim}[fontsize=\small]
+{
+  "000016": {
+    "left": 0,
+    "right": 1
+  },
+  "000008": {
+    "left": 0,
+    "right": 0
+  }
+}
+\end{Verbatim} \\
+\hline
+\textbf{ICL Prompt Structure} \\
+\hline
+Each ICL example consists of:
+\begin{enumerate}
+    \item \textbf{User message}: Contains example header, sequence information, 
+          object list, instruction to respond with JSON, and the overlay image 
+          showing colored hand/object masks.
+    \item \textbf{Assistant response}: Contains the ground truth JSON contact 
+          labels for that frame.
+\end{enumerate}
+
+Multiple examples can be chained before the actual query. The final query uses 
+the same user prompt template as described in Section 2, followed by the target 
+overlay image. \\
+\hline
+\end{longtable}

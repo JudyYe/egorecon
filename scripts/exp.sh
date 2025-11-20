@@ -1,6 +1,61 @@
 
+
+
+
+id=4 && bash mayday/blender_launcher.sh 10 \
+python -m mayday.blender_teaser build_teaser_video   \
+  --pred_dir outputs/ready/ours/teaser_hoi_better_segment/segment${id}/post \
+  --bundle_root outputs/blender_results/teaser_segment/segment${id}     \
+  --image_folder video
+
+
+
+
 render sample 
 python -m mayday.blender_wrapper --mode=render_sample
+
+python -m move_utils.slurm_wrapper --sl_name ours --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 15 \
+python -m mayday.blender_wrapper     \
+  --image_folder video  \
+  --method_list '["ours"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip 
+
+
+python -m move_utils.slurm_wrapper --sl_name ours_no_obj --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 10 \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_obj --no_obj  \
+  --method_list '["ours"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip
+
+
+python -m move_utils.slurm_wrapper --sl_name gt_no_obj --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 10 \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_obj --no_obj  \
+  --method_list '["gt"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip
+
+python -m move_utils.slurm_wrapper --sl_name fp_simple_no_obj --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 10 \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_obj --no_obj  \
+  --method_list '["fp_simple"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip
+
+python -m move_utils.slurm_wrapper --sl_name fp_full_no_obj --slurm --sl_time_hr 10 --sl_ngpu 1     \
+bash mayday/blender_launcher.sh 10 \
+python -m mayday.blender_wrapper     \
+  --image_folder video_no_obj --no_obj  \
+  --method_list '["fp_full"]'     \
+  --render_video   \
+  --render_cam_h 600 --skip
+
 
 no hand 
 
@@ -126,6 +181,24 @@ python -m mayday.blender_wrapper   \
   --render_video 
 
 
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=teaser dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=teaser_\${guide.hint} eval=ddim_long_better  \  
+
+
+
+
+
+
+
+
+
+  
+
 python -m preprocess.vlm_ablation \
 --num-samples 10 --force-gt --variants vanilla one_of_k one_of_k_visual full \
 --output-dir outputs/vlm_ablation \
@@ -183,6 +256,17 @@ python preprocess/call_vlm_for_contact.py \
 [] why guided last step != post first step? 
 
 
+python -m mayday.blender_teaser build_teaser_video   \
+  --bundle_root outputs/blender_results/teaser/video1/     \
+  --seq_objs 001907_000025,001908_000011,001909_000018       \
+  --output_dir outputs/blender_results/teaser/video1/demo  \
+  --image_folder video
+
+
+
+teaser video
+python -m mayday.blender_teaser build_teaser_video   --bundle_root outputs/blender_results/teaser/video1/     --seq_objs 001907_000025,001908_000011,001909_000018       --output_dir outputs/blender_results/teaser/video1/demo  --image_folder video
+
 python -m mayday.blender_teaser   \
   --bundle_root outputs/blender_results/teaser/video1/   \
   --seq_objs 001907_000025,001908_000011,001909_000018   \
@@ -204,9 +288,42 @@ compare
 
 python -m mayday.blender_wrapper \
   --image_folder image \
-  --method_list '[ "gt", "fp_simple", "fp_full", "ours"]' \
+  --method_list '["gt", "fp_simple", "fp_full", "ours"]' \
   --allocentric_step 50 \
   --seq_obj 001896_000001 
+-
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=segment1 dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=teaser_\${guide.hint}_segment/\${testdata.testsplit} eval=ddim_long_better  \
+
+
+
+
+
+# Option 1: Using bash brace expansion for range (segment1 to segment32)
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=segment1,segment2,segment3,segment4,segment5,segment6,segment7,segment8,segment9,segment10,segment11,segment12,segment13,segment14,segment15,segment16,segment17,segment18,segment19,segment20,segment21,segment22,segment23,segment24,segment25,segment26,segment27,segment28,segment29,segment30,segment31,segment32 dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=teaser_\${guide.hint}_segment/\${testdata.testsplit} eval=ddim_long_better skip=true \
+  +engine=move engine.exclude=move1+move2+humanoid1 engine.slurm_job_name=\${test_folder} engine.cpus_per_task=5 \
+
+# Option 2: Using comma-separated explicit list (original)
+# python -m egorecon.training.test_hoi  -m  \
+#   expname=ready/ours \
+#   ckpt_index=model-20.pt \
+#   testdata=hotclip_train testdata.testsplit=segment2,segment3,segment4 dyn_only=true \
+#   datasets.save_cache=false datasets.use_cache=false  \
+#   test_folder=teaser_\${guide.hint}_\${testdata.testsplit} eval=ddim_long_better skip=true \
+#   +engine=move engine.exclude=move1+move2+humanoid1 engine.slurm_job_name=\${test_folder} \
+
+# Option 3: Using Python range in a sweep config (see below for config file example)
 
 -
 
