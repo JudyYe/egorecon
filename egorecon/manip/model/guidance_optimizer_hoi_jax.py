@@ -661,11 +661,7 @@ def _optimize(
 ) -> jax.Array:
     timesteps = wTo.shape[0]
     assert wTo.shape == (timesteps, 7)
-    assert target_intr.shape == (3, 3)
     assert target_newPoints.shape == (5000, 3)
-    assert target_x2d.shape[2] == 2
-    assert target_wTc.shape[-1] == 7
-
 
     left_betas = left_hand_params[..., -10:]
     right_betas = right_hand_params[..., -10:]
@@ -1039,18 +1035,6 @@ def _optimize(
             contact_cost = contact_cost.reshape(2, 3)
             D = contact_cost.shape[1]
 
-            # dist = jnp.linalg.norm(
-            #     current_points[:, None] - joints_traj[None, :, :], axis=-1
-            # )  # (P, J)
-            # dist = dist.reshape(-1, 2, J // 2)
-            # contact_cost = (
-            #     dist.min(axis=0) * guidance_params.contact_weight
-            # )  # (2, J//2)
-            # contact_cost = -jax.lax.top_k(-contact_cost, k=5, axis=-1)[0]
-            # contact_cost = contact_cost.min(axis=-1, keepdims=True)
-
-            # target_contact = jnp.min(dist, axis=-1) < guidance_params.contact_th
-            # target_contact = jnp.array([0, 1])
             non_contact_cost = (
                 jnp.zeros((2, D)) * guidance_params.contact_weight
             )  # (2,)
@@ -1848,6 +1832,114 @@ def test_optimization(save_dir="outputs/debug_guidance_hoi"):
         pref="init",
         contact=pred_dict["contact"][0],
     )
+
+
+
+def _get_1d_sdf(mask):
+    """Helper: Computes Signed Distance Field for 1D boolean mask using lax.scan."""
+    n = mask.shape[0]
+    idx = jnp.arange(n)
+    INF = n * 2.0
+
+    def scan_fwd(prev_hit, curr_idx):
+        hit = jnp.where(mask[curr_idx], curr_idx, prev_hit)
+        return hit, curr_idx - hit
+
+    def scan_bwd(prev_hit, curr_idx):
+        hit = jnp.where(mask[curr_idx], curr_idx, prev_hit)
+        return hit, hit - curr_idx
+
+    _, d_fwd = jax.lax.scan(scan_fwd, -INF, idx)
+    _, d_bwd = jax.lax.scan(scan_bwd, INF, idx, reverse=True)
+    
+    # Combine and handle edges
+    dist = jnp.minimum(d_fwd, d_bwd)
+    return dist
+
+
+def get_weight(cond, mode='hard', **kwargs):
+    """
+    Get weight based on binary condition `cond`.
+    
+    Args:
+        cond: (T,) array of 0s and 1s.
+        mode: 'hard', 'sigmoid', or 'gaussian'.
+        **kwargs: 
+            - 'softness' (float): Slope for 'sigmoid' mode (default 1.0).
+            - 'sigma' (float): Standard deviation for 'gaussian' mode (default 2.0).
+    
+    Returns:
+        weight: (T,) array of weights in [0, 1] range.
+    """
+    cond = jnp.array(cond, dtype=jnp.float32)
+    
+    if mode == 'hard':
+        # Standard hard switch: 1.0 where cond > 0.5, 0.0 otherwise
+        return (cond > 0.5).astype(jnp.float32)
+    
+    elif mode == 'sigmoid':
+        softness = kwargs.get('softness', 1.0)
+        
+        # 1. SDF Logic (Distance to 0 - Distance to 1)
+        is_true = cond > 0.5
+        d_to_0 = _get_1d_sdf(jnp.logical_not(is_true))  # Dist to background
+        d_to_1 = _get_1d_sdf(is_true)                   # Dist to foreground
+        
+        # Positive inside "True" regions, Negative inside "False" regions
+        sdf = d_to_0 - d_to_1
+        
+        # 2. Apply Sigmoid
+        # Subtracting 0.5 ensures the transition centers exactly on the boundary edge
+        weight = jax.nn.sigmoid(softness * (sdf - 0.5))
+        return weight
+    
+    elif mode == 'gaussian':
+        sigma = kwargs.get('sigma', 2.0)
+        
+        # 1. Create Gaussian Kernel
+        # Radius of 3*sigma captures 99.7% of the curve
+        radius = int(sigma * 3)
+        x = jnp.arange(-radius, radius + 1)
+        kernel = jnp.exp(-x**2 / (2 * sigma**2))
+        kernel = kernel / jnp.sum(kernel)  # Normalize
+        
+        # 2. Convolve the binary condition to blur it
+        weight = jnp.convolve(cond, kernel, mode='same')
+        return weight
+    
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+def soft_if(cond, true_val, false_val, mode='hard', **kwargs):
+    """
+    Blends true_val and false_val based on binary condition `cond`.
+    
+    Args:
+        cond: (T,) array of 0s and 1s.
+        true_val: The value/array to use when cond is True (1).
+        false_val: The value/array to use when cond is False (0).
+        mode: 'hard', 'sigmoid', or 'gaussian'.
+        **kwargs: 
+            - 'softness' (float): Slope for 'sigmoid' mode (default 1.0).
+            - 'sigma' (float): Standard deviation for 'gaussian' mode (default 2.0).
+    
+    Returns:
+        Blended value with same shape as true_val/false_val.
+    """
+    # Ensure inputs are compatible floats for blending
+    true_val = jnp.array(true_val, dtype=jnp.float32)
+    false_val = jnp.array(false_val, dtype=jnp.float32)
+    
+    # Get weight using the shared get_weight function
+    weight = get_weight(cond, mode=mode, **kwargs)
+    
+    # Reshape weight to match value dimensions if necessary (e.g. if vals are (T, D))
+    if weight.ndim < true_val.ndim:
+        weight = weight.reshape(weight.shape + (1,) * (true_val.ndim - weight.ndim))
+
+    # Linear Blending
+    return weight * true_val + (1.0 - weight) * false_val
+
 
 
 

@@ -1,3 +1,15 @@
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=app/\${guide.hint} eval=hand_guide  \  
+
+
+
+-
+
+python -m mayday.blender_merge --mode 3way_teaser 
 
 
 

@@ -225,6 +225,133 @@ def get_info_str(info, B, T):
 
     return info_per_time
 
+def test_guide_hand(diffusion_model: CondGaussianDiffusion, dl, opt, skip=False):
+    model_cfg = diffusion_model.opt
+    viz_off = Pt3dVisualizer(
+        exp_name=opt.expname,
+        save_dir=osp.join(model_cfg.exp_dir, opt.test_folder),
+        mano_models_dir=opt.paths.mano_dir,
+        object_mesh_dir=opt.paths.object_mesh_dir,
+    )
+
+    for b, batch in enumerate(tqdm(dl)):
+        if opt.test_num > 0 and b >= opt.test_num:
+            break
+        b = batch["ind"][0]
+        
+        B, T = batch["condition"].shape[:2]
+
+        # post_file = osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl")
+        # if skip and osp.exists(post_file):
+        #     continue
+
+        batch = model_utils.to_cuda(batch)
+
+        for i in range(2):
+            sample = {}
+            for k, v in batch.items():
+                sample[k] = v[i:i+1]
+            index = f"{sample['demo_id'][0]}_{sample['object_id'][0]}_orig"
+            guide_hand_one_sample(diffusion_model, opt, viz_off, sample, index)
+
+        swap_batch = deepcopy(batch)
+        # just swap out contact label for observation!!! for guidance 
+        swap_batch["contact"] = torch.flip(swap_batch["contact"], dims=[0])
+        if opt.get('vlm', False):
+            swap_batch["vlm_contact"] = torch.flip(swap_batch["vlm_contact"], dims=[0])
+            swap_batch["vlm_vis"] = torch.flip(swap_batch["vlm_vis"], dims=[0])
+
+        for i in range(2):
+            swap_sample = {}
+            for k, v in swap_batch.items():
+                swap_sample[k] = v[i:i+1]
+            index = f"{swap_sample['demo_id'][0]}_{swap_sample['object_id'][0]}_swap"
+            guide_hand_one_sample(diffusion_model, opt, viz_off, swap_sample, index)
+
+    
+def guide_hand_one_sample(diffusion_model: CondGaussianDiffusion, opt, viz_off, sample, index, suffix=""):
+    B, T = sample["condition"].shape[:2]
+    padding_mask = None
+
+    index = f"{index}{suffix}"
+
+    model_cfg = diffusion_model.opt
+    if opt.inner_guidance:
+        guided_object_pred_raw, info = diffusion_model.sample_raw(
+            torch.randn_like(sample["target"]),
+            sample["condition"],
+            padding_mask=padding_mask,
+            guide=opt.inner_guidance,
+            obs=sample,
+            newPoints=sample["newPoints"],
+            hand_raw=sample["hand_raw"],
+            rtn_x_list=True,
+        )
+        save_prediction(
+            diffusion_model.decode_dict(guided_object_pred_raw),
+            index,
+            osp.join(model_cfg.exp_dir, opt.test_folder, "guided", f"{index}.pkl"),
+            wTc=sample["wTc"][0],
+        )
+
+        if opt.vis_x:
+            info_per_time = get_info_str(info["info_inner"][-1], B, T)
+            pred_dict = diffusion_model.decode_dict(guided_object_pred_raw)
+            pred_dict["newMesh"] = sample["newMesh"]
+            vis_one_from_cam_side(
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                output=pred_dict,
+                camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+                name=f"{index}_guided",
+                debug_info=info_per_time,
+            )
+
+    left_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="left")
+    right_mano_model = fncmano_jax.MANOModel.load(Path("assets/mano"), side="right")
+
+    if opt.post_guidance:
+        # directly guide object_pred_raw
+        obs = diffusion_model.get_obs(
+            model_cfg,
+            guide=True, batch=sample, shape=guided_object_pred_raw.shape
+        )
+        post_params = JaxGuidanceParams(**model_cfg.post)
+
+        post_pred_dict, debug_info = do_guidance_optimization(
+            pred_dict=diffusion_model.decode_dict(guided_object_pred_raw),
+            obs=obs,
+            left_mano_model=left_mano_model,
+            right_mano_model=right_mano_model,
+            guidance_mode=opt.guide.hint,
+            phase="post",
+            verbose=True,
+            guidance_params=post_params,
+        )
+        info_per_time = get_info_str(debug_info, B, T)
+        post_object_pred_raw = diffusion_model.encode_dict_to_params(post_pred_dict)
+        pred_dict = diffusion_model.decode_dict(post_object_pred_raw)
+        if opt.vis_x:
+            pred_dict["newMesh"] = sample["newMesh"]
+            vis_one_from_cam_side(
+                diffusion_model,
+                viz_off,
+                model_cfg,
+                step=0,
+                output=pred_dict,
+                camera={"intr": sample["intr"][0], "wTc": sample["wTc"][0]},
+                name=f"{index}_post",
+                debug_info=info_per_time,
+            )
+        save_prediction(
+            post_pred_dict,
+            index,
+            osp.join(model_cfg.exp_dir, opt.test_folder, "post", f"{index}.pkl"),
+            wTc=sample["wTc"][0],
+        )
+
 
 @torch.no_grad()
 def test_guided_generation(diffusion_model: CondGaussianDiffusion, dl, opt, skip=False):
@@ -545,6 +672,23 @@ def main(opt):
             load_obs=True,
         )
         test_guided_generation(diffusion_model, dl, opt, skip=opt.skip)
+    
+    if opt.test_mode == "guide_hand":
+        diffusion_model = build_model_from_ckpt(opt)
+        set_test_cfg(opt, diffusion_model.opt)
+
+        torch.manual_seed(123)
+
+        dl, ds = build_dataloader(
+            opt.testdata,
+            diffusion_model.opt,
+            is_train=False,
+            shuffle=True,
+            batch_size=2,
+            num_workers=1,
+            load_obs=True,
+        )
+        test_guide_hand(diffusion_model, dl, opt, skip=opt.skip)
     elif opt.test_mode == "patch":
         diffusion_model = build_model_from_ckpt(opt)
         set_test_cfg(opt, diffusion_model.opt)

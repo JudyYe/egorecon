@@ -1,0 +1,66 @@
+# @package _global_
+
+defaults:
+  - default.yaml
+
+sample: ddim_long
+
+test_mode: guide_hand
+shelf: true
+
+datasets:
+  window: 150
+  use_cache: true 
+  save_cache: true
+
+  slam: false
+
+guide:
+  hint: hand_guide
+
+inner:
+  use_j2d: false
+  j2d_weight: 0.0
+  use_hand_local: true
+  hand_local_weight: 0.01
+  use_hand_smoothness: true
+  hand_vel_weight: 0.001
+  hand_acc_weight: 0.001
+  use_j3d: false
+  use_contact_obs: true
+  use_static: true
+  static_weight: 0.1
+  use_reproj_com: false
+  use_reproj_cd: false
+  use_reproj_cd_one_way: false
+  use_abs_contact: false
+  use_rel_contact: false
+  use_obj_smoothness: true
+  obj_vel_weight: 0.01
+  obj_acc_weight: 0.01
+  use_delta_wTo: false
+  max_iters: 5
+  lambda_initial: 0.01
+ 
+post:
+  use_j2d: false
+  j2d_weight: 0.0
+  use_hand_smoothness: true
+  hand_acc_weight: 0.001
+  hand_vel_weight: 0.001
+  use_j3d: false
+  use_contact_obs: true
+  use_static: true
+  static_weight: 1.0
+  use_reproj_com: false
+  use_reproj_cd: false
+  use_reproj_cd_one_way: false
+  reproj_weight: 0.0
+  use_abs_contact: true
+  use_rel_contact: true
+  rel_contact_weight: 1.0
+  use_obj_smoothness: true
+  obj_vel_weight: 0.001
+  obj_acc_weight: 0.001
+  use_delta_wTo: true
+  max_iters: 50

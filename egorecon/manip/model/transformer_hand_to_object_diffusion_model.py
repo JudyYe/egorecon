@@ -503,17 +503,30 @@ class CondGaussianDiffusion(nn.Module):
         return x  # BS X T X D
 
     @staticmethod
+    def _get_obs_hand_guide(opt, guide, batch, shape):
+        # what you need:
+        obs = {
+            "newPoints": batch['newPoints'],
+            "contact": batch['contact'],
+        }
+        if opt.get('vlm', False):
+            obs["contact"] = batch['vlm_contact']
+            obs["contact_vis"] = batch['vlm_vis']
+
+        print("obs", obs.keys())
+        return obs
+
+    @staticmethod
     def get_obs(opt, guide, batch, shape):
         obs = {}
+        if opt.guide.hint == "hand_guide":
+            return CondGaussianDiffusion._get_obs_hand_guide(opt, guide, batch, shape)
         if guide:
             if opt.get('shelf', False):
                 mask = batch['mask']  # (T, H, W)
                 H, W = mask.shape[-2:]
                 mask_valid = batch['mask_valid']  # (T,)  # valid == 0 if all mask is 0
                 kP = 100
-                # sample (T, kP) points from mask== 1 region with replacement
-                # TODO 
-                # sample kP points, consider corner case where all mask is 0
                 
                 b, T = shape[:2]
                 device = mask.device
