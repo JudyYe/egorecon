@@ -14,6 +14,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import time
 from functools import partial
 from typing import Literal, cast
+import matplotlib.pyplot as plt
 
 import jax
 import jax_dataclasses as jdc
@@ -673,6 +674,11 @@ def _optimize(
 
     initial_wTo = wTo
 
+    
+    contact_l = get_weight(contact[..., 0], mode='sigmoid')
+    contact_r = get_weight(contact[..., 1], mode='sigmoid')
+    contact_weight = jnp.concatenate([contact_l[..., None], contact_r[..., None]], axis=-1)
+
 
     def do_forward_kinematics_two_hands(
         vals: jaxls.VarValues,
@@ -981,13 +987,12 @@ def _optimize(
     if guidance_params.use_abs_contact:
         # find the first frame where contact is true
         # current_contact =
-
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps)),
             _LeftHandParamsVar(jnp.arange(timesteps)),
             _RightHandParamsVar(jnp.arange(timesteps)),
             target_newPoints[None],
-            target_contact,
+            contact_weight,
             target_contact_vis,
         )
         def abs_contact_cost(
@@ -996,7 +1001,7 @@ def _optimize(
             left_params: _LeftHandParamsVar,
             right_params: _RightHandParamsVar,
             target_newPoints: jax.Array,
-            target_contact: jax.Array,
+            contact_weight: jax.Array,
             target_contact_vis: jax.Array,
         ) -> jax.Array:
             left_posed, right_posed = do_forward_kinematics_two_hands(
@@ -1039,9 +1044,13 @@ def _optimize(
                 jnp.zeros((2, D)) * guidance_params.contact_weight
             )  # (2,)
 
-            cost = jnp.where(
-                target_contact.reshape(2, 1), contact_cost, non_contact_cost
-            )
+            print('contact_cost', contact_cost.shape, non_contact_cost.shape, contact_weight.shape)
+
+            cost = contact_weight.reshape(2, 1) * contact_cost + (1 - contact_weight.reshape(2, 1)) * non_contact_cost  # (2, D)
+            
+            # cost = jnp.where(
+            #     target_contact.reshape(2, 1), contact_cost, non_contact_cost
+            # )
             if target_contact_vis is not None:
                 cost = cost * target_contact_vis.reshape(2, 1)
             return cost.flatten()
@@ -1059,8 +1068,10 @@ def _optimize(
             _LeftHandParamsVar(jnp.arange(1, timesteps)),
             _RightHandParamsVar(jnp.arange(1, timesteps)),
             target_newPoints[None],
-            _ContactVar(jnp.arange(timesteps - 1)),
-            _ContactVar(jnp.arange(1, timesteps)),
+            # _ContactVar(jnp.arange(timesteps - 1)),
+            # _ContactVar(jnp.arange(1, timesteps)),
+            contact_weight[:-1],
+            contact_weight[1:],
         )
         def relative_contact_cost(
             vals: jaxls.VarValues,
@@ -1071,13 +1082,14 @@ def _optimize(
             left_params_next: _LeftHandParamsVar,
             right_params_next: _RightHandParamsVar,
             target_newPoints: jax.Array,
+
             contact_cur: _ContactVar,
             contact_next: _ContactVar,
         ) -> jax.Array:
             wTo_cur = jaxlie.SE3(vals[wTo_cur])
             wTo_next = jaxlie.SE3(vals[wTo_next]) 
-            contact_cur = vals[contact_cur]
-            contact_next = vals[contact_next]
+            # contact_cur = vals[contact_cur]
+            # contact_next = vals[contact_next]
 
             # forward to get joints
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
@@ -1127,11 +1139,12 @@ def _optimize(
             
             contact_cost = guidance_params.rel_contact_weight * dist_prox
 
-            is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
-            no_contact_cost = jnp.ones((2, D)) * 0 * guidance_params.rel_contact_weight  # (2, D)
-            cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
+            # is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
+            is_contact = contact_cur * contact_next
 
-            # is_static = (((contact_cur <= 0.5) & (contact_cur <= 0.5)).sum(-1) >= 2) # (1, 2)
+            no_contact_cost = jnp.ones((2, D)) * 0 * guidance_params.rel_contact_weight  # (2, D)
+            # cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
+            cost = is_contact.reshape(2, 1) * contact_cost 
             # res = wTo_next.inverse() @  wTo_cur
             # res_cost = is_static * dist_residual(guidance_params.rel_contact_weight, res)
 
@@ -1142,14 +1155,17 @@ def _optimize(
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
             _SE3TrajectoryVar(jnp.arange(1, timesteps)),
-            _ContactVar(jnp.arange(timesteps - 1)),
-            _ContactVar(jnp.arange(1, timesteps)),
+            contact_weight[:-1],
+            contact_weight[1:],
+            # _ContactVar(jnp.arange(timesteps - 1)),
+            # _ContactVar(jnp.arange(1, timesteps)),
             target_newPoints[None],
         )
         def static_cost(
             vals: jaxls.VarValues,
             wTo_cur: _SE3TrajectoryVar,
             wTo_next: _SE3TrajectoryVar,
+
             contact_cur: _ContactVar,
             contact_next: _ContactVar,
             target_newPoints: jax.Array,
@@ -1160,17 +1176,21 @@ def _optimize(
             # contact_next = jax.lax.stop_gradient(vals[contact_next])
 
             wTo_next = jaxlie.SE3(vals[wTo_next])
-            contact_cur = vals[contact_cur]
-            contact_next = vals[contact_next]
+            # contact_cur = vals[contact_cur]
+            # contact_next = vals[contact_next]
 
             # current_points = wTo_cur @ target_newPoints
             # next_points = wTo_next @ target_newPoints
 
             # wPoints_diff = (next_points - current_points)
 
-            static_mask = (contact_cur < 0.5) | (contact_next < 0.5)
-            static_mask = static_mask[0] & static_mask[1]
+            static_mask_lr = 1 - (contact_cur * contact_next)  # neither of frames are in contact 
+            static_mask = static_mask_lr[0] * static_mask_lr[1]    # object is static if both hands are free
+
+            # static_mask = (contact_cur < 0.5) | (contact_next < 0.5)
+            # static_mask = static_mask[0] & static_mask[1]
             static_cost = dist_residual(guidance_params.static_weight, wTo_next.inverse() @ wTo_cur)
+            print('static', static_cost.shape, static_mask.shape)
             static_cost = static_cost * static_mask.flatten()
             # static_cost = guidance_params.static_weight * (static_mask * wPoints_diff).flatten()    
             return static_cost
@@ -1942,6 +1962,126 @@ def soft_if(cond, true_val, false_val, mode='hard', **kwargs):
 
 
 
+def visualize_weight(save_dir="outputs/debug_weight"):
+    """
+    Generate contact data and visualize weights for different modes and hyperparameters.
+    
+    Args:
+        save_dir: Directory to save visualization plots.
+    """
+    # Create save directory
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+    
+    # Generate contact data: (120,) with 0-4 contact switches
+    T = 120
+    num_switches = onp.random.randint(0, 5)  # 0-4 switches
+    
+    # Generate random contact pattern
+    cond = onp.zeros(T, dtype=onp.float32)
+    if num_switches > 0:
+        # Randomly place transition points (switches)
+        # Each switch is a transition from contact to non-contact or vice versa
+        switch_points = sorted(onp.random.choice(T - 1, size=num_switches, replace=False) + 1)
+        switch_points = [0] + switch_points + [T]  # Add boundaries
+        
+        # Create alternating contact/non-contact regions
+        in_contact = onp.random.rand() > 0.5  # Random starting state
+        for i in range(len(switch_points) - 1):
+            start = switch_points[i]
+            end = switch_points[i + 1]
+            if in_contact:
+                cond[start:end] = 1.0
+            in_contact = not in_contact  # Toggle at each switch point
+    else:
+        # No switches - either all contact or no contact
+        if onp.random.rand() > 0.5:
+            cond[:] = 1.0
+    
+    # Convert to JAX array
+    cond_jax = jnp.array(cond)
+    
+    # Test different modes and hyperparameters
+    modes = ['hard', 'sigmoid', 'gaussian']
+    sigmoid_softness_candidates = [0.5, 1.0, 2.0, 5.0]
+    gaussian_sigma_candidates = [1.0, 2.0, 3.0, 5.0]
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(len(modes), 1, figsize=(12, 10))
+    if len(modes) == 1:
+        axes = [axes]
+    
+    # Plot original condition
+    for ax in axes:
+        ax.plot(cond, 'k-', linewidth=2, label='Original Condition', alpha=0.7)
+        ax.fill_between(range(T), 0, cond, alpha=0.3, color='gray')
+        ax.set_ylabel('Contact')
+        ax.set_ylim(-0.1, 1.1)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    
+    # Plot weights for each mode
+    for mode_idx, mode in enumerate(modes):
+        ax = axes[mode_idx]
+        ax.set_title(f'Mode: {mode}')
+        
+        if mode == 'hard':
+            weight = get_weight(cond_jax, mode=mode)
+            ax.plot(onp.array(weight), 'b-', linewidth=2, label='Hard', alpha=0.8)
+        
+        elif mode == 'sigmoid':
+            for softness in sigmoid_softness_candidates:
+                weight = get_weight(cond_jax, mode=mode, softness=softness)
+                ax.plot(onp.array(weight), linewidth=1.5, label=f'Sigmoid (softness={softness})', alpha=0.8)
+        
+        elif mode == 'gaussian':
+            for sigma in gaussian_sigma_candidates:
+                weight = get_weight(cond_jax, mode=mode, sigma=sigma)
+                ax.plot(onp.array(weight), linewidth=1.5, label=f'Gaussian (σ={sigma})', alpha=0.8)
+        
+        ax.legend(loc='upper right', fontsize=8)
+        ax.set_xlabel('Time Step')
+    
+    plt.tight_layout()
+    plt.savefig(save_path / 'weight_comparison.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    # Create individual plots for each mode with hyperparameter comparison
+    for mode in modes:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        
+        # Plot original condition
+        ax.plot(cond, 'k-', linewidth=2, label='Original Condition', alpha=0.7)
+        ax.fill_between(range(T), 0, cond, alpha=0.3, color='gray')
+        
+        if mode == 'hard':
+            weight = get_weight(cond_jax, mode=mode)
+            ax.plot(onp.array(weight), 'b-', linewidth=2, label='Hard', alpha=0.8)
+        
+        elif mode == 'sigmoid':
+            for softness in sigmoid_softness_candidates:
+                weight = get_weight(cond_jax, mode=mode, softness=softness)
+                ax.plot(onp.array(weight), linewidth=2, label=f'Softness={softness}', alpha=0.8)
+        
+        elif mode == 'gaussian':
+            for sigma in gaussian_sigma_candidates:
+                weight = get_weight(cond_jax, mode=mode, sigma=sigma)
+                ax.plot(onp.array(weight), linewidth=2, label=f'σ={sigma}', alpha=0.8)
+        
+        ax.set_title(f'Weight Visualization: {mode.capitalize()} Mode')
+        ax.set_xlabel('Time Step')
+        ax.set_ylabel('Weight')
+        ax.set_ylim(-0.1, 1.1)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(save_path / f'weight_{mode}.png', dpi=150, bbox_inches='tight')
+        plt.close()
+    
+    print(f"Visualizations saved to {save_path}")
+    print(f"Generated contact pattern with {num_switches} switches")
+
 
 if __name__ == "__main__":
-    Fire(test_optimization)
+    # Fire(test_optimization)
+    Fire(visualize_weight)

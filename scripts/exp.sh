@@ -3,7 +3,7 @@ python -m egorecon.training.test_hoi  -m  \
   ckpt_index=model-20.pt \
   testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
   datasets.save_cache=false datasets.use_cache=false  \
-  test_folder=app/\${guide.hint} eval=hand_guide  \  
+  test_folder=app/\${guide.hint}_sigmoid eval=hand_guide  \  
 
 
 
