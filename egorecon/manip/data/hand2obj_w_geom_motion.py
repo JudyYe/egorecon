@@ -853,6 +853,35 @@ class HandToObjectDataset(Dataset):
                     ],
                     dim=-1,
                 )
+            elif hand_rep == "joint_theta_dot":
+                left_hand_joints = to_tensor(window["left_hand"]).reshape(
+                    self.window_size, 21 * 3
+                )
+                right_hand_joints = to_tensor(window["right_hand"]).reshape(
+                    self.window_size, 21 * 3
+                )
+                left_hand_theta = to_tensor(
+                    _legacy_to_hand_param(window["left_hand_params"])
+                )
+                right_hand_theta = to_tensor(
+                    _legacy_to_hand_param(window["right_hand_params"])
+                )
+                left_hand_dot = left_hand_joints[:-1] - left_hand_joints[1:]
+                left_hand_dot = torch.cat([torch.zeros(1, left_hand_dot.shape[1]), left_hand_dot], dim=0)
+                right_hand_dot = right_hand_joints[:-1] - right_hand_joints[1:]
+                right_hand_dot = torch.cat([torch.zeros(1, right_hand_dot.shape[1]), right_hand_dot], dim=0)
+
+                hand_rep = torch.cat(
+                    [
+                        left_hand_joints,
+                        left_hand_theta,
+                        left_hand_dot,
+                        right_hand_joints,
+                        right_hand_theta,
+                        right_hand_dot,
+                    ],
+                    dim=-1,
+                )                
             else:
                 raise ValueError(f"Invalid hand representation: {hand_rep}")
             return hand_rep

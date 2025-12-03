@@ -37,6 +37,11 @@ def get_norm_stats(metafile, opt, field='target'):
         left_std = np.concatenate([metadata["left_hand_std"], metadata["left_hand_theta_std"]], axis=-1)
         right_mean = np.concatenate([metadata["right_hand_mean"], metadata["right_hand_theta_mean"]], axis=-1)  
         right_std = np.concatenate([metadata["right_hand_std"], metadata["right_hand_theta_std"]], axis=-1)
+    elif hand_rep == 'joint_theta_dot':
+        left_mean = np.concatenate([metadata["left_hand_mean"], metadata["left_hand_theta_mean"], metadata["left_hand_mean"]], axis=-1)
+        right_mean = np.concatenate([metadata["right_hand_mean"], metadata["right_hand_theta_mean"], metadata["right_hand_mean"]], axis=-1)
+        left_std = np.concatenate([metadata["left_hand_std"], metadata["left_hand_theta_std"], metadata["left_hand_std"]], axis=-1)
+        right_std = np.concatenate([metadata["right_hand_std"], metadata["right_hand_theta_std"], metadata["right_hand_std"]], axis=-1)
     else:
         raise NotImplementedError(f"Invalid hand representation: {hand_rep}")
     hand_mean = np.concatenate([left_mean, right_mean], axis=-1)

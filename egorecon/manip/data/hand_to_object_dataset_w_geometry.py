@@ -26,7 +26,6 @@ from ...visualization.pt3d_visualizer import Pt3dVisualizer
 from pytorch3d.ops import sample_points_from_meshes
 from bps_torch.bps import bps_torch
 from bps_torch.tools import sample_sphere_uniform
-from bps_torch.tools import sample_uniform_cylinder
 
 
 

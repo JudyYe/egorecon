@@ -20,12 +20,42 @@ guide by key-frame object pose?
 
 
 GOAL: 
-[] optimize memory usage of guidance optimization: under 40G? 
-[] soft contact for trainig to
+[x] optimize memory usage of guidance optimization: under 40G? 
+[x] soft contact for trainig to
+[x] motion feature
+[] use HaPTIC
 
 
 
 
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=first_frame_hoi/soft_contact \
+  experiment=noisy_hand   condition.first_wTo=false  \
+  traindata=hotclip_train   \
+  dyn_only=true \
+  condition.bps=2   \
+  general.wandb=true   \
+  train.warmup=0 loss.w_consistency=1 loss.w_smoothness=10 loss.w_contact=100 loss.w_static=100 \
+  general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
+  ckpt=outputs/first_frame/dynTrue/weights/model-20.pt \
+  +engine=move
+
+
+
+python -m egorecon.training.trainer_hoi  -m    \
+  expname=dev/tmp \
+  experiment=noisy_hand   condition.first_wTo=false  \
+  traindata=hotclip_train   \
+  dyn_only=true \
+  condition.bps=2   \
+  general.wandb=true   \
+  train.warmup=0 loss.w_consistency=1 loss.w_smoothness=10 loss.w_contact=100 loss.w_static=100 \
+  general.vis_every=5000 general.eval_every=\${general.vis_every} general.save_and_sample_every=\${general.vis_every} \
+  ckpt=outputs/first_frame/dynTrue/weights/model-20.pt \
+  soft_contact=true \
+
+
+-
 python -m egorecon.training.test_hoi  -m  \
   expname=ready/ours \
   ckpt_index=model-20.pt \

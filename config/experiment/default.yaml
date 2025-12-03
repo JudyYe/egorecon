@@ -9,6 +9,7 @@ general:
   eval_every: 20000
   save_and_sample_every: 20000
 
+soft_contact: true
 
 train:
   lr: 2e-4

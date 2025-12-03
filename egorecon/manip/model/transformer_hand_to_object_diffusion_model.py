@@ -823,10 +823,17 @@ class CondGaussianDiffusion(nn.Module):
         x0_pred_raw = self.denormalize_data(x0_pred)
         pred_dict = self.decode_dict(x0_pred_raw)
 
-        # add other losses
+        # add other auxiliary losses
         # consistency 
+        if self.opt.get("soft_contact", False):
+            gt_contact = self.compute_contact_soft(gt_contact)
+            pred_contact = pred_dict["contact"].clamp(0, 1).detach()
+        else:
+            gt_contact = (gt_contact > 0.5).float()
+            pred_contact = (pred_dict["contact"] > 0.5).float()
+
         is_warmup = training_info.get('step', 0) < self.opt.train.warmup
-        if not is_warmup and self.opt.hand_rep == "joint_theta" and self.opt.loss.w_consistency > 0:
+        if not is_warmup and "joint_theta" in self.opt.hand_rep and self.opt.loss.w_consistency > 0:
             _, (left_joints_fk, right_joints_fk) = self.decode_hand_mesh(
                 pred_dict['left_hand_params'], pred_dict['right_hand_params'], hand_rep='theta', rtn_joints=True)
             left_joints, right_joints = pred_dict['left_joints'], pred_dict['right_joints']
@@ -852,7 +859,6 @@ class CondGaussianDiffusion(nn.Module):
 
             dist, idx, wNn = pt3d_ops.knn_points(wHands, wPoints, return_nn=True)  # (B*T, 2*J, 3)
             min_dist = dist.reshape(B, T, 2, J_2 // 2)
-            pred_contact = (pred_dict["contact"] > 0.5).float()  # (B, T, 2)
             contact_loss = min_dist * pred_contact[..., None]
             contact_loss = contact_loss.mean()
 
@@ -866,8 +872,8 @@ class CondGaussianDiffusion(nn.Module):
             wPoints_diff = wPoints_next - wPoints_cur  # (B, T-1, P, 3)
             static_loss = (wPoints_diff**2).norm(dim=-1).mean()  # (B, T-1)
 
-            static_mask = (pred_contact[:, 1:] < 0.5) & (pred_contact[:, :-1] < 0.5) 
-            static_mask = static_mask[..., 0] & static_mask[..., 1]  # (B, T-1)
+            static_mask = 1 - (pred_contact[:, 1:] * pred_contact[:, :-1]) 
+            static_mask = static_mask[..., 0] * static_mask[..., 1]  # (B, T-1)
             static_loss = static_loss * static_mask.float()  
             static_loss = static_loss.mean()
             loss += self.opt.loss.w_static * static_loss
@@ -875,9 +881,6 @@ class CondGaussianDiffusion(nn.Module):
 
         if not is_warmup and self.opt.loss.w_rel_contact > 0:
             assert self.opt.loss.w_contact > 0, "w_rel_contact requires w_contact"
-            # relative contact
-            # wNn_next: where is the nearest point on the object moves to in the next step
-            # print("TODO careful", idx.shape, wPoints.shape)
             wNn_next = torch.gather(wPoints.reshape(B, T, -1, 3)[:, 1:], 2, idx.reshape(B, T, -1, 1)[:, :-1])  # (B, T-1, J, 3)
 
             p_near = (wNn.reshape(B * T, J_2, 3) - wHands).reshape(B, T, J_2, 3)[:, :-1]
@@ -892,7 +895,7 @@ class CondGaussianDiffusion(nn.Module):
 
             dist_prox = torch.norm(res, dim=-1) # (B, T-1, J)
 
-            contact_mask = ((gt_contact[:, :-1] > 0) & (gt_contact[:, 1:] > 0)).float()
+            contact_mask =  pred_contact[:, :-1] * pred_contact[:, 1:]  #  ((gt_contact[:, :-1] > 0) & (gt_contact[:, 1:] > 0)).float()
             rel_contact_loss = dist_prox.reshape(B, T-1, 2, J_2//2) * contact_mask[..., None]
             rel_contact_loss = rel_contact_loss.mean()
 
@@ -1249,6 +1252,21 @@ class CondGaussianDiffusion(nn.Module):
             left_params = torch.cat([left_joints, left_hand_params], dim=-1)
             right_params = torch.cat([right_joints, right_hand_params], dim=-1)
             hand_rep = torch.cat([left_params, right_params], dim=-1)
+        elif self.opt.hand_rep == "joint_theta_dot":
+            if left_joints is None:
+                _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand_params, side='left')
+                left_joints = left_joints.reshape(B, T, 21*3)
+            if right_joints is None:
+                _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand_params, side='right')
+                right_joints = right_joints.reshape(B, T, 21*3)
+            left_joint_dot = left_joints[:, :-1] - left_joints[:, 1:]
+            left_joint_dot = torch.cat([torch.zeros_like(left_joint_dot[:, :1]), left_joint_dot], dim=1)
+            right_joint_dot = right_joints[:, :-1] - right_joints[:, 1:]
+            right_joint_dot = torch.cat([torch.zeros_like(right_joint_dot[:, :1]), right_joint_dot], dim=1)
+            
+            left_params = torch.cat([left_joints, left_hand_params, left_joint_dot], dim=-1)
+            right_params = torch.cat([right_joints, right_hand_params, right_joint_dot], dim=-1)
+            hand_rep = torch.cat([left_params, right_params], dim=-1)
 
         x = [wTo]
         hand_io = self.opt.get("hand", "cond")
@@ -1309,6 +1327,12 @@ class CondGaussianDiffusion(nn.Module):
                 left_hand_params_over, right_hand_params_over = torch.split(hand_rep_over, [hand_dim // 2, hand_dim // 2], dim=-1)  # [B, T, 92] each
                 left_joints, left_hand_params = torch.split(left_hand_params_over, [21*3, (3+3+15+10)], dim=-1)
                 right_joints, right_hand_params = torch.split(right_hand_params_over, [21*3, (3+3+15+10)], dim=-1)
+            elif hand_rep == "joint_theta_dot":
+                hand_dim = 21 * 3 * 2 + (3 + 3 + 15 + 10) * 2 + 21 * 3 * 2
+                hand_rep_over = target_raw[..., current_pos:current_pos + hand_dim]  # [B, T, 184]
+                left_hand_params_over, right_hand_params_over = torch.split(hand_rep_over, [hand_dim // 2, hand_dim // 2], dim=-1)  # [B, T, 92] each
+                left_joints, left_hand_params, _ = torch.split(left_hand_params_over, [21*3, (3+3+15+10), 21*3], dim=-1)
+                right_joints, right_hand_params, _ = torch.split(right_hand_params_over, [21*3, (3+3+15+10), 21*3], dim=-1)
             current_pos += hand_dim
         else:
             left_joints = None
@@ -1344,14 +1368,14 @@ class CondGaussianDiffusion(nn.Module):
                 left_joints = left_hand
             elif hand_rep in ["theta", ]:
                 _, _, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand, side='left')
-            elif hand_rep == "joint_theta":
+            elif hand_rep == "joint_theta" or hand_rep == "joint_theta_dot":
                 left_joints = left_hand[..., :21*3]
         if right_hand is not None:
             if hand_rep == "joint":
                 right_joints = right_hand
             elif hand_rep in ["theta", ]:
                 _, _, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand, side='right')
-            elif hand_rep == "joint_theta":
+            elif hand_rep == "joint_theta" or hand_rep == "joint_theta_dot":
                 right_joints = right_hand[..., :21*3]
 
         B, T, J, _ = left_joints.shape
@@ -1376,7 +1400,7 @@ class CondGaussianDiffusion(nn.Module):
                 verts, faces, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_hand.reshape(flat_dim, D), side='left')
                 left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
                 left_joints = left_joints.reshape(*pref_shape, 21*3)
-            elif hand_rep == "joint_theta":
+            elif hand_rep == "joint_theta" or hand_rep == "joint_theta_dot":
                 left_theta = left_hand[..., 21*3:]
                 verts, faces, left_joints = self.hand_wrapper.hand_para2verts_faces_joints(left_theta.reshape(flat_dim, D), side='left')
                 left_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
@@ -1392,7 +1416,7 @@ class CondGaussianDiffusion(nn.Module):
                 verts, faces, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_hand.reshape(flat_dim, D), side='right')
                 right_joints = right_joints.reshape(*pref_shape, 21*3)
                 right_hand_meshes = Meshes(verts=verts, faces=faces).to(device)
-            elif hand_rep == "joint_theta":
+            elif hand_rep == "joint_theta" or hand_rep == "joint_theta_dot":
                 right_theta = right_hand[..., 21*3:]
                 verts, faces, right_joints = self.hand_wrapper.hand_para2verts_faces_joints(right_theta.reshape(flat_dim, D), side='right')
                 right_joints = right_joints.reshape(*pref_shape, 21*3)
@@ -1404,6 +1428,63 @@ class CondGaussianDiffusion(nn.Module):
             return (left_hand_meshes, right_hand_meshes), (left_joints, right_joints)
         return (left_hand_meshes, right_hand_meshes)
 
+    @staticmethod
+    def compute_contact_soft(contact, mode="gaussian", **kwargs):
+        """
+        Get weight based on binary condition `contact` (similar to get_weight in JAX).
+        
+        Args:
+            contact: (..., T) tensor of 0s and 1s. Can have batch dimensions before T.
+            mode: 'hard', 'sigmoid', or 'gaussian'.
+            **kwargs: 
+                - 'softness' (float): Slope for 'sigmoid' mode (default 1.0).
+                - 'sigma' (float): Standard deviation for 'gaussian' mode (default 2.0).
+        
+        Returns:
+            weight: (..., T) tensor of weights in [0, 1] range, same shape as input.
+        """
+        # Ensure contact is a float tensor
+        if not isinstance(contact, torch.Tensor):
+            contact = torch.as_tensor(contact, dtype=torch.float32)
+        else:
+            contact = contact.float()
+        
+        # Handle batch dimensions - work on last dimension (time dimension)
+        original_shape = contact.shape
+        contact_flat = contact.reshape(-1, contact.shape[-1])  # (..., T) -> (N, T)
+        
+        if mode == 'hard':
+            # Standard hard switch: 1.0 where contact > 0.5, 0.0 otherwise
+            weight_flat = (contact_flat > 0.5).float()
+        
+        elif mode == 'sigmoid':
+            raise NotImplementedError("Sigmoid mode is not implemented")
+        elif mode == 'gaussian':
+            sigma = kwargs.get('sigma', 2.0)
+            
+            # 1. Create Gaussian Kernel
+            # Radius of 3*sigma captures 99.7% of the curve
+            radius = int(sigma * 3)
+            x = torch.arange(-radius, radius + 1, dtype=torch.float32, device=contact.device)
+            kernel = torch.exp(-x**2 / (2 * sigma**2))
+            kernel = kernel / kernel.sum()  # Normalize
+            
+            # 2. Convolve the binary condition to blur it
+            # Reshape for conv1d: (N, 1, T) for batch processing
+            contact_conv = contact_flat.unsqueeze(1)  # (N, 1, T)
+            kernel_conv = kernel.view(1, 1, -1)  # (1, 1, kernel_size)
+            
+            # Apply padding for 'same' mode
+            padding = kernel.shape[0] // 2
+            weight_flat = F.conv1d(contact_conv, kernel_conv, padding=padding).squeeze(1)  # (N, T)
+        
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+        
+        # Reshape back to original shape
+        weight = weight_flat.reshape(original_shape)
+        return weight
+   
 
 def quadratic_ts() -> np.ndarray:
     """DDIM sampling schedule."""
@@ -1412,3 +1493,135 @@ def quadratic_ts() -> np.ndarray:
     x = np.arange(end_step, int(np.sqrt(start_step))) ** 2
     x[-1] = start_step
     return x[::-1]
+
+
+def test_compute_contact_soft(save_dir="outputs/test_contact_soft"):
+    """Test function to visualize contact weight softening.
+    
+    Creates plots showing how different modes ('hard', 'gaussian') affect
+    the contact weights over time.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+    
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    
+    # Create a test contact sequence: binary pattern with some transitions
+    T = 120
+    # Example: contact is True from frames 10-20 and 30-40
+    contact_hard = torch.zeros(T)
+    contact_hard[10:21] = 1.0  # First contact period
+    contact_hard[30:41] = 1.0  # Second contact period
+    
+    # Test with batch dimension
+    B = 2
+    contact_batch = contact_hard.unsqueeze(0).repeat(B, 1)  # (B, T)
+    
+    # Test different modes
+    modes = ['hard', 'gaussian']
+    
+    fig, axes = plt.subplots(len(modes) + 1, 1, figsize=(12, 3 * (len(modes) + 1)))
+    axes = axes.flatten()
+    
+    # Plot original contact
+    ax = axes[0]
+    ax.plot(contact_hard.numpy(), 'k-', linewidth=2, label='Original (binary)')
+    ax.set_title('Original Contact Signal (Binary)')
+    ax.set_xlabel('Timestep')
+    ax.set_ylabel('Contact (0 or 1)')
+    ax.set_ylim(-0.1, 1.1)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    
+    # Plot each mode
+    for idx, mode in enumerate(modes):
+        ax = axes[idx + 1]
+        
+        if mode == 'gaussian':
+            # Test different sigma values
+            sigmas = [1.0, 2.0, 3.0]
+            for sigma in sigmas:
+                weight = CondGaussianDiffusion.compute_contact_soft(
+                    contact_batch, mode=mode, sigma=sigma
+                )
+                # Plot first batch element
+                ax.plot(weight[0].numpy(), label=f'σ={sigma}', linewidth=2)
+        else:
+            weight = CondGaussianDiffusion.compute_contact_soft(
+                contact_batch, mode=mode
+            )
+            ax.plot(weight[0].numpy(), label=mode, linewidth=2)
+        
+        ax.plot(contact_hard.numpy(), 'k--', alpha=0.3, label='Original', linewidth=1)
+        ax.set_title(f'Contact Weight (mode={mode})')
+        ax.set_xlabel('Timestep')
+        ax.set_ylabel('Weight [0, 1]')
+        ax.set_ylim(-0.1, 1.1)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    
+    plt.tight_layout()
+    save_path = Path(save_dir) / "contact_soft_weights.png"
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved plot to {save_path}")
+    
+    # Also test with different patterns
+    print("\nTesting different contact patterns...")
+    
+    patterns = {
+        'single_contact': (torch.zeros(T), 15, 25),  # Single contact period
+        'frequent_switching': (torch.zeros(T), None, None),  # Frequent on/off
+        'smooth_transition': (torch.zeros(T), None, None),
+    }
+    
+    # Create frequent switching pattern
+    patterns['frequent_switching'] = (torch.tensor([1 if i % 10 < 5 else 0 for i in range(T)], dtype=torch.float32), None, None)
+    
+    # Create smooth transition pattern (gradual)
+    smooth_pattern = torch.zeros(T)
+    smooth_pattern[10:20] = torch.linspace(0, 1, 10)
+    smooth_pattern[20:30] = 1.0
+    smooth_pattern[30:40] = torch.linspace(1, 0, 10)
+    patterns['smooth_transition'] = (smooth_pattern, None, None)
+    
+    # Fix single_contact pattern
+    single_contact = torch.zeros(T)
+    single_contact[15:25] = 1.0
+    patterns['single_contact'] = (single_contact, None, None)
+    
+    fig2, axes2 = plt.subplots(len(patterns), len(modes), figsize=(6 * len(modes), 3 * len(patterns)))
+    if len(patterns) == 1:
+        axes2 = axes2.reshape(1, -1)
+    
+    for pattern_idx, (pattern_name, (pattern, _, _)) in enumerate(patterns.items()):
+        for mode_idx, mode in enumerate(modes):
+            ax = axes2[pattern_idx, mode_idx]
+            
+            weight = CondGaussianDiffusion.compute_contact_soft(
+                pattern.unsqueeze(0), mode=mode, sigma=2.0 if mode == 'gaussian' else None
+            )
+            
+            ax.plot(pattern.numpy(), 'k--', alpha=0.5, label='Original', linewidth=1)
+            ax.plot(weight[0].numpy(), linewidth=2, label=f'{mode}')
+            ax.set_title(f'{pattern_name} - {mode}')
+            ax.set_xlabel('Timestep')
+            ax.set_ylabel('Weight')
+            ax.set_ylim(-0.1, 1.1)
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+    
+    plt.tight_layout()
+    save_path2 = Path(save_dir) / "contact_patterns.png"
+    plt.savefig(save_path2, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Saved pattern plots to {save_path2}")
+    
+    print("\nTest completed successfully!")
+
+
+if __name__ == "__main__":
+    from fire import Fire
+    Fire(test_compute_contact_soft)

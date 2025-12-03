@@ -12,6 +12,8 @@ def build_model(opt) -> CondGaussianDiffusion:
         hand_rep_dim = 21 * 3 * 2  # (2 X J X 3)
     elif hand_rep == 'joint_theta':
         hand_rep_dim = 21 * 3 * 2 + (3 + 3 + 15 + 10) * 2  # (2 X J X 3 + 2 X (3 + 3 + 15 + 10))
+    elif hand_rep == 'joint_theta_dot':
+        hand_rep_dim = 21 * 3 * 2 + (3 + 3 + 15 + 10) * 2 + 21 * 3 * 2  # (2 X J X 3 + 2 X (3 + 3 + 15 + 10) + 2 X J X 3)
     else:
         raise ValueError(f"Invalid hand representation: {hand_rep}")
 
