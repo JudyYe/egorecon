@@ -256,6 +256,10 @@ def test_guide_hand(diffusion_model: CondGaussianDiffusion, dl, opt, skip=False)
 
         swap_batch = deepcopy(batch)
         # just swap out contact label for observation!!! for guidance 
+        # if opt.guide.swap_hand:
+        #     # also swap hand params
+        #     swap_batch["left_hand_params"] = torch.flip(swap_batch["left_hand_params"], dims=[0])
+        #     swap_batch["right_hand_params"] = torch.flip(swap_batch["right_hand_params"], dims=[0])
         swap_batch["contact"] = torch.flip(swap_batch["contact"], dims=[0])
         if opt.get('vlm', False):
             swap_batch["vlm_contact"] = torch.flip(swap_batch["vlm_contact"], dims=[0])
@@ -276,6 +280,15 @@ def guide_hand_one_sample(diffusion_model: CondGaussianDiffusion, opt, viz_off, 
     index = f"{index}{suffix}"
 
     model_cfg = diffusion_model.opt
+
+    target_point_num = opt.guide.num_target_points
+    if target_point_num is not None:
+        # randomly sample target_point_num points from batch['newPoints']
+        inds = torch.randperm(sample["newPoints"].shape[1])[:target_point_num]
+        target_points = sample["newPoints"][:, inds, :]  # (B, target_point_num, 3)
+        sample["newPoints"] = target_points
+    else:
+        target_points = sample["newPoints"]  # (B, 5000, 3)
     if opt.inner_guidance:
         guided_object_pred_raw, info = diffusion_model.sample_raw(
             torch.randn_like(sample["target"]),
@@ -283,7 +296,7 @@ def guide_hand_one_sample(diffusion_model: CondGaussianDiffusion, opt, viz_off, 
             padding_mask=padding_mask,
             guide=opt.inner_guidance,
             obs=sample,
-            newPoints=sample["newPoints"],
+            newPoints=target_points,
             hand_raw=sample["hand_raw"],
             rtn_x_list=True,
         )
@@ -631,7 +644,7 @@ def aggregate_prediction(opt):
 def set_test_cfg(opt, model_cfg):
     # resolve model_cfg first
     OmegaConf.resolve(model_cfg)
-    model_cfg.guide.hint = opt.guide.hint
+    model_cfg.guide = opt.guide
     model_cfg.sample = opt.sample
     model_cfg.post_guidance = opt.post_guidance
 

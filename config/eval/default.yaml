@@ -26,6 +26,12 @@ test_num: 100
 
 shelf: true
 
+guide:
+  use_contact_soft: true
+  use_contact_self: true
+  num_target_points: -1
+  contact_pair: false
+
 
 inner:
   use_j2d: true
@@ -46,6 +52,9 @@ inner:
   use_delta_wTo: false
   max_iters: 5
   lambda_initial: 0.01
+  use_contact_soft: ${guide.use_contact_soft}
+  use_contact_self: ${guide.use_contact_self}
+  contact_pair: ${guide.contact_pair}
  
 post:
   use_j2d: true
@@ -66,3 +75,6 @@ post:
   use_obj_smoothness: true
   use_delta_wTo: true
   max_iters: 50
+  use_contact_soft: ${guide.use_contact_soft}
+  use_contact_self: ${guide.use_contact_self}
+  contact_pair: ${guide.contact_pair}

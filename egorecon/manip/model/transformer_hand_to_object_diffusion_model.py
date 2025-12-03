@@ -447,6 +447,7 @@ class CondGaussianDiffusion(nn.Module):
             pred_dict = x_dict
         else:
             phase = "inner"
+            print(self.opt.inner)
             inner_params = JaxGuidanceParams(**self.opt.inner)
 
             pred_dict, info = do_guidance_optimization(
@@ -611,8 +612,15 @@ class CondGaussianDiffusion(nn.Module):
             j2d = project(batch['wTc'], batch['intr'], None, None, wPoints=batch['hand_raw'].reshape(b, T, -1, 3), ndc=ndc)
             j2d_vis = ((j2d <= 1) & (j2d >= -1)).all(dim=-1)  # (B, T, J_2)
 
+            target_point_num = opt.guide.num_target_points
+            if target_point_num is not None:
+                # randomly sample target_point_num points from batch['newPoints']
+                inds = torch.randperm(batch['newPoints'].shape[1])[:target_point_num]
+                target_points = batch['newPoints'][:, inds, :]  # (B, target_point_num, 3)
+            else:
+                target_points = batch['newPoints']  # (B, 5000, 3)
             obs = {
-                "newPoints": batch['newPoints'],
+                "newPoints": target_points,
                 "wTc": se3_to_wxyz_xyz(batch['wTc']),
                 "intr": batch['intr'],
                 "x2d": x2d,

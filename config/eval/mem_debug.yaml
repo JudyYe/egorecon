@@ -15,6 +15,8 @@ datasets:
 
   slam: false
 
+post_guidance: true
+inner_guidance: true
 guide:
   hint: hand_guide
   use_contact_soft: true

@@ -12,6 +12,7 @@ import pickle
 # Need to play nice with PyTorch!
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import time
+import subprocess
 from functools import partial
 from typing import Literal, cast
 import matplotlib.pyplot as plt
@@ -32,6 +33,62 @@ from egorecon.visualization.pt3d_visualizer import Pt3dVisualizer
 from egorecon.visualization.rerun_visualizer import RerunVisualizer
 import jaxlie
 from . import fncmano_jax
+
+
+def get_gpu_memory_nvidia_smi(device_index: int = None) -> dict:
+    """Get actual GPU memory usage from nvidia-smi (same as nvidia-smi command).
+    
+    Args:
+        device_index: GPU device index (0, 1, etc.). If None, uses CUDA_VISIBLE_DEVICES.
+    
+    Returns:
+        dict with keys: 'used_mb', 'total_mb', 'utilization_percent'
+    """
+    try:
+        # Get device index from torch if not provided
+        if device_index is None:
+            if torch.cuda.is_available():
+                device_index = torch.cuda.current_device()
+            else:
+                return {'used_mb': 0, 'total_mb': 0, 'utilization_percent': 0}
+        
+        # Query nvidia-smi
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,memory.used,memory.total,utilization.gpu', 
+             '--format=csv,nounits,noheader'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # Parse output
+        lines = result.stdout.strip().split('\n')
+        for line in lines:
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 4 and int(parts[0]) == device_index:
+                used_mb = float(parts[1])
+                total_mb = float(parts[2])
+                utilization = float(parts[3])
+                return {
+                    'used_mb': used_mb,
+                    'total_mb': total_mb,
+                    'utilization_percent': utilization
+                }
+        
+        # If device not found, return first GPU
+        if lines:
+            parts = [p.strip() for p in lines[0].split(',')]
+            if len(parts) >= 4:
+                return {
+                    'used_mb': float(parts[1]),
+                    'total_mb': float(parts[2]),
+                    'utilization_percent': float(parts[3])
+                }
+        
+        return {'used_mb': 0, 'total_mb': 0, 'utilization_percent': 0}
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError, IndexError) as e:
+        # Fallback if nvidia-smi not available or fails
+        return {'used_mb': 0, 'total_mb': 0, 'utilization_percent': 0, 'error': str(e)}
 
 ndc = True
 
@@ -106,6 +163,10 @@ class JaxGuidanceParams:
     kp2d_weight: float = 1.0
 
     use_reproj_com: jdc.Static[bool] = False
+
+    use_contact_soft: jdc.Static[bool] = True
+    use_contact_self: jdc.Static[bool] = True
+    contact_pair: jdc.Static[bool] = False
 
     use_abs_contact: jdc.Static[bool] = True
     use_rel_contact: jdc.Static[bool] = True
@@ -527,6 +588,7 @@ def do_guidance_optimization(
         "wTo",
         "wTo_vis",
     ]
+    print('newPoints', obs['newPoints'].shape)
     for key in keep_keys:
         if key in obs:
             obs_dict["target_" + key] = cast(jax.Array, obs[key].numpy(force=True))
@@ -544,6 +606,13 @@ def do_guidance_optimization(
         verbose=verbose,
     )
 
+    # Check GPU memory right after optimization (before cleanup/conversions)
+    # This captures peak memory usage during optimization
+    gpu_mem = None
+    if device.type == "cuda":
+        device_index = device.index if device.index is not None else 0
+        gpu_mem = get_gpu_memory_nvidia_smi(device_index=device_index)
+    
     # Convert debug_info JAX arrays to Python floats (outside traced context)
     # Handle batch dimension from vmap
     debug_info_converted = {}
@@ -574,7 +643,18 @@ def do_guidance_optimization(
         "contact": contact,
     }
 
-    print(f"SE3 trajectory optimization finished in {time.time() - start_time}sec")
+    elapsed_time = time.time() - start_time
+    print(f"SE3 trajectory optimization finished in {elapsed_time:.3f}sec")
+
+    # Log GPU memory usage (actual GPU memory from nvidia-smi, includes JAX + PyTorch)
+    if device.type == "cuda" and gpu_mem is not None:
+        # Also log PyTorch's view for comparison
+        torch_allocated_mb = torch.cuda.memory_allocated(device) / (1024 ** 2)
+        torch_reserved_mb = torch.cuda.memory_reserved(device) / (1024 ** 2)
+        torch_max_allocated_mb = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+        
+        print(f"GPU memory (nvidia-smi): Used: {gpu_mem['used_mb']:.2f} MB / {gpu_mem['total_mb']:.2f} MB ({gpu_mem['used_mb']/gpu_mem['total_mb']*100:.1f}%), Utilization: {gpu_mem['utilization_percent']:.1f}%")
+        print(f"GPU memory (PyTorch only): Allocated: {torch_allocated_mb:.2f} MB, Reserved: {torch_reserved_mb:.2f} MB, Peak: {torch_max_allocated_mb:.2f} MB")
 
     return optimized_traj_torch, debug_info
 
@@ -662,7 +742,6 @@ def _optimize(
 ) -> jax.Array:
     timesteps = wTo.shape[0]
     assert wTo.shape == (timesteps, 7)
-    assert target_newPoints.shape == (5000, 3)
 
     left_betas = left_hand_params[..., -10:]
     right_betas = right_hand_params[..., -10:]
@@ -674,11 +753,63 @@ def _optimize(
 
     initial_wTo = wTo
 
-    
-    contact_l = get_weight(contact[..., 0], mode='sigmoid')
-    contact_r = get_weight(contact[..., 1], mode='sigmoid')
-    contact_weight = jnp.concatenate([contact_l[..., None], contact_r[..., None]], axis=-1)
+    use_contact_soft = guidance_params.use_contact_soft
+    use_contact_self = guidance_params.use_contact_self  # use the prediction
 
+    if use_contact_self:
+        contact_weight = None
+    else:
+        if use_contact_soft:    
+            contact_l = get_weight(contact[..., 0], mode='sigmoid')
+            contact_r = get_weight(contact[..., 1], mode='sigmoid')
+            contact_weight = jnp.concatenate([contact_l[..., None], contact_r[..., None]], axis=-1)
+        else:
+            contact_weight = contact > 0.5
+
+    if guidance_params.contact_pair:
+        # Precompute corresponding object points for each joint at each timestep
+        # This saves memory - pass indexed points instead of full point cloud
+        
+        # Compute initial hand joints for all timesteps
+        def compute_initial_joints(t):
+            left_mesh = left_shaped.with_pose(
+                global_orient=left_hand_params[t, :3],
+                transl=left_hand_params[t, 3:6],
+                pca=left_hand_params[t, 6:21],
+                add_mean=True,
+            )
+            right_mesh = right_shaped.with_pose(
+                global_orient=right_hand_params[t, :3],
+                transl=right_hand_params[t, 3:6],
+                pca=right_hand_params[t, 6:21],
+                add_mean=True,
+            )
+            left_joints = left_mesh.joint_tip_transl  # (21, 3)
+            right_joints = right_mesh.joint_tip_transl  # (21, 3)
+            return jnp.concatenate([left_joints, right_joints], axis=0)  # (42, 3)
+        
+        initial_joints_all = jax.vmap(compute_initial_joints)(jnp.arange(timesteps))  # (T, 42, 3)
+        
+        # Transform object points to world frame using initial object poses for all timesteps
+        initial_wTo_se3 = jax.vmap(jaxlie.SE3)(wTo)  # (T,) SE3 objects
+        initial_object_points = jax.vmap(lambda se3: se3 @ target_newPoints)(initial_wTo_se3)  # (T, P, 3)
+        
+        # Compute correspondence for each timestep
+        def get_corresponding_indices(t):
+            joints_cur = initial_joints_all[t]  # (42, 3)
+            object_points_cur = initial_object_points[t]  # (P, 3)
+            dist, nn_idx, _ = knn_jax(joints_cur, object_points_cur, k=1)  # (42, 1)
+            return nn_idx.squeeze(1)  # (42,) - indices into target_newPoints
+        
+        # Precompute correspondence indices for all timesteps: (T, 42)
+        corresponding_obj_indices_per_timestep = jax.vmap(get_corresponding_indices)(jnp.arange(timesteps))  # (T, 42)
+        
+        # Extract corresponding object points in local frame for each timestep: (T, 42, 3)
+        target_object_points_per_joint = jax.vmap(
+            lambda indices: target_newPoints[indices]
+        )(corresponding_obj_indices_per_timestep)  # (T, 42, 3)
+    else:
+        target_object_points_per_joint = None
 
     def do_forward_kinematics_two_hands(
         vals: jaxls.VarValues,
@@ -817,10 +948,16 @@ def _optimize(
             return diff
        
     if guidance_params.use_contact_obs:
+        if use_contact_soft:
+            contact_l = get_weight(target_contact[..., 0], mode='sigmoid')
+            contact_r = get_weight(target_contact[..., 1], mode='sigmoid')
+            tgt_contact = jnp.concatenate([contact_l[..., None], contact_r[..., None]], axis=-1)
+        else:
+            tgt_contact = target_contact
 
         @cost_with_args(
             _ContactVar(jnp.arange(timesteps)),
-            target_contact,
+            tgt_contact,
         )
         def contact_obs_cost(
             vals: jaxls.VarValues,
@@ -986,13 +1123,17 @@ def _optimize(
 
     if guidance_params.use_abs_contact:
         # find the first frame where contact is true
-        # current_contact =
+        if use_contact_self:
+            contact_wgt = _ContactVar(jnp.arange(timesteps))
+        else:
+            contact_wgt = contact_weight
+
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps)),
             _LeftHandParamsVar(jnp.arange(timesteps)),
             _RightHandParamsVar(jnp.arange(timesteps)),
-            target_newPoints[None],
-            contact_weight,
+            target_object_points_per_joint if guidance_params.contact_pair else target_newPoints[None],
+            contact_wgt,
             target_contact_vis,
         )
         def abs_contact_cost(
@@ -1000,7 +1141,7 @@ def _optimize(
             cur: _SE3TrajectoryVar,
             left_params: _LeftHandParamsVar,
             right_params: _RightHandParamsVar,
-            target_newPoints: jax.Array,
+            target_points: jax.Array,  # Either indexed points (42, 3) when contact_pair=True, or full cloud (P, 3)
             contact_weight: jax.Array,
             target_contact_vis: jax.Array,
         ) -> jax.Array:
@@ -1012,28 +1153,41 @@ def _optimize(
             joints_traj = jnp.concatenate([left_joints, right_joints], axis=0)
 
             current_traj = jaxlie.SE3(vals[cur])
-            current_points = current_traj @ target_newPoints
             joints_traj = joints_traj.reshape(-1, 3)
             J = joints_traj.shape[0]
 
-            dist, nn_idx, nn_points = knn_jax(joints_traj, current_points, k=1, )
-            res = current_points[nn_idx.squeeze(1)] - joints_traj  # (J*2, 3)
-            # print('res', res.shape)
-            
-            dist = dist.reshape(2, J // 2)
-            res = res.reshape(2, J // 2, 3)
-            dist = dist[..., -5:]  # finger tips  # (2, J//2)
-            res = res[..., -5:, :]  # (2, J//2, 3)
-            # print(res.shape)  # (2, 5, 3)
-            
-            # dist = dist.min(axis=-1, keepdims=True)  # (2, J//2) -> (2, 1)
-            dist_idx = jnp.argmin(dist, axis=-1)  # (2, )
-            # print('dist_idx', dist_idx.shape,)  
-            # (2, 5, 3) -> (2, 1, 3)
-            res_min = jnp.take_along_axis(res, dist_idx[..., None, None], axis=-2)  # (2, 1, 3)
-            res_min = res_min.squeeze(1)  # (2, 3)
+            if use_contact_self:
+                contact_weight = vals[contact_weight]
+            if not use_contact_soft:
+                contact_weight = contact_weight > 0.5
 
-            # print('res_min', res_min.shape)
+            if guidance_params.contact_pair:
+                # target_points is already the corresponding object points per joint (42, 3) in local frame
+                # Transform to world frame
+                current_points = current_traj @ target_points  # (42, 3) in world frame
+                res = current_points - joints_traj  # (J, 3) - relative position to the joint
+                dist = jnp.linalg.norm(res, axis=-1)
+            else:
+                # Compute correspondence dynamically with full point cloud
+                current_points = current_traj @ target_points
+                dist, nn_idx, nn_points = knn_jax(joints_traj, current_points, k=1, )
+                res = current_points[nn_idx.squeeze(1)] - joints_traj  # (J*2, 3)
+
+            # res: in shape of (J*2, 3)
+            res_min = res.reshape(2, J//2, 3)
+            dist_min = dist.reshape(2, J//2)
+            dist_idx = jnp.argmin(dist_min, axis=-1)
+            res_min = jnp.take_along_axis(res_min, dist_idx[..., None, None], axis=-2)
+            res_min = res_min.squeeze(1)
+            res_min = res_min.reshape(2, 3)
+
+            # dist = dist.reshape(2, J // 2)
+            # res = res.reshape(2, J // 2, 3)
+            # dist = dist[..., -5:]  # finger tips  # (2, J//2)
+            # res = res[..., -5:, :]  # (2, J//2, 3)
+            # dist_idx = jnp.argmin(dist, axis=-1)  # (2, )
+            # res_min = jnp.take_along_axis(res, dist_idx[..., None, None], axis=-2)  # (2, 1, 3)
+            # res_min = res_min.squeeze(1)  # (2, 3)
             
             res_min = residual_with_threshold(res_min, 0.005)  # half a cm
             contact_cost = res_min * guidance_params.contact_weight
@@ -1044,13 +1198,10 @@ def _optimize(
                 jnp.zeros((2, D)) * guidance_params.contact_weight
             )  # (2,)
 
-            print('contact_cost', contact_cost.shape, non_contact_cost.shape, contact_weight.shape)
+            # handle if use_contact_soft is False and use_contact_self is True, so just cast to bool if not use_contact_soft
 
             cost = contact_weight.reshape(2, 1) * contact_cost + (1 - contact_weight.reshape(2, 1)) * non_contact_cost  # (2, D)
             
-            # cost = jnp.where(
-            #     target_contact.reshape(2, 1), contact_cost, non_contact_cost
-            # )
             if target_contact_vis is not None:
                 cost = cost * target_contact_vis.reshape(2, 1)
             return cost.flatten()
@@ -1058,6 +1209,12 @@ def _optimize(
     if guidance_params.use_rel_contact:
         # approximate contact label
         # smoothness on 
+        if use_contact_self:
+            contact_cur = _ContactVar(jnp.arange(timesteps - 1))
+            contact_next = _ContactVar(jnp.arange(1, timesteps))
+        else:
+            contact_cur = contact_weight[:-1]
+            contact_next = contact_weight[1:]
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
             _SE3TrajectoryVar(jnp.arange(1, timesteps)),
@@ -1067,11 +1224,10 @@ def _optimize(
 
             _LeftHandParamsVar(jnp.arange(1, timesteps)),
             _RightHandParamsVar(jnp.arange(1, timesteps)),
-            target_newPoints[None],
-            # _ContactVar(jnp.arange(timesteps - 1)),
-            # _ContactVar(jnp.arange(1, timesteps)),
-            contact_weight[:-1],
-            contact_weight[1:],
+            target_object_points_per_joint[:-1] if guidance_params.contact_pair else target_newPoints[None],
+            target_object_points_per_joint[1:] if guidance_params.contact_pair else target_newPoints[None],
+            contact_cur,
+            contact_next,
         )
         def relative_contact_cost(
             vals: jaxls.VarValues,
@@ -1081,15 +1237,19 @@ def _optimize(
             right_params_cur: _RightHandParamsVar,
             left_params_next: _LeftHandParamsVar,
             right_params_next: _RightHandParamsVar,
-            target_newPoints: jax.Array,
-
+            target_points_cur: jax.Array,  # Either indexed points (42, 3) when contact_pair=True, or full cloud (P, 3)
+            target_points_next: jax.Array,  # Either indexed points (42, 3) when contact_pair=True, or full cloud (P, 3)
             contact_cur: _ContactVar,
             contact_next: _ContactVar,
         ) -> jax.Array:
             wTo_cur = jaxlie.SE3(vals[wTo_cur])
             wTo_next = jaxlie.SE3(vals[wTo_next]) 
-            # contact_cur = vals[contact_cur]
-            # contact_next = vals[contact_next]
+            if use_contact_self:
+                contact_cur = vals[contact_cur]
+                contact_next = vals[contact_next]
+            if not use_contact_soft:
+                contact_cur = contact_cur > 0.5
+                contact_next = contact_next > 0.5
 
             # forward to get joints
             left_mesh, right_mesh = do_forward_kinematics_two_hands(
@@ -1108,28 +1268,29 @@ def _optimize(
             joints_traj_next = jnp.concatenate([left_joints, right_joints], axis=0)
             joints_traj_next = joints_traj_next.reshape(-1, 3)
 
-            current_points = wTo_cur @ target_newPoints
-            next_points = wTo_next @ target_newPoints  # (P, 3)
-
             J = joints_traj_cur.shape[0]
 
-            dist, nn_idx, nn_points = knn_jax(joints_traj_cur, current_points, k=1)  # (J, 1)
-            p_near_ind = nn_idx.squeeze(1)  # (J, )
-
-            # minimal pairwise distance 
-            # dist_cur = jnp.linalg.norm(current_points[:, None] - joints_traj_cur[None, :, :], axis=-1)  # (P, J)
-
-            # p_near is the nearest point on the object to the current each joint
-            # p_near_ind = jnp.argmin(dist_cur, axis=0)  # (P, J) ->  (J,)
-            p_near = current_points[p_near_ind] - joints_traj_cur # (J, 3)  # relative position to the joint
-            p_near_next = next_points[p_near_ind] - joints_traj_next # (J, 3)  # relative position to the joint
+            if guidance_params.contact_pair:
+                # target_points_cur and target_points_next are already the corresponding object points per joint (42, 3) in local frame
+                # Transform to world frame at each timestep
+                current_points = wTo_cur @ target_points_cur  # (42, 3) in world frame at current timestep
+                next_points = wTo_next @ target_points_next  # (42, 3) in world frame at next timestep
+                
+                p_near = current_points - joints_traj_cur  # (J, 3) - relative position to the joint
+                p_near_next = next_points - joints_traj_next  # (J, 3) - relative position to the joint
+            else:
+                # Compute correspondence dynamically with full point cloud
+                current_points = wTo_cur @ target_points_cur
+                next_points = wTo_next @ target_points_next  # (P, 3)
+                
+                dist, nn_idx, nn_points = knn_jax(joints_traj_cur, current_points, k=1)  # (J, 1)
+                p_near_ind = nn_idx.squeeze(1)  # (J, )
+                
+                p_near = current_points[p_near_ind] - joints_traj_cur  # (J, 3)
+                p_near_next = next_points[p_near_ind] - joints_traj_next  # (J, 3)
 
             current_rot = wTo_cur.rotation()
             next_rot = wTo_next.rotation()
-
-            # normalzie p_near to unit length
-            # p_near = p_near / (jnp.linalg.norm(p_near, axis=-1, keepdims=True) + 1e-8)
-            # p_near_next = p_near_next / (jnp.linalg.norm(p_near_next, axis=-1, keepdims=True) + 1e-8)
 
             res = p_near_next - next_rot @ current_rot.inverse() @ p_near
 
@@ -1142,8 +1303,6 @@ def _optimize(
             # is_contact = (contact_cur > 0.5) & (contact_next > 0.5)
             is_contact = contact_cur * contact_next
 
-            no_contact_cost = jnp.ones((2, D)) * 0 * guidance_params.rel_contact_weight  # (2, D)
-            # cost = jnp.where(is_contact.reshape(2, 1), contact_cost, no_contact_cost)
             cost = is_contact.reshape(2, 1) * contact_cost 
             # res = wTo_next.inverse() @  wTo_cur
             # res_cost = is_static * dist_residual(guidance_params.rel_contact_weight, res)
@@ -1151,15 +1310,19 @@ def _optimize(
             # cost = jnp.concatenate([cost.flatten(), res_cost.flatten()])
             return cost.flatten()
 
+
     if guidance_params.use_static:
+        if use_contact_self:
+            contact_cur = _ContactVar(jnp.arange(timesteps - 1))
+            contact_next = _ContactVar(jnp.arange(1, timesteps))
+        else:
+            contact_cur = contact_weight[:-1]
+            contact_next = contact_weight[1:]
         @cost_with_args(
             _SE3TrajectoryVar(jnp.arange(timesteps - 1)),
             _SE3TrajectoryVar(jnp.arange(1, timesteps)),
-            contact_weight[:-1],
-            contact_weight[1:],
-            # _ContactVar(jnp.arange(timesteps - 1)),
-            # _ContactVar(jnp.arange(1, timesteps)),
-            target_newPoints[None],
+            contact_cur,
+            contact_next,
         )
         def static_cost(
             vals: jaxls.VarValues,
@@ -1168,31 +1331,24 @@ def _optimize(
 
             contact_cur: _ContactVar,
             contact_next: _ContactVar,
-            target_newPoints: jax.Array,
         ) -> jax.Array:
             wTo_cur =   jaxlie.SE3(vals[wTo_cur])
-            # wTo_next = jax.lax.stop_gradient(jaxlie.SE3(vals[wTo_next]))
-            # contact_cur = jax.lax.stop_gradient(vals[contact_cur])
-            # contact_next = jax.lax.stop_gradient(vals[contact_next])
-
             wTo_next = jaxlie.SE3(vals[wTo_next])
-            # contact_cur = vals[contact_cur]
-            # contact_next = vals[contact_next]
+            if use_contact_self:
+                contact_cur = vals[contact_cur]
+                contact_next = vals[contact_next]
+            if not use_contact_soft:
+                contact_cur = contact_cur > 0.5
+                contact_next = contact_next > 0.5
 
             # current_points = wTo_cur @ target_newPoints
             # next_points = wTo_next @ target_newPoints
 
-            # wPoints_diff = (next_points - current_points)
-
             static_mask_lr = 1 - (contact_cur * contact_next)  # neither of frames are in contact 
             static_mask = static_mask_lr[0] * static_mask_lr[1]    # object is static if both hands are free
 
-            # static_mask = (contact_cur < 0.5) | (contact_next < 0.5)
-            # static_mask = static_mask[0] & static_mask[1]
             static_cost = dist_residual(guidance_params.static_weight, wTo_next.inverse() @ wTo_cur)
-            print('static', static_cost.shape, static_mask.shape)
             static_cost = static_cost * static_mask.flatten()
-            # static_cost = guidance_params.static_weight * (static_mask * wPoints_diff).flatten()    
             return static_cost
 
     if guidance_params.use_reproj_com:
@@ -1962,126 +2118,5 @@ def soft_if(cond, true_val, false_val, mode='hard', **kwargs):
 
 
 
-def visualize_weight(save_dir="outputs/debug_weight"):
-    """
-    Generate contact data and visualize weights for different modes and hyperparameters.
-    
-    Args:
-        save_dir: Directory to save visualization plots.
-    """
-    # Create save directory
-    save_path = Path(save_dir)
-    save_path.mkdir(parents=True, exist_ok=True)
-    
-    # Generate contact data: (120,) with 0-4 contact switches
-    T = 120
-    num_switches = onp.random.randint(0, 5)  # 0-4 switches
-    
-    # Generate random contact pattern
-    cond = onp.zeros(T, dtype=onp.float32)
-    if num_switches > 0:
-        # Randomly place transition points (switches)
-        # Each switch is a transition from contact to non-contact or vice versa
-        switch_points = sorted(onp.random.choice(T - 1, size=num_switches, replace=False) + 1)
-        switch_points = [0] + switch_points + [T]  # Add boundaries
-        
-        # Create alternating contact/non-contact regions
-        in_contact = onp.random.rand() > 0.5  # Random starting state
-        for i in range(len(switch_points) - 1):
-            start = switch_points[i]
-            end = switch_points[i + 1]
-            if in_contact:
-                cond[start:end] = 1.0
-            in_contact = not in_contact  # Toggle at each switch point
-    else:
-        # No switches - either all contact or no contact
-        if onp.random.rand() > 0.5:
-            cond[:] = 1.0
-    
-    # Convert to JAX array
-    cond_jax = jnp.array(cond)
-    
-    # Test different modes and hyperparameters
-    modes = ['hard', 'sigmoid', 'gaussian']
-    sigmoid_softness_candidates = [0.5, 1.0, 2.0, 5.0]
-    gaussian_sigma_candidates = [1.0, 2.0, 3.0, 5.0]
-    
-    # Create figure with subplots
-    fig, axes = plt.subplots(len(modes), 1, figsize=(12, 10))
-    if len(modes) == 1:
-        axes = [axes]
-    
-    # Plot original condition
-    for ax in axes:
-        ax.plot(cond, 'k-', linewidth=2, label='Original Condition', alpha=0.7)
-        ax.fill_between(range(T), 0, cond, alpha=0.3, color='gray')
-        ax.set_ylabel('Contact')
-        ax.set_ylim(-0.1, 1.1)
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-    
-    # Plot weights for each mode
-    for mode_idx, mode in enumerate(modes):
-        ax = axes[mode_idx]
-        ax.set_title(f'Mode: {mode}')
-        
-        if mode == 'hard':
-            weight = get_weight(cond_jax, mode=mode)
-            ax.plot(onp.array(weight), 'b-', linewidth=2, label='Hard', alpha=0.8)
-        
-        elif mode == 'sigmoid':
-            for softness in sigmoid_softness_candidates:
-                weight = get_weight(cond_jax, mode=mode, softness=softness)
-                ax.plot(onp.array(weight), linewidth=1.5, label=f'Sigmoid (softness={softness})', alpha=0.8)
-        
-        elif mode == 'gaussian':
-            for sigma in gaussian_sigma_candidates:
-                weight = get_weight(cond_jax, mode=mode, sigma=sigma)
-                ax.plot(onp.array(weight), linewidth=1.5, label=f'Gaussian (σ={sigma})', alpha=0.8)
-        
-        ax.legend(loc='upper right', fontsize=8)
-        ax.set_xlabel('Time Step')
-    
-    plt.tight_layout()
-    plt.savefig(save_path / 'weight_comparison.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    # Create individual plots for each mode with hyperparameter comparison
-    for mode in modes:
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        
-        # Plot original condition
-        ax.plot(cond, 'k-', linewidth=2, label='Original Condition', alpha=0.7)
-        ax.fill_between(range(T), 0, cond, alpha=0.3, color='gray')
-        
-        if mode == 'hard':
-            weight = get_weight(cond_jax, mode=mode)
-            ax.plot(onp.array(weight), 'b-', linewidth=2, label='Hard', alpha=0.8)
-        
-        elif mode == 'sigmoid':
-            for softness in sigmoid_softness_candidates:
-                weight = get_weight(cond_jax, mode=mode, softness=softness)
-                ax.plot(onp.array(weight), linewidth=2, label=f'Softness={softness}', alpha=0.8)
-        
-        elif mode == 'gaussian':
-            for sigma in gaussian_sigma_candidates:
-                weight = get_weight(cond_jax, mode=mode, sigma=sigma)
-                ax.plot(onp.array(weight), linewidth=2, label=f'σ={sigma}', alpha=0.8)
-        
-        ax.set_title(f'Weight Visualization: {mode.capitalize()} Mode')
-        ax.set_xlabel('Time Step')
-        ax.set_ylabel('Weight')
-        ax.set_ylim(-0.1, 1.1)
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        plt.savefig(save_path / f'weight_{mode}.png', dpi=150, bbox_inches='tight')
-        plt.close()
-    
-    print(f"Visualizations saved to {save_path}")
-    print(f"Generated contact pattern with {num_switches} switches")
-
-
 if __name__ == "__main__":
-    # Fire(test_optimization)
-    Fire(visualize_weight)
+    Fire(test_optimization)

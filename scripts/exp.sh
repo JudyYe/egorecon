@@ -1,9 +1,49 @@
+preprocessing stage:
+- get observation
+  - 2D joints
+  - get 3D template
+- gsplat
+- retrain diffusion with better contact loss, longer epoch
+
+
+
+more guidance:
+
+change condition: 
+- change object template
+- change hand traj 
+
+
+guidance:
+guide by different hand contact
+guide by key-frame object pose? 
+
+
+GOAL: 
+[] optimize memory usage of guidance optimization: under 40G? 
+[] soft contact for trainig to
+
+
+
+
 python -m egorecon.training.test_hoi  -m  \
   expname=ready/ours \
   ckpt_index=model-20.pt \
   testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
   datasets.save_cache=false datasets.use_cache=false  \
-  test_folder=app/\${guide.hint}_sigmoid eval=hand_guide  \  
+  test_folder=app/mem_debug_\${guide.hint}  eval=mem_debug guide.num_target_points=100 test_num=1 \
+
+
+
+
+
+python -m egorecon.training.test_hoi  -m  \
+  expname=ready/ours \
+  ckpt_index=model-20.pt \
+  testdata=hotclip_train testdata.testsplit=test50obj dyn_only=true \
+  datasets.save_cache=false datasets.use_cache=false  \
+  test_folder=app/\${guide.hint}_soft\${guide.use_contact_soft}_self\${guide.use_contact_self}  eval=hand_guide \
+  guide.use_contact_soft=true guide.use_contact_self=true 
 
 
 
